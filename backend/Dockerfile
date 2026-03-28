@@ -27,10 +27,26 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 安装运行时依赖
+# 安装运行时依赖和Playwright系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     default-libmysqlclient-dev \
     curl \
+    # Playwright系统依赖
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxkbcommon0 \
+    libatspi2.0-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /tmp/* \
@@ -44,6 +60,9 @@ COPY . .
 
 # 创建数据目录
 RUN mkdir -p /app/data/excel /app/data/logs /app/data/cookies
+
+# 安装Playwright浏览器（可选，按需安装）
+# RUN playwright install chromium --with-deps
 
 # 创建非root用户
 RUN useradd -m -u 1000 appuser && \
