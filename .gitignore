@@ -73,6 +73,7 @@ coverage.xml
 
 Docker
 .docker/
+docker-compose.override.yml
 
 Test
 .pytest_cache/
