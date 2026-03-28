@@ -72,7 +72,8 @@ aistock/
 
 1. **克隆项目**
 ```bash
-cd /Users/xiayanji/qbox/aistock
+git clone git@github.com:callmefisher/aistock.git
+cd aistock
 ```
 
 2. **配置环境变量**
@@ -81,15 +82,27 @@ cp .env.example .env
 # 编辑.env文件，配置必要的参数
 ```
 
-3. **启动服务**
+3. **启动服务（推荐）**
+```bash
+# 使用智能启动脚本，自动检测端口占用并切换
+./start.sh
+```
+
+或手动启动：
 ```bash
 docker-compose up -d
 ```
 
 4. **访问应用**
-- 前端界面：http://localhost
-- API文档：http://localhost/docs
-- API地址：http://localhost/api/v1
+
+启动脚本会自动检测端口占用情况，如果默认端口被占用，会自动切换到可用端口。
+
+默认端口：
+- 前端界面：http://localhost (80)
+- API文档：http://localhost:8000/docs
+- API地址：http://localhost:8000/api/v1
+
+如果端口被占用，启动脚本会显示实际使用的端口。
 
 ### 首次使用
 

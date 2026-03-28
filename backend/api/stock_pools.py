@@ -6,10 +6,10 @@ from typing import List
 from pydantic import BaseModel
 from datetime import datetime
 import os
-from ..core.database import get_async_db
-from ..models.models import StockPool
-from ..api.auth import get_current_user
-from ..models.models import User
+from core.database import get_async_db
+from models.models import StockPool
+from api.auth import get_current_user
+from models.models import User
 
 router = APIRouter()
 

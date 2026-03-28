@@ -30,22 +30,6 @@ services:
     networks:
       - stock_network
 
-  selenium:
-    image: seleniarm/standalone-chromium:latest
-    container_name: stock_selenium
-    restart: always
-    ports:
-      - "4444:4444"
-      - "7900:7900"
-    shm_size: '2gb'
-    environment:
-      - SE_NODE_MAX_SESSIONS=5
-      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
-    volumes:
-      - /dev/shm:/dev/shm
-    networks:
-      - stock_network
-
   backend:
     build:
       context: ./backend
@@ -58,7 +42,6 @@ services:
       - DATABASE_URL=mysql+aiomysql://stock_user:stock_password@mysql:3306/stock_pool
       - DATABASE_URL_SYNC=mysql+pymysql://stock_user:stock_password@mysql:3306/stock_pool
       - REDIS_URL=redis://redis:6379/0
-      - SELENIUM_URL=http://selenium:4444/wd/hub
       - SECRET_KEY=your-secret-key-change-in-production-min-32-chars-long
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_API_BASE=${OPENAI_API_BASE}
@@ -73,21 +56,6 @@ services:
     depends_on:
       - mysql
       - redis
-      - selenium
-    networks:
-      - stock_network
-
-  frontend:
-    image: nginx:alpine
-    container_name: stock_frontend
-    restart: always
-    ports:
-      - "80:80"
-    volumes:
-      - ./frontend/dist:/usr/share/nginx/html
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf
-    depends_on:
-      - backend
     networks:
       - stock_network
 

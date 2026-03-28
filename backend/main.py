@@ -3,10 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import logging
-from .core.config import settings
-from .core.database import async_engine, Base
-from .api import auth, data_sources, rules, tasks, stock_pools
-from .services.task_scheduler import TaskScheduler
+from core.config import settings
+from core.database import async_engine, Base
+from api import auth, data_sources, rules, tasks, stock_pools
+from services.task_scheduler import TaskScheduler
 
 logging.basicConfig(
     level=logging.INFO,

@@ -7,9 +7,9 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional
 from pydantic import BaseModel, EmailStr
-from ..core.database import get_async_db
-from ..core.config import settings
-from ..models.models import User
+from core.database import get_async_db
+from core.config import settings
+from models.models import User
 
 router = APIRouter()
 
