@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>选股池自动化系统 - 技术方案对比</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .requirements {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .requirements h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+        
+        .requirements ul {
+            list-style: none;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 10px;
+        }
+        
+        .requirements li {
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .requirements li::before {
+            content: "✓ ";
+            color: #28a745;
+            font-weight: bold;
+        }
+        
+        .schemes {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+        
+        .scheme-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .scheme-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+        }
+        
+        .scheme-card.recommended {
+            border: 3px solid #28a745;
+        }
+        
+        .scheme-card.recommended::before {
+            content: "推荐方案";
+            position: absolute;
+            top: 15px;
+            right: -35px;
+            background: #28a745;
+            color: white;
+            padding: 5px 40px;
+            transform: rotate(45deg);
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+        
+        .scheme-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .scheme-icon {
+            font-size: 2.5em;
+            margin-right: 15px;
+        }
+        
+        .scheme-title {
+            flex: 1;
+        }
+        
+        .scheme-title h3 {
+            color: #333;
+            font-size: 1.4em;
+            margin-bottom: 5px;
+        }
+        
+        .scheme-title .tech-stack {
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .scheme-body {
+            margin-bottom: 20px;
+        }
+        
+        .scheme-body h4 {
+            color: #667eea;
+            margin: 15px 0 10px 0;
+            font-size: 1.1em;
+        }
+        
+        .scheme-body ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        
+        .scheme-body li {
+            padding: 8px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .scheme-body li:last-child {
+            border-bottom: none;
+        }
+        
+        .pros-cons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .pros, .cons {
+            padding: 15px;
+            border-radius: 8px;
+        }
+        
+        .pros {
+            background: #d4edda;
+        }
+        
+        .cons {
+            background: #f8d7da;
+        }
+        
+        .pros h5, .cons h5 {
+            margin-bottom: 10px;
+            font-size: 1em;
+        }
+        
+        .pros h5 {
+            color: #155724;
+        }
+        
+        .cons h5 {
+            color: #721c24;
+        }
+        
+        .pros ul, .cons ul {
+            list-style: none;
+            font-size: 0.9em;
+        }
+        
+        .pros li::before {
+            content: "✓ ";
+            color: #28a745;
+        }
+        
+        .cons li::before {
+            content: "✗ ";
+            color: #dc3545;
+        }
+        
+        .comparison-table {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow-x: auto;
+        }
+        
+        .comparison-table h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        th {
+            background: #667eea;
+            color: white;
+            font-weight: bold;
+        }
+        
+        tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .score {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+        
+        .score.high {
+            background: #28a745;
+            color: white;
+        }
+        
+        .score.medium {
+            background: #ffc107;
+            color: #333;
+        }
+        
+        .score.low {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .architecture {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .architecture h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+        
+        .arch-diagram {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            font-family: 'Courier New', monospace;
+            white-space: pre;
+            overflow-x: auto;
+            line-height: 1.6;
+        }
+        
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 30px;
+            padding: 20px;
+            opacity: 0.9;
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 12px 30px;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 25px;
+            font-weight: bold;
+            transition: background 0.3s ease;
+            margin-top: 20px;
+        }
+        
+        .btn:hover {
+            background: #218838;
+        }
+        
+        @media (max-width: 768px) {
+            .schemes {
+                grid-template-columns: 1fr;
+            }
+            
+            .pros-cons {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 选股池自动化系统</h1>
+            <p>技术方案对比与架构设计</p>
+        </div>
+        
+        <div class="requirements">
+            <h2>📋 需求概要</h2>
+            <ul>
+                <li>支持多种登录方式：账号密码、验证码、二维码、Cookie认证</li>
+                <li>支持混合数据格式：Excel下载、网页表格、API接口</li>
+                <li>智能规则引擎：自然语言转Excel公式/筛选</li>
+                <li>多种输出形式：在线展示、Excel下载、邮件通知、历史记录</li>
+                <li>灵活调度策略：支持多种定时任务配置</li>
+                <li>本地Docker部署：一键启动，易于维护</li>
+                <li>数据规模：约1万行，简化处理方案</li>
+            </ul>
+        </div>
+        
+        <div class="schemes">
+            <div class="scheme-card recommended">
+                <div class="scheme-header">
+                    <div class="scheme-icon">🐍</div>
+                    <div class="scheme-title">
+                        <h3>方案一：Python全栈方案</h3>
+                        <div class="tech-stack">FastAPI + Selenium + Pandas + OpenPyXL</div>
+                    </div>
+                </div>
+                <div class="scheme-body">
+                    <h4>核心技术栈</h4>
+                    <ul>
+                        <li><strong>后端框架：</strong>FastAPI（高性能异步框架）</li>
+                        <li><strong>Web自动化：</strong>Selenium（成熟稳定，支持各种登录）</li>
+                        <li><strong>Excel处理：</strong>Pandas + OpenPyXL（功能强大）</li>
+                        <li><strong>任务调度：</strong>APScheduler（灵活的定时任务）</li>
+                        <li><strong>前端界面：</strong>Vue3 + Element Plus（现代化UI）</li>
+                        <li><strong>数据库：</strong>SQLite（轻量级，适合本地部署）</li>
+                    </ul>
+                    
+                    <div class="pros-cons">
+                        <div class="pros">
+                            <h5>✅ 优势</h5>
+                            <ul>
+                                <li>Python生态成熟，数据处理能力强</li>
+                                <li>Selenium支持复杂登录场景</li>
+                                <li>Pandas处理Excel极其强大</li>
+                                <li>社区资源丰富，问题易解决</li>
+                                <li>学习曲线平缓，易于维护</li>
+                            </ul>
+                        </div>
+                        <div class="cons">
+                            <h5>❌ 劣势</h5>
+                            <ul>
+                                <li>Selenium需要浏览器驱动</li>
+                                <li>内存占用相对较高</li>
+                                <li>异步处理需要额外配置</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="scheme-card">
+                <div class="scheme-header">
+                    <div class="scheme-icon">🟢</div>
+                    <div class="scheme-title">
+                        <h3>方案二：Node.js现代化方案</h3>
+                        <div class="tech-stack">Express + Puppeteer + ExcelJS + React</div>
+                    </div>
+                </div>
+                <div class="scheme-body">
+                    <h4>核心技术栈</h4>
+                    <ul>
+                        <li><strong>后端框架：</strong>Express.js（轻量级Web框架）</li>
+                        <li><strong>Web自动化：</strong>Puppeteer（现代化，性能好）</li>
+                        <li><strong>Excel处理：</strong>ExcelJS（功能完善的Excel库）</li>
+                        <li><strong>任务调度：</strong>node-cron（Cron表达式调度）</li>
+                        <li><strong>前端界面：</strong>React + Ant Design（企业级UI）</li>
+                        <li><strong>数据库：</strong>SQLite（轻量级存储）</li>
+                    </ul>
+                    
+                    <div class="pros-cons">
+                        <div class="pros">
+                            <h5>✅ 优势</h5>
+                            <ul>
+                                <li>Puppeteer性能优于Selenium</li>
+                                <li>异步处理天然优势</li>
+                                <li>内存占用相对较小</li>
+                                <li>现代化技术栈</li>
+                            </ul>
+                        </div>
+                        <div class="cons">
+                            <h5>❌ 劣势</h5>
+                            <ul>
+                                <li>Excel处理能力不如Pandas</li>
+                                <li>复杂规则转换实现较难</li>
+                                <li>需要Node.js生态知识</li>
+                                <li>社区资源相对较少</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="scheme-card">
+                <div class="scheme-header">
+                    <div class="scheme-icon">🚀</div>
+                    <div class="scheme-title">
+                        <h3>方案三：混合高性能方案</h3>
+                        <div class="tech-stack">FastAPI + Playwright + Pandas + Vue3</div>
+                    </div>
+                </div>
+                <div class="scheme-body">
+                    <h4>核心技术栈</h4>
+                    <ul>
+                        <li><strong>后端框架：</strong>FastAPI（异步高性能）</li>
+                        <li><strong>Web自动化：</strong>Playwright（现代化，支持多浏览器）</li>
+                        <li><strong>Excel处理：</strong>Pandas + OpenPyXL（成熟方案）</li>
+                        <li><strong>任务调度：</strong>Celery + Redis（分布式任务队列）</li>
+                        <li><strong>前端界面：</strong>Vue3 + Naive UI（轻量级UI）</li>
+                        <li><strong>数据库：</strong>PostgreSQL（功能完善）</li>
+                    </ul>
+                    
+                    <div class="pros-cons">
+                        <div class="pros">
+                            <h5>✅ 优势</h5>
+                            <ul>
+                                <li>Playwright性能最佳</li>
+                                <li>FastAPI异步性能强</li>
+                                <li>Celery支持分布式任务</li>
+                                <li>整体架构可扩展性好</li>
+                            </ul>
+                        </div>
+                        <div class="cons">
+                            <h5>❌ 劣势</h5>
+                            <ul>
+                                <li>架构复杂度高</li>
+                                <li>需要Redis等额外组件</li>
+                                <li>部署和维护成本高</li>
+                                <li>对于1万行数据过于重量级</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="comparison-table">
+            <h2>📊 方案详细对比</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>对比维度</th>
+                        <th>方案一（Python全栈）</th>
+                        <th>方案二（Node.js）</th>
+                        <th>方案三（混合高性能）</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>开发效率</strong></td>
+                        <td><span class="score high">高</span></td>
+                        <td><span class="score medium">中</span></td>
+                        <td><span class="score low">低</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Excel处理能力</strong></td>
+                        <td><span class="score high">强</span></td>
+                        <td><span class="score medium">中</span></td>
+                        <td><span class="score high">强</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>登录支持</strong></td>
+                        <td><span class="score high">全面</span></td>
+                        <td><span class="score medium">中</span></td>
+                        <td><span class="score high">全面</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>性能表现</strong></td>
+                        <td><span class="score medium">中</span></td>
+                        <td><span class="score high">高</span></td>
+                        <td><span class="score high">高</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>部署复杂度</strong></td>
+                        <td><span class="score high">简单</span></td>
+                        <td><span class="score high">简单</span></td>
+                        <td><span class="score low">复杂</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>维护成本</strong></td>
+                        <td><span class="score high">低</span></td>
+                        <td><span class="score medium">中</span></td>
+                        <td><span class="score low">高</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>学习曲线</strong></td>
+                        <td><span class="score high">平缓</span></td>
+                        <td><span class="score medium">中等</span></td>
+                        <td><span class="score low">陡峭</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>社区支持</strong></td>
+                        <td><span class="score high">丰富</span></td>
+                        <td><span class="score medium">中</span></td>
+                        <td><span class="score medium">中</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>适合场景</strong></td>
+                        <td>中小规模数据处理</td>
+                        <td>现代化Web应用</td>
+                        <td>大规模分布式系统</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="architecture">
+            <h2>🏗️ 推荐架构设计（方案一）</h2>
+            <div class="arch-diagram">
+┌─────────────────────────────────────────────────────────────────┐
+│                        前端层 (Vue3 + Element Plus)                │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │ 数据源管理 │  │ 规则配置  │  │ 任务调度  │  │ 结果查看  │        │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+└─────────────────────────────────────────────────────────────────┘
+                              ↕ HTTP/WebSocket
+┌─────────────────────────────────────────────────────────────────┐
+│                      后端API层 (FastAPI)                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │ 认证接口  │  │ 规则引擎  │  │ 任务管理  │  │ 导出接口  │        │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+└─────────────────────────────────────────────────────────────────┘
+                              ↕
+┌─────────────────────────────────────────────────────────────────┐
+│                        核心业务层                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
+│  │  登录模块     │  │  数据抓取模块  │  │  Excel处理    │         │
+│  │ - Selenium    │  │ - 网页抓取    │  │ - Pandas     │         │
+│  │ - Cookie管理  │  │ - API调用     │  │ - OpenPyXL   │         │
+│  │ - 验证码识别  │  │ - Excel下载   │  │ - 规则应用    │         │
+│  └──────────────┘  └──────────────┘  └──────────────┘         │
+└─────────────────────────────────────────────────────────────────┘
+                              ↕
+┌─────────────────────────────────────────────────────────────────┐
+│                      调度与存储层                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
+│  │  APScheduler  │  │   SQLite     │  │  文件存储     │         │
+│  │  - 定时任务    │  │  - 配置数据   │  │  - Excel文件  │         │
+│  │  - 任务队列    │  │  - 历史记录   │  │  - 日志文件   │         │
+│  └──────────────┘  └──────────────┘  └──────────────┘         │
+└─────────────────────────────────────────────────────────────────┘
+                              ↕
+┌─────────────────────────────────────────────────────────────────┐
+│                      Docker部署层                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Docker Compose                                           │  │
+│  │  - Web服务 (FastAPI + Vue3)                              │  │
+│  │  - 浏览器服务 (Chrome/Chromium)                           │  │
+│  │  - 数据持久化 (Volumes)                                   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+            </div>
+        </div>
+        
+        <div class="architecture">
+            <h2>🔄 核心功能流程</h2>
+            <div class="arch-diagram">
+1. 数据源配置流程：
+   用户配置网站 → 测试登录 → 保存Cookie → 定期刷新认证
+
+2. 数据抓取流程：
+   定时任务触发 → 加载网站配置 → 模拟登录 → 抓取数据 → 保存原始Excel
+
+3. 规则处理流程：
+   用户输入规则 → NLP解析规则 → 转换Excel公式 → 应用到数据 → 生成选股池
+
+4. 结果输出流程：
+   生成结果 → 在线展示 → Excel导出 → 邮件通知 → 保存历史记录
+
+5. 自动化调度：
+   用户配置时间 → APScheduler调度 → 执行任务链 → 异常处理 → 结果通知
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>💡 推荐选择方案一：Python全栈方案</p>
+            <p>理由：开发效率高、Excel处理能力强、部署简单、维护成本低，完全满足1万行数据处理需求</p>
+            <a href="#" class="btn" onclick="alert('请在下方确认您的方案选择')">确认选择方案一</a>
+        </div>
+    </div>
+</body>
+</html>
