@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List
+from typing import List, Union
 from pydantic import BaseModel
 from datetime import datetime
 from core.database import get_async_db
@@ -38,12 +38,11 @@ class DataSourceResponse(BaseModel):
     login_type: str
     data_format: str
     is_active: bool
-    last_login_time: datetime = None
-    last_fetch_time: datetime = None
+    last_login_time: Union[datetime, None] = None
+    last_fetch_time: Union[datetime, None] = None
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
+
+    model_config = {"from_attributes": True}
 
 
 @router.post("/", response_model=DataSourceResponse)

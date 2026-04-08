@@ -4,29 +4,44 @@ services:
   mysql:
     image: mysql:8.0
     container_name: stock_mysql
-    restart: always
+    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: stock_pool
-      MYSQL_USER: stock_user
-      MYSQL_PASSWORD: stock_password
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-stock_pool}
+      MYSQL_USER: ${MYSQL_USER:-stock_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-stock_password}
     ports:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: 
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max_connections=1000
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
     networks:
       - stock_network
 
   redis:
     image: redis:7-alpine
     container_name: stock_redis
-    restart: always
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - stock_network
 
@@ -34,34 +49,54 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: aistock-backend:latest
     container_name: stock_backend
-    restart: always
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=mysql+aiomysql://${MYSQL_USER:-stock_user}:${MYSQL_PASSWORD:-stock_password}@mysql:3306/${MYSQL_DATABASE:-stock_pool}
+      - DATABASE_URL_SYNC=mysql+pymysql://${MYSQL_USER:-stock_user}:${MYSQL_PASSWORD:-stock_password}@mysql:3306/${MYSQL_DATABASE:-stock_pool}
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production-min-32-chars-long}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=mysql+aiomysql://stock_user:stock_password@mysql:3306/stock_pool
-      - DATABASE_URL_SYNC=mysql+pymysql://stock_user:stock_password@mysql:3306/stock_pool
-      - REDIS_URL=redis://redis:6379/0
-      - SECRET_KEY=your-secret-key-change-in-production-min-32-chars-long
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_API_BASE=${OPENAI_API_BASE}
-      - SMTP_HOST=${SMTP_HOST}
-      - SMTP_PORT=${SMTP_PORT}
-      - SMTP_USER=${SMTP_USER}
-      - SMTP_PASSWORD=${SMTP_PASSWORD}
-      - EMAIL_FROM=${EMAIL_FROM}
     volumes:
-      - ./backend:/app
+      - ./backend:/app:cached
       - ./data:/app/data
     depends_on:
-      - mysql
-      - redis
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - stock_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: aistock-frontend:latest
+    container_name: stock_frontend
+    restart: unless-stopped
+    ports:
+      - "7654:80"
+    depends_on:
+      backend:
+        condition: service_healthy
     networks:
       - stock_network
 
 volumes:
   mysql_data:
+    driver: local
   redis_data:
+    driver: local
 
 networks:
   stock_network:

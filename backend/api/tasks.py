@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List
+from typing import List, Optional, Union
 from pydantic import BaseModel
 from datetime import datetime
 from core.database import get_async_db
@@ -35,15 +35,14 @@ class TaskResponse(BaseModel):
     data_source_ids: List[int]
     rule_ids: List[int]
     schedule_type: str
-    schedule_config: dict
+    schedule_config: Union[dict, None] = None
     status: str
-    last_run_time: datetime = None
-    next_run_time: datetime = None
+    last_run_time: Union[datetime, None] = None
+    next_run_time: Union[datetime, None] = None
     is_active: bool
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
+
+    model_config = {"from_attributes": True}
 
 
 class ExecutionLogResponse(BaseModel):
@@ -51,10 +50,10 @@ class ExecutionLogResponse(BaseModel):
     task_id: int
     status: str
     start_time: datetime
-    end_time: datetime = None
-    duration: float = None
-    records_processed: int = None
-    error_message: str = None
+    end_time: Optional[datetime] = None
+    duration: Optional[float] = None
+    records_processed: Optional[int] = None
+    error_message: Optional[str] = None
     output_file: str = None
     created_at: datetime
     

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List
+from typing import List, Dict, Any, Union
 from pydantic import BaseModel
 from datetime import datetime
 from core.database import get_async_db
@@ -18,13 +18,20 @@ class RuleCreate(BaseModel):
     name: str
     description: str = None
     natural_language: str
+    excel_formula: Union[str, None] = None
+    filter_conditions: Union[List[Dict[str, Any]], None] = None
+    priority: int = 1
+    is_active: bool = True
 
 
 class RuleUpdate(BaseModel):
     name: str = None
     description: str = None
     natural_language: str = None
-    is_active: bool = None
+    excel_formula: Union[str, None] = None
+    filter_conditions: Union[List[Dict[str, Any]], None] = None
+    priority: Union[int, None] = None
+    is_active: Union[bool, None] = None
 
 
 class RuleResponse(BaseModel):
@@ -32,14 +39,13 @@ class RuleResponse(BaseModel):
     name: str
     description: str
     natural_language: str
-    excel_formula: str = None
-    filter_conditions: dict = None
+    excel_formula: Union[str, None] = None
+    filter_conditions: Union[List[Dict[str, Any]], None] = None
     priority: int
     is_active: bool
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
+
+    model_config = {"from_attributes": True}
 
 
 @router.post("/", response_model=RuleResponse)
@@ -60,7 +66,9 @@ async def create_rule(
         description=rule.description,
         natural_language=rule.natural_language,
         excel_formula=parse_result['result'].get('excel_formula') if parse_result['success'] else None,
-        filter_conditions=parse_result['result'].get('filter_conditions') if parse_result['success'] else None
+        filter_conditions=parse_result['result'].get('filter_conditions') if parse_result['success'] else None,
+        priority=rule.priority,
+        is_active=rule.is_active
     )
     
     db.add(db_rule)

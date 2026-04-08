@@ -87,7 +87,7 @@ const form = ref({
 const fetchDataSources = async () => {
   loading.value = true
   try {
-    dataSources.value = await api.get('/data-sources')
+    dataSources.value = await api.get('/data-sources/')
   } catch (error) {
     ElMessage.error('获取数据源失败')
   } finally {
@@ -97,7 +97,7 @@ const fetchDataSources = async () => {
 
 const handleSave = async () => {
   try {
-    await api.post('/data-sources', form.value)
+    await api.post('/data-sources/', form.value)
     ElMessage.success('添加成功')
     showDialog.value = false
     fetchDataSources()

@@ -76,7 +76,7 @@ const form = ref({
 const fetchRules = async () => {
   loading.value = true
   try {
-    rules.value = await api.get('/rules')
+    rules.value = await api.get('/rules/')
   } catch (error) {
     ElMessage.error('获取规则失败')
   } finally {
@@ -86,7 +86,7 @@ const fetchRules = async () => {
 
 const handleSave = async () => {
   try {
-    await api.post('/rules', form.value)
+    await api.post('/rules/', form.value)
     ElMessage.success('添加成功')
     showDialog.value = false
     fetchRules()

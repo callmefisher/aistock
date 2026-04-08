@@ -35,8 +35,11 @@ async def lifespan(app: FastAPI):
     logger.info("应用已关闭")
 
 
+logger.info("选股池自动化系统启动中...")
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
+    description="自动化股票筛选和数据分析系统",
     version=settings.VERSION,
     lifespan=lifespan
 )

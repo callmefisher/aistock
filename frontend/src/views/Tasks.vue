@@ -88,7 +88,7 @@ const getStatusType = (status) => {
 const fetchTasks = async () => {
   loading.value = true
   try {
-    tasks.value = await api.get('/tasks')
+    tasks.value = await api.get('/tasks/')
   } catch (error) {
     ElMessage.error('获取任务失败')
   } finally {
@@ -98,7 +98,7 @@ const fetchTasks = async () => {
 
 const handleSave = async () => {
   try {
-    await api.post('/tasks', form.value)
+    await api.post('/tasks/', form.value)
     ElMessage.success('添加成功')
     showDialog.value = false
     fetchTasks()
@@ -109,7 +109,7 @@ const handleSave = async () => {
 
 const handleRun = async (id) => {
   try {
-    await api.post(`/tasks/${id}/run`)
+    await api.post(`/tasks/${id}/run/`)
     ElMessage.success('任务已加入执行队列')
   } catch (error) {
     ElMessage.error('执行失败')

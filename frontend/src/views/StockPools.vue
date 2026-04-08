@@ -43,7 +43,7 @@ const stockPools = ref([])
 const fetchStockPools = async () => {
   loading.value = true
   try {
-    stockPools.value = await api.get('/stock-pools')
+    stockPools.value = await api.get('/stock-pools/')
   } catch (error) {
     ElMessage.error('获取选股池失败')
   } finally {
@@ -53,7 +53,7 @@ const fetchStockPools = async () => {
 
 const handleDownload = async (id) => {
   try {
-    const response = await api.get(`/stock-pools/${id}/download`, {
+    const response = await api.get(`/stock-pools/${id}/download/`, {
       responseType: 'blob'
     })
     

@@ -172,7 +172,7 @@ find_available_port() {
 detect_ports() {
     log_info "检测端口占用情况..."
     
-    FRONTEND_PORT=80
+    FRONTEND_PORT=7654
     BACKEND_PORT=8000
     MYSQL_PORT=3306
     REDIS_PORT=6379
@@ -181,7 +181,7 @@ detect_ports() {
     
     if ! check_port $FRONTEND_PORT; then
         log_warning "端口 $FRONTEND_PORT 已被占用"
-        FRONTEND_PORT=$(find_available_port 8080)
+        FRONTEND_PORT=$(find_available_port 7655)
         [ -z "$FRONTEND_PORT" ] && { log_error "无法找到可用的前端端口"; exit 1; }
         log_success "自动切换到端口: $FRONTEND_PORT"
     fi
@@ -273,6 +273,7 @@ build_custom_images() {
     log_info "构建自定义镜像..."
     
     build_image_if_needed "aistock-backend:latest" "backend/Dockerfile" "backend" "$FORCE_BUILD"
+    build_image_if_needed "aistock-frontend:latest" "frontend/Dockerfile" "frontend" "$FORCE_BUILD"
     
     log_success "自定义镜像构建完成"
 }

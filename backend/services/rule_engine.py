@@ -72,34 +72,55 @@ class RuleEngine:
     def _parse_with_rules(self, natural_language: str) -> Dict[str, Any]:
         try:
             filter_conditions = []
-            
-            patterns = {
-                r'(\w+)\s*小于\s*(\d+\.?\d*)': ('less_than', float),
-                r'(\w+)\s*大于\s*(\d+\.?\d*)': ('greater_than', float),
-                r'(\w+)\s*小于等于\s*(\d+\.?\d*)': ('less_equal', float),
-                r'(\w+)\s*大于等于\s*(\d+\.?\d*)': ('greater_equal', float),
-                r'(\w+)\s*等于\s*(\d+\.?\d*)': ('equals', float),
-                r'(\w+)\s*等于\s*["\']?([^"\']+)["\']?': ('equals', str),
-                r'(\w+)\s*包含\s*["\']?([^"\']+)["\']?': ('contains', str),
-            }
-            
-            for pattern, (operator, value_type) in patterns.items():
-                matches = re.finditer(pattern, natural_language)
-                for match in matches:
-                    column = match.group(1)
-                    value_str = match.group(2)
-                    
-                    try:
-                        value = value_type(value_str)
-                    except:
-                        value = value_str
-                    
-                    filter_conditions.append({
-                        "column": column,
-                        "operator": operator,
-                        "value": value
-                    })
-            
+
+            natural_language_cleaned = natural_language
+
+            chinese_units = ['年', '月', '日', '元', '万', '亿', '%', '％', '个', '只', '支']
+            for unit in chinese_units:
+                natural_language_cleaned = natural_language_cleaned.replace(unit, '')
+
+            natural_language_cleaned = natural_language_cleaned.replace('的股票', '').replace('股票', '')
+
+            operators_config = [
+                ('小于', 'less_than'),
+                ('大于', 'greater_than'),
+                ('小于等于', 'less_equal'),
+                ('大于等于', 'greater_equal'),
+                ('等于', 'equals'),
+                ('包含', 'contains'),
+            ]
+
+            found_columns = set()
+
+            for operator_keyword, operator in operators_config:
+                if operator_keyword in natural_language_cleaned:
+                    parts = natural_language_cleaned.split(operator_keyword)
+
+                    if len(parts) >= 2:
+                        left_part = parts[0].strip()
+                        right_part = parts[1].strip().split()[0] if parts[1].strip() else ''
+
+                        try:
+                            if operator in ['less_than', 'greater_than', 'less_equal', 'greater_equal']:
+                                value = float(right_part)
+                            else:
+                                value = right_part
+                        except:
+                            value = right_part
+
+                        words = left_part.replace('筛选', ' ').replace('且', ' ').split()
+                        for word in reversed(words):
+                            if word and word not in ['且', '或', '或者']:
+                                column = word.strip()
+                                if column and column not in found_columns:
+                                    filter_conditions.append({
+                                        "column": column,
+                                        "operator": operator,
+                                        "value": value
+                                    })
+                                    found_columns.add(column)
+                                    break
+
             if filter_conditions:
                 return {
                     "success": True,
@@ -217,31 +238,34 @@ class RuleEngine:
     def validate_rules(self, filter_conditions: List[Dict], columns: List[str]) -> Dict[str, Any]:
         errors = []
         warnings = []
-        
+
         for condition in filter_conditions:
             column = condition.get('column')
             operator = condition.get('operator')
             value = condition.get('value')
-            
+
             if not column:
                 errors.append("条件缺少列名")
                 continue
-            
+
             if column not in columns:
                 warnings.append(f"列 '{column}' 不存在于数据中")
-            
+
             if not operator:
                 errors.append(f"条件缺少操作符（列：{column}）")
-            elif operator not in ['equals', 'not_equals', 'greater_than', 'less_than', 
-                                   'greater_equal', 'less_equal', 'contains', 'not_contains', 
+            elif operator not in ['equals', 'not_equals', 'greater_than', 'less_than',
+                                   'greater_equal', 'less_equal', 'contains', 'not_contains',
                                    'in', 'not_in']:
                 errors.append(f"不支持的操作符：{operator}")
-            
+
             if value is None:
                 errors.append(f"条件缺少值（列：{column}）")
-        
+
         return {
             "valid": len(errors) == 0,
             "errors": errors,
             "warnings": warnings
         }
+
+    def generate_excel_formula(self, filter_conditions: List[Dict]) -> str:
+        return self._generate_formula(filter_conditions)

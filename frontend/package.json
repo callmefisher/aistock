@@ -7,7 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore"
+    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore",
+    "test": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "vitest run tests/e2e",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
+    "test:watch": "vitest tests/unit --watch"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -23,10 +30,16 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^4.5.1",
     "@vue/eslint-config-prettier": "^8.0.0",
+    "@vue/test-utils": "^2.4.3",
+    "@testing-library/vue": "^7.0.0",
+    "@vitest/coverage-v8": "^1.0.4",
+    "@vitest/ui": "^1.0.4",
     "eslint": "^8.54.0",
     "eslint-plugin-vue": "^9.18.1",
+    "jsdom": "^23.0.1",
     "prettier": "^3.1.0",
     "terser": "^5.46.1",
-    "vite": "^5.0.4"
+    "vite": "^5.0.4",
+    "vitest": "^1.0.4"
   }
 }

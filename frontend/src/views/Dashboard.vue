@@ -132,10 +132,10 @@ const getStatusType = (status) => {
 const fetchStats = async () => {
   try {
     const [dataSources, rules, tasks, stockPools] = await Promise.all([
-      api.get('/data-sources'),
-      api.get('/rules'),
-      api.get('/tasks'),
-      api.get('/stock-pools')
+      api.get('/data-sources/'),
+      api.get('/rules/'),
+      api.get('/tasks/'),
+      api.get('/stock-pools/')
     ])
     
     stats.value = {
