@@ -24,10 +24,10 @@ COMPOSE_FILE="docker-compose.yml"
 PROJECT_NAME="aistock"
 
 get_compose_cmd() {
-    if docker compose version &> /dev/null 2>&1; then
-        echo "docker compose"
-    elif command -v docker-compose &> /dev/null; then
+    if command -v docker-compose &> /dev/null; then
         echo "docker-compose"
+    elif docker compose version &> /dev/null 2>&1; then
+        echo "docker compose"
     else
         log_error "Docker Compose 未安装"
         exit 1

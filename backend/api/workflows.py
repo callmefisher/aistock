@@ -214,11 +214,26 @@ async def execute_workflow_step(
             else:
                 logger.warning(f"步骤{step_index}上一步输出文件不存在: {prev_output}")
 
-        elif prev_type in ["smart_dedup", "extract_columns"]:
+        elif prev_type in ["smart_dedup", "extract_columns", "match_high_price", "match_ma20", "match_soe"]:
             if prev_type == "smart_dedup":
                 prev_output = os.path.join(
                     workflow_executor._get_daily_dir(output_date_str),
                     "deduped.xlsx"
+                )
+            elif prev_type == "match_high_price":
+                prev_output = os.path.join(
+                    workflow_executor._get_daily_dir(output_date_str),
+                    "output_3.xlsx"
+                )
+            elif prev_type == "match_ma20":
+                prev_output = os.path.join(
+                    workflow_executor._get_daily_dir(output_date_str),
+                    "output_4.xlsx"
+                )
+            elif prev_type == "match_soe":
+                prev_output = os.path.join(
+                    workflow_executor._get_daily_dir(output_date_str),
+                    "output_5.xlsx"
                 )
             else:
                 prev_output = os.path.join(
@@ -288,3 +303,24 @@ async def run_workflow(
     await db.refresh(workflow)
 
     return {"message": f"工作流 {workflow_id} 已开始执行", "workflow_id": workflow_id}
+
+
+from pydantic import BaseModel
+
+class OpenDirectoryRequest(BaseModel):
+    path: str
+
+
+@router.post("/open-directory")
+async def open_directory(
+    request: OpenDirectoryRequest,
+    current_user: User = Depends(get_current_user)
+):
+    import os
+    try:
+        if os.path.exists(request.path):
+            return {"success": True, "message": f"目录存在: {request.path}"}
+        else:
+            return {"success": False, "message": f"目录不存在: {request.path}"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}

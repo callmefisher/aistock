@@ -16,6 +16,7 @@ def auto_adjust_excel_width(output_path: str):
     try:
         wb = load_workbook(output_path)
         ws = wb.active
+        ws.auto_filter.ref = ws.dimensions
         for col_idx, column in enumerate(ws.columns, 1):
             max_length = 0
             column_letter = get_column_letter(col_idx)
@@ -101,6 +102,12 @@ class WorkflowExecutor:
                 return await self._export_excel(step_config, input_data, date_str)
             elif step_type == "match_high_price":
                 return await self._match_high_price(step_config, input_data, date_str)
+            elif step_type == "match_ma20":
+                return await self._match_ma20(step_config, input_data, date_str)
+            elif step_type == "match_soe":
+                return await self._match_soe(step_config, input_data, date_str)
+            elif step_type == "match_sector":
+                return await self._match_sector(step_config, input_data, date_str)
             elif step_type == "pending":
                 return {
                     "success": True,
@@ -348,6 +355,8 @@ class WorkflowExecutor:
         df_sorted = df.sort_values(date_col, ascending=False)
         df_deduped = df_sorted.drop_duplicates(subset=[stock_code_col], keep="first")
 
+        df_deduped = df_deduped[~df_deduped[stock_code_col].astype(str).str.upper().str.endswith('.NQ')]
+
         df_deduped[date_col] = pd.to_datetime(df_deduped[date_col], errors="coerce")
         df_deduped[date_col] = df_deduped[date_col].dt.strftime("%Y-%m-%d")
 
@@ -518,7 +527,7 @@ class WorkflowExecutor:
             }
 
         source_dir = config.get("source_dir", "百日新高")
-        new_column_name = config.get("new_column_name", "50日新高")
+        new_column_name = config.get("new_column_name", "百日新高")
 
         source_path = os.path.join(self.base_dir, source_dir)
         if not os.path.exists(source_path):
@@ -551,6 +560,201 @@ class WorkflowExecutor:
         logger.info(f"匹配完成，共匹配{matched_count}条记录")
 
         output_filename = config.get("output_filename", "output_2.xlsx")
+        output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
+        df.to_excel(output_path, index=False)
+        auto_adjust_excel_width(output_path)
+        logger.info(f"结果已保存到: {output_path}")
+
+        df_clean = df.fillna('')
+        records = df_clean.head(100).to_dict('records')
+        for record in records:
+            for k, v in record.items():
+                if isinstance(v, (float, int)) and (v != v or abs(v) == float('inf')):
+                    record[k] = ''
+
+        return {
+            "success": True,
+            "message": f"匹配完成，匹配{matched_count}条记录，已保存到{output_filename}",
+            "data": records,
+            "columns": df.columns.tolist(),
+            "rows": len(df),
+            "file_path": output_path
+        }
+
+    async def _match_ma20(self, config: Dict, df: Optional[pd.DataFrame], date_str: Optional[str] = None) -> Dict[str, Any]:
+        if df is None:
+            return {
+                "success": False,
+                "message": "没有可匹配的数据"
+            }
+
+        source_dir = config.get("source_dir", "20日均线")
+        new_column_name = config.get("new_column_name", "20日均线")
+
+        source_path = os.path.join(self.base_dir, source_dir)
+        if not os.path.exists(source_path):
+            return {
+                "success": False,
+                "message": f"目录不存在: {source_path}"
+            }
+
+        all_ma20_stocks = {}
+        excel_files = self._get_excel_files_in_dir(source_path)
+        for excel_file in excel_files:
+            try:
+                ma_df = pd.read_excel(excel_file, usecols=['股票代码', '股票简称'], engine='openpyxl')
+                for code, name in zip(ma_df['股票代码'].values, ma_df['股票简称'].values):
+                    code_str = str(code).strip()
+                    name_str = str(name).strip()
+                    if code_str and code_str != 'nan':
+                        all_ma20_stocks[code_str] = name_str
+            except Exception as e:
+                logger.warning(f"读取{excel_file}失败: {e}")
+
+        logger.info(f"从{source_dir}目录共加载{len(all_ma20_stocks)}只股票")
+
+        df[new_column_name] = df['证券代码'].astype(str).str.strip().map(all_ma20_stocks).fillna('')
+
+        matched_count = (df[new_column_name] != '').sum()
+        logger.info(f"匹配完成，共匹配{matched_count}条记录")
+
+        output_filename = config.get("output_filename", "output_4.xlsx")
+        output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
+        df.to_excel(output_path, index=False)
+        auto_adjust_excel_width(output_path)
+        logger.info(f"结果已保存到: {output_path}")
+
+        df_clean = df.fillna('')
+        records = df_clean.head(100).to_dict('records')
+        for record in records:
+            for k, v in record.items():
+                if isinstance(v, (float, int)) and (v != v or abs(v) == float('inf')):
+                    record[k] = ''
+
+        return {
+            "success": True,
+            "message": f"匹配完成，匹配{matched_count}条记录，已保存到{output_filename}",
+            "data": records,
+            "columns": df.columns.tolist(),
+            "rows": len(df),
+            "file_path": output_path
+        }
+
+    async def _match_soe(self, config: Dict, df: Optional[pd.DataFrame], date_str: Optional[str] = None) -> Dict[str, Any]:
+        if df is None:
+            return {
+                "success": False,
+                "message": "没有可匹配的数据"
+            }
+
+        source_dir = config.get("source_dir", "国企")
+        new_column_name = config.get("new_column_name", "国企")
+
+        source_path = os.path.join(self.base_dir, source_dir)
+        if not os.path.exists(source_path):
+            return {
+                "success": False,
+                "message": f"目录不存在: {source_path}"
+            }
+
+        all_soe_stocks = {}
+        excel_files = self._get_excel_files_in_dir(source_path)
+        for excel_file in excel_files:
+            try:
+                soe_df = pd.read_excel(excel_file)
+                code_col = next((col for col in ['股票代码.1', '股票代码', '证券代码'] if col in soe_df.columns), None)
+                name_col = next((col for col in ['股票简称', '证券简称'] if col in soe_df.columns), None)
+                if code_col and name_col:
+                    for _, row in soe_df.iterrows():
+                        stock_code = ''
+                        for col in ['股票代码.1', '股票代码', '证券代码']:
+                            if col in soe_df.columns and pd.notna(row[col]):
+                                val = str(row[col]).strip()
+                                if val and val != 'nan':
+                                    stock_code = val
+                                    break
+                        stock_name = str(row[name_col]).strip() if pd.notna(row[name_col]) else ''
+                        if stock_code and stock_code != 'nan':
+                            all_soe_stocks[stock_code] = stock_name
+            except Exception as e:
+                logger.warning(f"读取{excel_file}失败: {e}")
+
+        logger.info(f"从{source_dir}目录共加载{len(all_soe_stocks)}只国企股票")
+
+        def match_stock_code(code):
+            code_str = str(code).strip()
+            if code_str in all_soe_stocks:
+                return all_soe_stocks[code_str]
+            numeric_code = code_str.split('.')[0] if '.' in code_str else code_str
+            if numeric_code in all_soe_stocks:
+                return all_soe_stocks[numeric_code]
+            return ''
+
+        df[new_column_name] = df['证券代码'].apply(match_stock_code)
+
+        matched_count = (df[new_column_name] != '').sum()
+        logger.info(f"匹配完成，共匹配{matched_count}条记录")
+
+        output_filename = config.get("output_filename", "output_5.xlsx")
+        output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
+        df.to_excel(output_path, index=False)
+        auto_adjust_excel_width(output_path)
+        logger.info(f"结果已保存到: {output_path}")
+
+        df_clean = df.fillna('')
+        records = df_clean.head(100).to_dict('records')
+        for record in records:
+            for k, v in record.items():
+                if isinstance(v, (float, int)) and (v != v or abs(v) == float('inf')):
+                    record[k] = ''
+
+        return {
+            "success": True,
+            "message": f"匹配完成，匹配{matched_count}条记录，已保存到{output_filename}",
+            "data": records,
+            "columns": df.columns.tolist(),
+            "rows": len(df),
+            "file_path": output_path
+        }
+
+    async def _match_sector(self, config: Dict, df: Optional[pd.DataFrame], date_str: Optional[str] = None) -> Dict[str, Any]:
+        if df is None:
+            return {
+                "success": False,
+                "message": "没有可匹配的数据"
+            }
+
+        source_dir = config.get("source_dir", "一级板块")
+        new_column_name = config.get("new_column_name", "一级板块")
+
+        source_path = os.path.join(self.base_dir, source_dir)
+        if not os.path.exists(source_path):
+            return {
+                "success": False,
+                "message": f"目录不存在: {source_path}"
+            }
+
+        all_sector_stocks = {}
+        excel_files = self._get_excel_files_in_dir(source_path)
+        for excel_file in excel_files:
+            try:
+                sector_df = pd.read_excel(excel_file)
+                stock_codes = sector_df['证券代码'].astype(str).str.strip()
+                sector_names = sector_df['所属一级板块'].astype(str).str.strip()
+                valid_mask = (stock_codes != 'nan') & (stock_codes != '')
+                for code, name in zip(stock_codes[valid_mask], sector_names[valid_mask]):
+                    all_sector_stocks[code] = name
+            except Exception as e:
+                logger.warning(f"读取{excel_file}失败: {e}")
+
+        logger.info(f"从{source_dir}目录共加载{len(all_sector_stocks)}只股票")
+
+        df[new_column_name] = df['证券代码'].astype(str).str.strip().map(all_sector_stocks).fillna('')
+
+        matched_count = (df[new_column_name] != '').sum()
+        logger.info(f"匹配完成，共匹配{matched_count}条记录")
+
+        output_filename = config.get("output_filename", f"并购重组{date_str}.xlsx" if date_str else "output.xlsx")
         output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
         df.to_excel(output_path, index=False)
         auto_adjust_excel_width(output_path)

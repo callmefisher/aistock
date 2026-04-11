@@ -71,6 +71,9 @@
                   <el-option label="提取列" value="extract_columns" />
                   <el-option label="导出Excel" value="export_excel" />
                   <el-option label="匹配百日新高" value="match_high_price" />
+                  <el-option label="匹配20日均线" value="match_ma20" />
+                  <el-option label="匹配国企" value="match_soe" />
+                  <el-option label="匹配一级板块" value="match_sector" />
                   <el-option label="待定" value="pending" />
                 </el-select>
               </el-form-item>
@@ -196,6 +199,42 @@
                 </el-form-item>
               </template>
 
+              <template v-if="step.type === 'match_ma20'">
+                <el-form-item label="源目录">
+                  <el-input v-model="step.config.source_dir" placeholder="20日均线" />
+                </el-form-item>
+                <el-form-item label="新增列名">
+                  <el-input v-model="step.config.new_column_name" placeholder="20日均线" />
+                </el-form-item>
+                <el-form-item label="输出文件名">
+                  <el-input v-model="step.config.output_filename" placeholder="output_4.xlsx" />
+                </el-form-item>
+              </template>
+
+              <template v-if="step.type === 'match_soe'">
+                <el-form-item label="源目录">
+                  <el-input v-model="step.config.source_dir" placeholder="国企" />
+                </el-form-item>
+                <el-form-item label="新增列名">
+                  <el-input v-model="step.config.new_column_name" placeholder="国企" />
+                </el-form-item>
+                <el-form-item label="输出文件名">
+                  <el-input v-model="step.config.output_filename" placeholder="output_5.xlsx" />
+                </el-form-item>
+              </template>
+
+              <template v-if="step.type === 'match_sector'">
+                <el-form-item label="源目录">
+                  <el-input v-model="step.config.source_dir" placeholder="一级板块" />
+                </el-form-item>
+                <el-form-item label="新增列名">
+                  <el-input v-model="step.config.new_column_name" placeholder="一级板块" />
+                </el-form-item>
+                <el-form-item label="输出文件名">
+                  <el-input v-model="step.config.output_filename" placeholder="并购重组日期.xlsx" />
+                </el-form-item>
+              </template>
+
               <template v-if="step.type === 'pending'">
                 <el-alert title="此步骤暂未配置，待后续开发" type="info" :closable="false" />
               </template>
@@ -241,10 +280,16 @@
       </el-timeline>
     </el-dialog>
 
-    <el-dialog v-model="showExecuteDialog" title="工作流执行" width="600px">
+    <el-dialog v-model="showExecuteDialog" title="工作流执行" width="700px">
       <el-form label-width="120px">
         <el-form-item label="工作流名称">
           <span>{{ currentWorkflow?.name }}</span>
+        </el-form-item>
+        <el-form-item label="执行耗时" v-if="executionStartTime">
+          <el-tag type="warning" size="large">
+            <el-icon><Timer /></el-icon>
+            {{ executionTime }}
+          </el-tag>
         </el-form-item>
         <el-form-item label="执行步骤">
           <el-steps :active="executionStep" direction="vertical">
@@ -263,22 +308,14 @@
           <el-alert :type="executionResult.type" :title="executionResult.message" show-icon />
         </el-form-item>
         <template v-if="executionComplete && resultData.length">
-          <el-form-item label="过滤列">
-            <el-select v-model="filterColumn" placeholder="选择要过滤的列" style="width: 200px">
-              <el-option v-for="col in resultColumns" :key="col" :label="col" :value="col" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="过滤条件">
-            <el-radio-group v-model="filterType">
-              <el-radio label="非空">非空</el-radio>
-              <el-radio label="空">空</el-radio>
-            </el-radio-group>
-          </el-form-item>
           <el-form-item label="过滤结果">
-            <span>共 {{ filteredResultData.length }} 条 / {{ resultData.length }} 条</span>
+            <span>{{ filteredResultData.length }} 条 / {{ resultData.length }} 条</span>
+            <el-button type="text" @click="openOutputDirectory" style="margin-left: 20px">
+              <el-icon><FolderOpened /></el-icon> 打开目录
+            </el-button>
           </el-form-item>
-          <el-table :data="filteredResultData" border max-height="300" size="small">
-            <el-table-column v-for="col in resultColumns" :key="col" :prop="col" :label="col" width="120" show-overflow-tooltip />
+          <el-table :data="filteredResultData" border max-height="400" size="small">
+            <el-table-column v-for="col in resultColumns" :key="col" :prop="col" :label="col" width="130" show-overflow-tooltip />
           </el-table>
         </template>
       </el-form>
@@ -294,9 +331,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Timer, FolderOpened } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const showDialog = ref(false)
@@ -308,14 +346,53 @@ const executionStep = ref(0)
 const executionResult = ref(null)
 const resultData = ref([])
 const resultColumns = ref([])
-const filterColumn = ref('')
-const filterType = ref('非空')
 const workflows = ref([])
 const dataSources = ref([])
 const currentWorkflow = ref(null)
 const isEditing = ref(false)
 const editingId = ref(null)
 const fileInputRefs = ref([])
+const executionStartTime = ref(null)
+const executionTimer = ref(null)
+const executionTime = ref('00:00:00')
+
+const openOutputDirectory = async () => {
+  const basePath = '/app/data/excel'
+  let datePath = basePath
+  if (executionResult.value?.file_path) {
+    const match = executionResult.value.file_path.match(/(\d{4}-\d{2}-\d{2})/)
+    if (match) {
+      datePath = `${basePath}/${match[1]}`
+    }
+  }
+  try {
+    await api.post('/workflows/open-directory', { path: datePath })
+    ElMessage.success('已打开目录')
+  } catch (error) {
+    ElMessage.error('打开目录失败')
+  }
+}
+
+const filteredResultData = computed(() => {
+  return resultData.value
+})
+
+const updateExecutionTime = () => {
+  if (executionStartTime.value) {
+    const elapsed = Math.floor((Date.now() - executionStartTime.value) / 1000)
+    const hours = Math.floor(elapsed / 3600)
+    const minutes = Math.floor((elapsed % 3600) / 60)
+    const seconds = elapsed % 60
+    executionTime.value = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  }
+}
+
+const getDateStr = (stepIndex = 0) => {
+  if (currentWorkflow.value?.steps?.[stepIndex]?.config?.date_str) {
+    return currentWorkflow.value.steps[stepIndex].config.date_str
+  }
+  return new Date().toISOString().split('T')[0]
+}
 
 const defaultStep = () => ({
   type: 'merge_excel',
@@ -332,8 +409,7 @@ const defaultStep = () => ({
     exclude_patterns_text: 'total_,output_',
     exclude_patterns: ['total_', 'output_'],
     source_dir: '百日新高',
-    new_column_name: '百日新高',
-    output_filename: 'output_2.xlsx'
+    new_column_name: '百日新高'
   },
   status: 'pending'
 })
@@ -377,6 +453,9 @@ const getStepTypeName = (type) => {
     extract_columns: '提取列',
     export_excel: '导出Excel',
     match_high_price: '匹配百日新高',
+    match_ma20: '匹配20日均线',
+    match_soe: '匹配国企',
+    match_sector: '匹配一级板块',
     pending: '待定'
   }
   return names[type] || type
@@ -415,7 +494,12 @@ const openCreateDialog = () => {
 }
 
 const addStep = () => {
-  form.value.steps.push(defaultStep())
+  const newStep = defaultStep()
+  if (newStep.type === 'match_sector') {
+    const firstStepDate = form.value.steps[0]?.config?.date_str || new Date().toISOString().split('T')[0]
+    newStep.config.output_filename = `并购重组${firstStepDate}.xlsx`
+  }
+  form.value.steps.push(newStep)
 }
 
 const removeStep = (index) => {
@@ -435,6 +519,10 @@ const onStepTypeChange = (step) => {
     use_fixed_columns: true,
     exclude_patterns_text: 'total_,output_',
     exclude_patterns: ['total_', 'output_']
+  }
+  if (step.type === 'match_sector') {
+    const firstStepDate = form.value.steps[0]?.config?.date_str || new Date().toISOString().split('T')[0]
+    step.config.output_filename = `并购重组${firstStepDate}.xlsx`
   }
 }
 
@@ -528,6 +616,12 @@ const handleRun = (workflow) => {
   executionComplete.value = false
   resultData.value = []
   resultColumns.value = []
+  executionStartTime.value = null
+  executionTime.value = '00:00:00'
+  if (executionTimer.value) {
+    clearInterval(executionTimer.value)
+    executionTimer.value = null
+  }
   showExecuteDialog.value = true
 }
 
@@ -536,6 +630,9 @@ const startExecution = async () => {
   executionResult.value = null
   resultData.value = []
   resultColumns.value = []
+  executionStartTime.value = Date.now()
+  executionTimer.value = setInterval(updateExecutionTime, 1000)
+  updateExecutionTime()
 
   for (let i = 0; i < currentWorkflow.value.steps.length; i++) {
     executionStep.value = i
@@ -549,6 +646,10 @@ const startExecution = async () => {
         resultColumns.value = response.data.columns || []
       }
     } catch (error) {
+      if (executionTimer.value) {
+        clearInterval(executionTimer.value)
+        executionTimer.value = null
+      }
       currentWorkflow.value.steps[i].status = 'failed'
       executionResult.value = {
         type: 'error',
@@ -561,6 +662,10 @@ const startExecution = async () => {
 
   executing.value = false
   executionComplete.value = true
+  if (executionTimer.value) {
+    clearInterval(executionTimer.value)
+    executionTimer.value = null
+  }
   executionResult.value = {
     type: 'success',
     message: '工作流执行完成',
@@ -572,17 +677,6 @@ const startExecution = async () => {
 const downloadResult = () => {
   ElMessage.info('下载功能待实现')
 }
-
-const filteredResultData = computed(() => {
-  if (!filterColumn.value || !resultData.value.length) {
-    return resultData.value
-  }
-  if (filterType.value === '非空') {
-    return resultData.value.filter(row => row[filterColumn.value] !== '' && row[filterColumn.value] !== null && row[filterColumn.value] !== undefined)
-  } else {
-    return resultData.value.filter(row => row[filterColumn.value] === '' || row[filterColumn.value] === null || row[filterColumn.value] === undefined)
-  }
-})
 
 const handleViewSteps = (workflow) => {
   currentWorkflow.value = workflow
@@ -626,6 +720,15 @@ onMounted(() => {
   fetchWorkflows()
   fetchDataSources()
 })
+
+watch(() => form.value.steps, (steps) => {
+  const firstStepWithDate = steps.find(s => s.config?.date_str)
+  if (!firstStepWithDate) return
+  const lastStep = steps[steps.length - 1]
+  if (lastStep?.type === 'match_sector') {
+    lastStep.config.output_filename = `并购重组${firstStepWithDate.config.date_str}.xlsx`
+  }
+}, { deep: true })
 </script>
 
 <style scoped>
