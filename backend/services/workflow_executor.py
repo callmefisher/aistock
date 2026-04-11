@@ -238,6 +238,8 @@ class WorkflowExecutor:
                 merged_df["_sort_date"] = merged_df[date_col].apply(parse_date)
                 merged_df = merged_df.sort_values("_sort_date", ascending=False)
                 merged_df = merged_df.drop(columns=["_sort_date"])
+                merged_df[date_col] = pd.to_datetime(merged_df[date_col], errors="coerce")
+                merged_df[date_col] = merged_df[date_col].dt.strftime("%Y-%m-%d")
 
             stock_code_col = None
             for col in ["证券代码", "股票代码", "代码"]:
