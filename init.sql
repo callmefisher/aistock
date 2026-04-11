@@ -96,4 +96,16 @@ CREATE TABLE IF NOT EXISTS `stock_pools` (
   KEY `idx_task_id` (`task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `workflows` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) NOT NULL COMMENT '工作流名称',
+  `description` text COMMENT '工作流描述',
+  `steps` json COMMENT '工作流步骤配置',
+  `status` varchar(50) DEFAULT 'active' COMMENT '状态',
+  `last_run_time` datetime COMMENT '最后运行时间',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

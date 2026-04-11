@@ -46,6 +46,18 @@ const routes = [
         name: 'StockPools',
         component: () => import('@/views/StockPools.vue'),
         meta: { title: '选股池' }
+      },
+      {
+        path: 'finance-data',
+        name: 'FinanceData',
+        component: () => import('@/views/FinanceData.vue'),
+        meta: { title: '金融数据' }
+      },
+      {
+        path: 'workflows',
+        name: 'Workflows',
+        component: () => import('@/views/Workflows.vue'),
+        meta: { title: '工作流' }
       }
     ]
   }

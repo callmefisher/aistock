@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import logging
 from core.config import settings
 from core.database import async_engine, Base
-from api import auth, data_sources, rules, tasks, stock_pools
+from api import auth, data_sources, rules, tasks, stock_pools, workflows, data_api
 from services.task_scheduler import TaskScheduler
 
 logging.basicConfig(
@@ -25,12 +25,16 @@ async def lifespan(app: FastAPI):
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
+    from service.scheduler_service import scheduler_service
+    await scheduler_service.start()
+    
     scheduler.start()
     logger.info("数据库表创建完成，调度器已启动")
     
     yield
     
     logger.info("正在关闭应用...")
+    await scheduler_service.stop()
     scheduler.shutdown()
     logger.info("应用已关闭")
 
@@ -57,6 +61,8 @@ app.include_router(data_sources.router, prefix=f"{settings.API_PREFIX}/data-sour
 app.include_router(rules.router, prefix=f"{settings.API_PREFIX}/rules", tags=["规则"])
 app.include_router(tasks.router, prefix=f"{settings.API_PREFIX}/tasks", tags=["任务"])
 app.include_router(stock_pools.router, prefix=f"{settings.API_PREFIX}/stock-pools", tags=["选股池"])
+app.include_router(workflows.router, prefix=f"{settings.API_PREFIX}/workflows", tags=["工作流"])
+app.include_router(data_api.router, prefix=f"{settings.API_PREFIX}/data", tags=["金融数据"])
 
 
 @app.get("/")

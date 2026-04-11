@@ -31,6 +31,14 @@
           <el-icon><Document /></el-icon>
           <span>选股池</span>
         </el-menu-item>
+        <el-menu-item index="/finance-data">
+          <el-icon><Money /></el-icon>
+          <span>金融数据</span>
+        </el-menu-item>
+        <el-menu-item index="/workflows">
+          <el-icon><Operation /></el-icon>
+          <span>工作流</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     

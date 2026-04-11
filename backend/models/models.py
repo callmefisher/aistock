@@ -85,12 +85,25 @@ class StockPool(Base):
 
 class User(Base):
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, nullable=False, index=True)
     email = Column(String(100), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Workflow(Base):
+    __tablename__ = "workflows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False, comment="工作流名称")
+    description = Column(Text, comment="工作流描述")
+    steps = Column(JSON, comment="工作流步骤配置")
+    status = Column(String(50), default="active", comment="状态: active/inactive/running/completed/failed")
+    last_run_time = Column(DateTime, comment="最后运行时间")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
