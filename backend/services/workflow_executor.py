@@ -220,6 +220,10 @@ class WorkflowExecutor:
 
             merged_df = pd.concat(dfs, ignore_index=True)
 
+            keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
+            existing_columns = [col for col in keep_columns if col in merged_df.columns]
+            merged_df = merged_df[existing_columns]
+
             date_col = None
             for col in ["最新公告日", "公告日", "日期", "date"]:
                 if col in merged_df.columns:
@@ -247,15 +251,6 @@ class WorkflowExecutor:
                 merged_df = merged_df.drop(columns=["_sort_date"])
                 merged_df[date_col] = pd.to_datetime(merged_df[date_col], errors="coerce")
                 merged_df[date_col] = merged_df[date_col].dt.strftime("%Y-%m-%d")
-
-            stock_code_col = None
-            for col in ["证券代码", "股票代码", "代码"]:
-                if col in merged_df.columns:
-                    stock_code_col = col
-                    break
-
-            if stock_code_col:
-                merged_df = merged_df.dropna(subset=[stock_code_col])
 
             if "序号" in merged_df.columns:
                 merged_df["序号"] = pd.to_numeric(merged_df["序号"], errors='coerce')
