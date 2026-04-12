@@ -61,6 +61,16 @@ api.download = async (url, filename) => {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     timeout: 300000
   })
+  if (!filename) {
+    const contentDisposition = response.headers['content-disposition'] || ''
+    const match = contentDisposition.match(/filename\*?=(?:UTF-8''|")?([^";\n]+)(?="|$)/i)
+    if (match) {
+      filename = decodeURIComponent(match[1])
+    }
+    if (!filename) {
+      filename = 'download.xlsx'
+    }
+  }
   const blob = new Blob([response.data], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   })

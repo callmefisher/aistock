@@ -644,12 +644,22 @@
               <el-tag :type="result.status === 'completed' ? 'success' : result.status === 'failed' ? 'danger' : 'primary'" size="small" effect="plain">
                 {{ batchStatusText(result.status) }}
               </el-tag>
+              <el-button
+                v-if="result.status === 'completed'"
+                type="primary"
+                size="small"
+                text
+                @click="downloadBatchResult(result.workflow_id)"
+                style="margin-left: auto"
+              >
+                <el-icon><Download /></el-icon> 下载
+              </el-button>
             </div>
             <div v-if="result.error" class="result-error">
               <el-text type="danger" size="small">{{ result.error }}</el-text>
             </div>
             <div v-if="result.output_file" class="result-output">
-              <el-text type="info" size="small">输出: {{ result.output_file }}</el-text>
+              <el-text type="info" size="small">输出: {{ result.output_file.split('/').pop() }}</el-text>
             </div>
           </div>
           <el-empty v-if="!batchStatus.results?.length && batchStatus.status === 'running'" description="正在执行中..." :image-size="60" />
@@ -1029,8 +1039,17 @@ const downloadResult = async () => {
   }
   try {
     const lastStep = currentWorkflow.value.steps.length - 1
-    const filename = `workflow_result_${currentWorkflow.value.name}_${Date.now()}.xlsx`
-    await api.download(`/workflows/download-result/${currentWorkflow.value.id}?step_index=${lastStep}`, filename)
+    await api.download(`/workflows/download-result/${currentWorkflow.value.id}?step_index=${lastStep}`)
+    ElMessage.success('下载成功')
+  } catch (error) {
+    console.error('下载失败', error)
+    ElMessage.error('下载失败')
+  }
+}
+
+const downloadBatchResult = async (workflowId) => {
+  try {
+    await api.download(`/workflows/download-result/${workflowId}`)
     ElMessage.success('下载成功')
   } catch (error) {
     console.error('下载失败', error)

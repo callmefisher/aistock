@@ -506,6 +506,8 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
 
     async def run_single(wf_id):
         from core.database import AsyncSessionLocal
+        import pandas as pd
+        loop = asyncio.get_running_loop()
         result_entry = {"workflow_id": wf_id, "status": "pending", "error": None, "output_file": None, "steps": []}
 
         try:
@@ -556,20 +558,18 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
 
                             output_file = exec_result.get("file_path")
                             if output_file and os.path.exists(output_file):
-                                import pandas as pd
                                 try:
-                                    input_data = pd.read_excel(output_file)
+                                    input_data = await loop.run_in_executor(None, pd.read_excel, output_file)
                                     logger.info(f"[批量] 工作流{wf_id} 步骤{i} 从文件读取完整数据: {output_file}, {len(input_data)}行")
                                 except Exception as read_err:
                                     logger.warning(f"[批量] 读取输出文件失败: {read_err}, 回退到data字段")
                                     result_data = exec_result.get("data")
                                     if isinstance(result_data, list) and len(result_data) > 0:
-                                        input_data = pd.DataFrame(result_data)
+                                        input_data = await loop.run_in_executor(None, pd.DataFrame, result_data)
                             else:
                                 result_data = exec_result.get("data")
                                 if isinstance(result_data, list) and len(result_data) > 0:
-                                    import pandas as pd
-                                    input_data = pd.DataFrame(result_data)
+                                    input_data = await loop.run_in_executor(None, pd.DataFrame, result_data)
                                 elif hasattr(result_data, 'to_dict'):
                                     input_data = result_data
 
@@ -681,26 +681,24 @@ async def download_workflow_result(
 
     steps = workflow.steps or []
 
+    output_date_str = None
+    for i in range(len(steps)):
+        sd = steps[i].get("config", {}).get("date_str")
+        if sd:
+            output_date_str = sd
+            break
+    if not output_date_str:
+        output_date_str = datetime.now().strftime("%Y-%m-%d")
+
     if step_index is not None and step_index < len(steps):
         step = steps[step_index]
         step_config = step.get("config", {})
         output_filename = step_config.get("output_filename")
-        date_str = step_config.get("date_str")
-
-        if not date_str:
-            for i in range(len(steps)):
-                prev_date = steps[i].get("config", {}).get("date_str")
-                if prev_date:
-                    date_str = prev_date
-                    break
-
-        if not date_str:
-            date_str = datetime.now().strftime("%Y-%m-%d")
 
         if output_filename:
-            file_path = os.path.join(BASE_DIR, date_str, output_filename)
+            file_path = os.path.join(BASE_DIR, output_date_str, output_filename)
         else:
-            target_dir = get_target_directory(step.get("type"), date_str)
+            target_dir = get_target_directory(step.get("type"), output_date_str)
             files = glob.glob(os.path.join(target_dir, "*.xlsx"))
             if files:
                 file_path = sorted(files)[-1]
@@ -712,25 +710,14 @@ async def download_workflow_result(
             step_type = step.get("type")
             step_config = step.get("config", {})
             output_filename = step_config.get("output_filename")
-            date_str = step_config.get("date_str")
-
-            if not date_str:
-                for j in range(i, -1, -1):
-                    prev_date = steps[j].get("config", {}).get("date_str")
-                    if prev_date:
-                        date_str = prev_date
-                        break
-
-            if not date_str:
-                date_str = datetime.now().strftime("%Y-%m-%d")
 
             if output_filename:
-                candidate_path = os.path.join(BASE_DIR, date_str, output_filename)
+                candidate_path = os.path.join(BASE_DIR, output_date_str, output_filename)
                 if os.path.exists(candidate_path):
                     file_path = candidate_path
                     break
             else:
-                target_dir = get_target_directory(step_type, date_str)
+                target_dir = get_target_directory(step_type, output_date_str)
                 files = glob.glob(os.path.join(target_dir, "*.xlsx"))
                 if files:
                     file_path = sorted(files)[-1]
