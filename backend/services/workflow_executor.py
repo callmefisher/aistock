@@ -179,12 +179,20 @@ class WorkflowExecutor:
 
         try:
             dfs = []
-            exclude_patterns = config.get("exclude_patterns", ["total_", "output_"])
+            exclude_patterns = config.get("exclude_patterns", ["total_", "output_", "deduped"])
+            import re
+            output_filename = config.get("output_filename", "")
+            extra_excludes = []
+            if output_filename:
+                base_name = os.path.splitext(output_filename)[0]
+                if base_name not in [p for p in exclude_patterns]:
+                    extra_excludes.append(base_name)
 
             for filepath in all_files:
                 filename = os.path.basename(filepath)
                 should_exclude = False
-                for pattern in exclude_patterns:
+                all_patterns = exclude_patterns + extra_excludes
+                for pattern in all_patterns:
                     if filename.startswith(pattern) or pattern in filename:
                         should_exclude = True
                         break
@@ -597,27 +605,44 @@ class WorkflowExecutor:
         excel_files = self._get_excel_files_in_dir(source_path)
         for excel_file in excel_files:
             try:
-                ma_df = pd.read_excel(excel_file, usecols=['股票代码', '股票简称'], engine='openpyxl')
-                for code, name in zip(ma_df['股票代码'].values, ma_df['股票简称'].values):
-                    code_str = str(code).strip()
-                    name_str = str(name).strip()
-                    if code_str and code_str != 'nan':
-                        all_ma20_stocks[code_str] = name_str
+                ma_df = pd.read_excel(excel_file, engine='openpyxl')
+                code_col = None
+                name_col = None
+                for col in ma_df.columns:
+                    c = str(col).strip()
+                    if '股票代码' in c and code_col is None:
+                        code_col = col
+                    if '股票简称' in c and name_col is None:
+                        name_col = col
+                if code_col and name_col:
+                    for _, row in ma_df.iterrows():
+                        code_str = str(row[code_col]).strip()
+                        name_str = str(row[name_col]).strip()
+                        if code_str and code_str != 'nan' and code_str != 'undefined':
+                            all_ma20_stocks[code_str] = name_str
             except Exception as e:
                 logger.warning(f"读取{excel_file}失败: {e}")
 
         logger.info(f"从{source_dir}目录共加载{len(all_ma20_stocks)}只股票")
 
-        df[new_column_name] = df['证券代码'].astype(str).str.strip().map(all_ma20_stocks).fillna('')
+        try:
+            if '证券代码' not in df.columns:
+                return {"success": False, "message": f"输入数据缺少'证券代码'列, 可用列: {list(df.columns)}"}
 
-        matched_count = (df[new_column_name] != '').sum()
-        logger.info(f"匹配完成，共匹配{matched_count}条记录")
+            df = df.copy()
+            df[new_column_name] = df['证券代码'].astype(str).str.strip().map(all_ma20_stocks).fillna('')
 
-        output_filename = config.get("output_filename", "output_4.xlsx")
-        output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
-        df.to_excel(output_path, index=False)
-        auto_adjust_excel_width(output_path)
-        logger.info(f"结果已保存到: {output_path}")
+            matched_count = (df[new_column_name] != '').sum()
+            logger.info(f"匹配完成，共匹配{matched_count}条记录")
+
+            output_filename = config.get("output_filename", "output_4.xlsx")
+            output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
+            df.to_excel(output_path, index=False)
+            auto_adjust_excel_width(output_path)
+            logger.info(f"结果已保存到: {output_path}")
+        except Exception as e:
+            logger.error(f"匹配20日均线执行失败: {e}")
+            return {"success": False, "message": f"匹配20日均线失败: {str(e)}"}
 
         df_clean = df.fillna('')
         records = df_clean.head(100).to_dict('records')

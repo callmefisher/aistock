@@ -222,41 +222,37 @@ async def execute_workflow_step(
             else:
                 logger.warning(f"步骤{step_index}上一步输出文件不存在: {prev_output}")
 
-        elif prev_type in ["smart_dedup", "extract_columns", "match_high_price", "match_ma20", "match_soe"]:
-            if prev_type == "smart_dedup":
-                prev_output = os.path.join(
-                    workflow_executor._get_daily_dir(output_date_str),
-                    "deduped.xlsx"
-                )
-            elif prev_type == "match_high_price":
-                prev_output = os.path.join(
-                    workflow_executor._get_daily_dir(output_date_str),
-                    "output_3.xlsx"
-                )
-            elif prev_type == "match_ma20":
-                prev_output = os.path.join(
-                    workflow_executor._get_daily_dir(output_date_str),
-                    "output_4.xlsx"
-                )
-            elif prev_type == "match_soe":
-                prev_output = os.path.join(
-                    workflow_executor._get_daily_dir(output_date_str),
-                    "output_5.xlsx"
-                )
+        elif prev_type in ["smart_dedup", "extract_columns", "match_high_price", "match_ma20", "match_soe", "match_sector"]:
+            fixed_output_map = {
+                "smart_dedup": "deduped.xlsx",
+            }
+            if prev_type in fixed_output_map:
+                output_filename = fixed_output_map[prev_type]
             else:
+                type_defaults = {
+                    "match_high_price": "output_3.xlsx",
+                    "match_ma20": "output_4.xlsx",
+                    "match_soe": "output_5.xlsx",
+                    "extract_columns": "output_2.xlsx",
+                }
+                output_filename = prev_output_filename or type_defaults.get(prev_type, "output.xlsx")
+            if output_filename:
                 prev_output = os.path.join(
                     workflow_executor._get_daily_dir(output_date_str),
-                    prev_output_filename or "output.xlsx"
+                    output_filename
                 )
-            logger.info(f"步骤{step_index}尝试读取{prev_type}输出: {prev_output}")
-            if os.path.exists(prev_output):
-                df = pd.read_excel(prev_output)
-                input_data = df
-                logger.info(f"步骤{step_index}成功读取上一步输出: {prev_output}, 行数: {len(df)}")
+                logger.info(f"步骤{step_index}尝试读取{prev_type}输出: {prev_output}")
+                if os.path.exists(prev_output):
+                    df = pd.read_excel(prev_output)
+                    input_data = df
+                    logger.info(f"步骤{step_index}成功读取上一步输出: {prev_output}, 行数: {len(df)}")
+                else:
+                    logger.warning(f"步骤{step_index}上一步输出文件不存在: {prev_output}")
             else:
-                logger.warning(f"步骤{step_index}上一步输出文件不存在: {prev_output}")
+                logger.warning(f"步骤{step_index}上一步({prev_type})无输出文件配置，跳过数据传递")
 
     logger.info(f"执行工作流{workflow_id}步骤{step_index}: {step_type}, config: {step_config}, date_str: {date_str}, output_date: {output_date_str}")
+    logger.info(f"步骤{step_index}输入数据: {'None' if input_data is None else f'DataFrame({len(input_data)}行)'}")
 
     result_data = await workflow_executor.execute_step(
         step_type=step_type,
