@@ -107,3 +107,19 @@ class Workflow(Base):
     last_run_time = Column(DateTime, comment="最后运行时间")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class BatchExecution(Base):
+    __tablename__ = "batch_executions"
+
+    id = Column(String(64), primary_key=True, comment="批次任务ID")
+    workflow_ids = Column(JSON, nullable=False, comment="工作流ID列表")
+    status = Column(String(20), default="pending", comment="状态: pending/running/completed/partial/failed/cancelled")
+    total = Column(Integer, default=0, comment="总数")
+    completed = Column(Integer, default=0, comment="已完成数")
+    failed = Column(Integer, default=0, comment="失败数")
+    results = Column(JSON, comment="各工作流执行结果详情")
+    started_at = Column(DateTime, comment="开始时间")
+    finished_at = Column(DateTime, comment="结束时间")
+    created_by = Column(String(50), comment="创建者")
+    created_at = Column(DateTime, server_default=func.now())

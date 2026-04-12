@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Form, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional, Union, Any, Dict
@@ -8,9 +8,12 @@ import os
 import glob
 import shutil
 import pandas as pd
+import asyncio
+import uuid
+import json
 from fastapi.responses import FileResponse
 from core.database import get_async_db
-from models.models import Workflow
+from models.models import Workflow, BatchExecution
 from api.auth import get_current_user
 from models.models import User
 from services.workflow_executor import workflow_executor
@@ -455,6 +458,216 @@ async def preview_step_file(
         }
     except Exception as e:
         return {"success": False, "message": f"预览失败: {str(e)}"}
+
+
+class BatchRunRequest(BaseModel):
+    workflow_ids: List[int]
+
+
+@router.post("/batch-run/")
+async def batch_run_workflows(
+    request: BatchRunRequest,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user)
+):
+    task_id = f"batch_{uuid.uuid4().hex[:12]}"
+    workflow_ids = request.workflow_ids
+
+    batch = BatchExecution(
+        id=task_id,
+        workflow_ids=workflow_ids,
+        status="pending",
+        total=len(workflow_ids),
+        completed=0,
+        failed=0,
+        results=[],
+        created_by=current_user.username
+    )
+    db.add(batch)
+    await db.commit()
+
+    asyncio.create_task(_run_batch_workflows(task_id, workflow_ids, current_user.username))
+
+    return {
+        "success": True,
+        "task_id": task_id,
+        "message": f"已启动 {len(workflow_ids)} 个工作流的并行执行"
+    }
+
+
+async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
+    from core.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        batch = await db.get(BatchExecution, task_id)
+        if not batch:
+            return
+        batch.status = "running"
+        batch.started_at = datetime.now()
+        await db.commit()
+
+    results = []
+
+    async def run_single(wf_id):
+        from core.database import AsyncSessionLocal
+        result_entry = {"workflow_id": wf_id, "status": "pending", "error": None, "output_file": None, "steps": []}
+
+        try:
+            async with AsyncSessionLocal() as db:
+                wf_result = await db.execute(select(Workflow).where(Workflow.id == wf_id))
+                workflow = wf_result.scalar_one_or_none()
+                if not workflow:
+                    result_entry["status"] = "failed"
+                    result_entry["error"] = "工作流不存在"
+                    return result_entry
+
+                steps = workflow.steps or []
+                if not steps:
+                    result_entry["status"] = "failed"
+                    result_entry["error"] = "工作流无步骤"
+                    return result_entry
+
+                start_time = datetime.now()
+                input_data = None
+
+                first_step_date = None
+                for s in steps:
+                    d = (s.get("config") or {}).get("date_str")
+                    if d:
+                        first_step_date = d
+                        break
+                output_date_str = first_step_date or datetime.now().strftime("%Y-%m-%d")
+
+                for i, step in enumerate(steps):
+                    step_type = step.get("type", "")
+                    step_config = step.get("config", {})
+                    step_date_str = step_config.get("date_str") or output_date_str
+
+                    step_result = {"step_index": i, "type": step_type, "status": "running"}
+                    try:
+                        logger.info(f"[批量] 工作流{wf_id} 执行步骤{i}: {step_type}, date={step_date_str}")
+
+                        exec_result = await workflow_executor.execute_step(
+                            step_type=step_type,
+                            step_config=step_config,
+                            input_data=input_data,
+                            date_str=output_date_str
+                        )
+
+                        if exec_result.get("success"):
+                            step_result["status"] = "completed"
+                            step_result["message"] = exec_result.get("message", "")
+
+                            output_file = exec_result.get("file_path")
+                            if output_file and os.path.exists(output_file):
+                                import pandas as pd
+                                try:
+                                    input_data = pd.read_excel(output_file)
+                                    logger.info(f"[批量] 工作流{wf_id} 步骤{i} 从文件读取完整数据: {output_file}, {len(input_data)}行")
+                                except Exception as read_err:
+                                    logger.warning(f"[批量] 读取输出文件失败: {read_err}, 回退到data字段")
+                                    result_data = exec_result.get("data")
+                                    if isinstance(result_data, list) and len(result_data) > 0:
+                                        input_data = pd.DataFrame(result_data)
+                            else:
+                                result_data = exec_result.get("data")
+                                if isinstance(result_data, list) and len(result_data) > 0:
+                                    import pandas as pd
+                                    input_data = pd.DataFrame(result_data)
+                                elif hasattr(result_data, 'to_dict'):
+                                    input_data = result_data
+
+                            if output_file:
+                                step_result["output_file"] = output_file
+                                if i == len(steps) - 1:
+                                    result_entry["output_file"] = output_file
+                        else:
+                            step_result["status"] = "failed"
+                            step_result["error"] = exec_result.get("message", "执行失败")
+                            logger.warning(f"[批量] 工作流{wf_id} 步骤{i}({step_type})失败: {step_result['error']}")
+
+                    except Exception as e:
+                        step_result["status"] = "failed"
+                        step_result["error"] = str(e)
+                        logger.error(f"[批量] 工作流{wf_id} 步骤{i}({step_type})异常: {e}")
+
+                    result_entry["steps"].append(step_result)
+
+                end_time = datetime.now()
+                duration = round((end_time - start_time).total_seconds(), 2)
+
+                failed_steps = [s for s in result_entry["steps"] if s.get("status") == "failed"]
+                if failed_steps:
+                    result_entry["status"] = "partial" if len(failed_steps) < len(result_entry["steps"]) else "failed"
+                    result_entry["error"] = f"{len(failed_steps)}个步骤失败"
+                else:
+                    result_entry["status"] = "completed"
+
+                result_entry["duration"] = duration
+                result_entry["step_count"] = len(steps)
+
+                workflow.status = "active"
+                workflow.last_run_time = datetime.now()
+                await db.commit()
+
+        except Exception as e:
+            result_entry["status"] = "failed"
+            result_entry["error"] = str(e)
+            logger.error(f"[批量] 工作流{wf_id}整体异常: {e}")
+
+        return result_entry
+
+    tasks = [run_single(wid) for wid in workflow_ids]
+    completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for r in completed_results:
+        if isinstance(r, Exception):
+            results.append({"workflow_id": 0, "status": "failed", "error": str(r), "steps": []})
+        else:
+            results.append(r)
+
+    from core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        batch = await db.get(BatchExecution, task_id)
+        if batch:
+            batch.results = results
+            batch.completed = sum(1 for r in results if r.get("status") in ("completed", "partial"))
+            batch.failed = sum(1 for r in results if r.get("status") == "failed")
+            batch.finished_at = datetime.now()
+
+            if batch.failed == 0:
+                batch.status = "completed"
+            elif batch.completed > 0:
+                batch.status = "partial"
+            else:
+                batch.status = "failed"
+
+            await db.commit()
+
+
+@router.get("/batch-status/{task_id}/")
+async def get_batch_status(
+    task_id: str,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user)
+):
+    batch = await db.get(BatchExecution, task_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="批次任务不存在")
+
+    response = {
+        "task_id": batch.id,
+        "status": batch.status,
+        "workflow_ids": batch.workflow_ids,
+        "total": batch.total,
+        "completed": batch.completed,
+        "failed": batch.failed,
+        "results": batch.results or [],
+        "started_at": batch.started_at.isoformat() if batch.started_at else None,
+        "finished_at": batch.finished_at.isoformat() if batch.finished_at else None
+    }
+    
+    return response
 
 
 @router.get("/download-result/{workflow_id}")

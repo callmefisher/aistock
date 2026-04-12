@@ -4,14 +4,21 @@
       <template #header>
         <div class="card-header">
           <span>工作流列表</span>
-          <el-button type="primary" @click="openCreateDialog">
-            <el-icon><Plus /></el-icon>
-            创建工作流
-          </el-button>
+          <div class="header-actions">
+            <el-button type="warning" @click="handleBatchRun" :disabled="selectedWorkflows.length === 0 || batchExecuting">
+              <el-icon><Promotion /></el-icon>
+              一键并行执行 ({{ selectedWorkflows.length }})
+            </el-button>
+            <el-button type="primary" @click="openCreateDialog">
+              <el-icon><Plus /></el-icon>
+              创建工作流
+            </el-button>
+          </div>
         </div>
       </template>
 
-      <el-table :data="workflows" stripe v-loading="loading">
+      <el-table :data="workflows" stripe v-loading="loading" @selection-change="handleSelectionChange" ref="workflowTableRef">
+        <el-table-column type="selection" width="50" />
         <el-table-column prop="name" label="工作流名称" />
         <el-table-column prop="description" label="描述" />
         <el-table-column prop="status" label="状态">
@@ -599,6 +606,61 @@
         </el-table>
       </div>
     </el-dialog>
+
+    <el-drawer v-model="batchProgressDrawer" title="并行执行进度" direction="rtl" size="450px" :close-on-press-escape="true" @close="stopBatchPolling">
+      <div class="batch-progress-container">
+        <div class="batch-overview">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="状态">
+              <el-tag :type="batchStatusTagType(batchStatus.status)" size="small">{{ batchStatusText(batchStatus.status) }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="总数">{{ batchStatus.total || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="已完成">
+              <el-tag type="success" size="small">{{ batchStatus.completed || 0 }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="失败">
+              <el-tag type="danger" size="small">{{ batchStatus.failed || 0 }}</el-tag>
+            </el-descriptions-item>
+          </el-descriptions>
+          <el-progress
+            v-if="batchStatus.total"
+            :percentage="Math.round(((batchStatus.completed || 0) + (batchStatus.failed || 0)) / batchStatus.total * 100)"
+            :status="batchProgressStatus"
+            :stroke-width="18"
+            style="margin-top: 15px"
+          >
+            <span>{{ (batchStatus.completed || 0) + (batchStatus.failed || 0) }} / {{ batchStatus.total }}</span>
+          </el-progress>
+        </div>
+
+        <el-divider content-position="left">各工作流执行详情</el-divider>
+
+        <div class="batch-results-list">
+          <div v-for="(result, idx) in (batchStatus.results || [])" :key="idx" class="batch-result-item">
+            <div class="result-header">
+              <el-tag :type="result.status === 'completed' ? 'success' : result.status === 'failed' ? 'danger' : 'primary'" size="small">
+                {{ getWorkflowName(result.workflow_id) }}
+              </el-tag>
+              <el-tag :type="result.status === 'completed' ? 'success' : result.status === 'failed' ? 'danger' : 'primary'" size="small" effect="plain">
+                {{ batchStatusText(result.status) }}
+              </el-tag>
+            </div>
+            <div v-if="result.error" class="result-error">
+              <el-text type="danger" size="small">{{ result.error }}</el-text>
+            </div>
+            <div v-if="result.output_file" class="result-output">
+              <el-text type="info" size="small">输出: {{ result.output_file }}</el-text>
+            </div>
+          </div>
+          <el-empty v-if="!batchStatus.results?.length && batchStatus.status === 'running'" description="正在执行中..." :image-size="60" />
+        </div>
+
+        <div class="batch-actions" v-if="['completed', 'partial', 'failed', 'cancelled'].includes(batchStatus.status)">
+          <el-button type="primary" @click="batchProgressDrawer = false">关闭</el-button>
+          <el-button @click="fetchWorkflows">刷新列表</el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -606,7 +668,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Timer, FolderOpened, Upload, Delete, View, Download, Document } from '@element-plus/icons-vue'
+import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const showDialog = ref(false)
@@ -634,6 +696,13 @@ const uploadingSteps = ref(new Set())
 const previewDialogVisible = ref(false)
 const previewData = ref({})
 const editingStepIndex = ref(null)
+
+const selectedWorkflows = ref([])
+const batchExecuting = ref(false)
+const batchProgressDrawer = ref(false)
+const batchStatus = ref({})
+const batchPollingTimer = ref(null)
+const workflowTableRef = ref(null)
 
 const openOutputDirectory = async () => {
   const basePath = '/app/data/excel'
@@ -1218,6 +1287,102 @@ onMounted(() => {
   fetchDataSources()
 })
 
+const handleSelectionChange = (rows) => {
+  selectedWorkflows.value = rows
+}
+
+const getWorkflowName = (workflowId) => {
+  const wf = workflows.value.find(w => w.id === workflowId)
+  return wf ? wf.name : `工作流#${workflowId}`
+}
+
+const batchStatusText = (status) => {
+  const map = { pending: '等待中', running: '执行中', completed: '已完成', partial: '部分成功', failed: '失败', cancelled: '已取消' }
+  return map[status] || status
+}
+
+const batchStatusTagType = (status) => {
+  const map = { pending: 'info', running: 'primary', completed: 'success', partial: 'warning', failed: 'danger', cancelled: 'info' }
+  return map[status] || 'info'
+}
+
+const batchProgressStatus = computed(() => {
+  if (!batchStatus.value.total) return undefined
+  const s = batchStatus.value.status
+  if (s === 'completed') return 'success'
+  if (s === 'failed') return 'exception'
+  return undefined
+})
+
+const handleBatchRun = async () => {
+  if (selectedWorkflows.value.length === 0) {
+    ElMessage.warning('请先选择要执行的工作流')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定并行执行 ${selectedWorkflows.value.length} 个工作流?`,
+      '批量执行确认',
+      { type: 'warning', confirmButtonText: '开始执行', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+
+  batchExecuting.value = true
+  batchStatus.value = { status: 'pending', total: selectedWorkflows.value.length, completed: 0, failed: 0, results: [] }
+  batchProgressDrawer.value = true
+
+  try {
+    const response = await api.post('/workflows/batch-run/', {
+      workflow_ids: selectedWorkflows.value.map(w => w.id)
+    })
+    if (response?.task_id) {
+      batchStatus.value = { ...batchStatus.value, status: 'running', task_id: response.task_id }
+      startBatchPolling(response.task_id)
+    } else {
+      throw new Error('未获取到任务ID')
+    }
+  } catch (error) {
+    console.error('批量执行启动失败:', error)
+    ElMessage.error('批量执行启动失败: ' + (error.message || '未知错误'))
+    batchStatus.value = { ...batchStatus.value, status: 'failed' }
+    batchExecuting.value = false
+  }
+}
+
+const startBatchPolling = (taskId) => {
+  stopBatchPolling()
+  batchPollingTimer.value = setInterval(async () => {
+    try {
+      const response = await api.get(`/workflows/batch-status/${taskId}/`)
+      if (response) {
+        batchStatus.value = response
+        if (['completed', 'partial', 'failed', 'cancelled'].includes(response.status)) {
+          stopBatchPolling()
+          batchExecuting.value = false
+          const msg = response.status === 'completed'
+            ? '全部工作流执行完成'
+            : response.status === 'partial'
+              ? `部分完成: ${response.completed} 成功, ${response.failed} 失败`
+              : '批量执行失败'
+          ElMessage[response.status === 'completed' ? 'success' : 'warning'](msg)
+        }
+      }
+    } catch (error) {
+      console.error('轮询批次状态失败:', error)
+    }
+  }, 2000)
+}
+
+const stopBatchPolling = () => {
+  if (batchPollingTimer.value) {
+    clearInterval(batchPollingTimer.value)
+    batchPollingTimer.value = null
+  }
+}
+
 watch(() => form.value.steps, (steps) => {
   const firstStepWithDate = steps.find(s => s.config?.date_str)
   if (!firstStepWithDate) return
@@ -1341,5 +1506,65 @@ watch(() => form.value.steps, (steps) => {
   display: flex;
   gap: 5px;
   flex-shrink: 0;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.batch-progress-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0 10px;
+}
+
+.batch-overview {
+  margin-bottom: 10px;
+}
+
+.batch-results-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 200px;
+}
+
+.batch-result-item {
+  padding: 10px 12px;
+  background: #f5f7fa;
+  border-radius: 6px;
+  border: 1px solid #e4e7ed;
+}
+
+.result-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.result-error {
+  margin-top: 5px;
+  padding: 4px 8px;
+  background: #fef0f0;
+  border-radius: 4px;
+}
+
+.result-output {
+  margin-top: 4px;
+}
+
+.batch-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 15px;
+  border-top: 1px solid #e4e7ed;
+  margin-top: 15px;
 }
 </style>
