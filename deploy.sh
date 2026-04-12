@@ -151,7 +151,7 @@ COMPOSE_CMD=$(get_compose_cmd)
 case "${1:-}" in
     up)
         check_docker
-        build "$2"
+        build
         up
         ps_status
         ;;

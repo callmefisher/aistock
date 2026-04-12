@@ -1,11 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional, Union, Any, Dict
 from pydantic import BaseModel
 from datetime import datetime
 import os
+import glob
+import shutil
 import pandas as pd
+from fastapi.responses import FileResponse
 from core.database import get_async_db
 from models.models import Workflow
 from api.auth import get_current_user
@@ -15,6 +18,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+BASE_DIR = "/Users/xiayanji/qbox/aistock/data/excel" if os.path.exists("/Users/xiayanji") else "/app/data/excel"
 
 
 class WorkflowStepConfig(BaseModel):
@@ -316,7 +321,6 @@ async def open_directory(
     request: OpenDirectoryRequest,
     current_user: User = Depends(get_current_user)
 ):
-    import os
     try:
         if os.path.exists(request.path):
             return {"success": True, "message": f"目录存在: {request.path}"}
@@ -324,3 +328,305 @@ async def open_directory(
             return {"success": False, "message": f"目录不存在: {request.path}"}
     except Exception as e:
         return {"success": False, "message": str(e)}
+
+
+class StepFileUploadRequest(BaseModel):
+    workflow_id: int
+    step_index: int
+    step_type: str
+
+
+def get_target_directory(step_type: str, date_str: Optional[str] = None) -> str:
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    if step_type == "merge_excel":
+        return os.path.join(BASE_DIR, date_str)
+    elif step_type == "match_high_price":
+        return os.path.join(BASE_DIR, "百日新高")
+    elif step_type == "match_ma20":
+        return os.path.join(BASE_DIR, "20日均线")
+    elif step_type == "match_soe":
+        return os.path.join(BASE_DIR, "国企")
+    elif step_type == "match_sector":
+        return os.path.join(BASE_DIR, "一级板块")
+    else:
+        return os.path.join(BASE_DIR, date_str)
+
+
+@router.post("/upload-step-file/")
+async def upload_step_file(
+    workflow_id: int = Form(...),
+    step_index: int = Form(...),
+    step_type: str = Form(...),
+    date_str: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    logger.info(f"[Upload] step_type={step_type}, date_str={date_str}, filename={file.filename}")
+    target_dir = get_target_directory(step_type, date_str)
+    logger.info(f"[Upload] target_dir={target_dir}")
+    os.makedirs(target_dir, exist_ok=True)
+
+    file_path = os.path.join(target_dir, file.filename)
+    logger.info(f"[Upload] saving to {file_path}")
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        file_size = os.path.getsize(file_path)
+        logger.info(f"[Upload] success, size={file_size}")
+        return {
+            "success": True,
+            "message": f"文件上传成功",
+            "file": {
+                "filename": file.filename,
+                "path": file_path,
+                "size": file_size,
+                "target_dir": target_dir
+            }
+        }
+    except Exception as e:
+        logger.error(f"[Upload] failed: {str(e)}")
+        return {"success": False, "message": f"上传失败: {str(e)}"}
+
+
+@router.get("/step-files/")
+async def get_step_files(
+    step_type: str = Query(...),
+    date_str: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user)
+):
+    target_dir = get_target_directory(step_type, date_str)
+
+    if not os.path.exists(target_dir):
+        return {"success": True, "files": [], "directory": target_dir}
+
+    excel_files = []
+    for ext in ["*.xlsx", "*.xls"]:
+        pattern = os.path.join(target_dir, ext)
+        for file_path in glob.glob(pattern):
+            stat = os.stat(file_path)
+            excel_files.append({
+                "filename": os.path.basename(file_path),
+                "path": file_path,
+                "size": stat.st_size,
+                "modified_time": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+    excel_files.sort(key=lambda x: x["modified_time"], reverse=True)
+    return {"success": True, "files": excel_files, "directory": target_dir}
+
+
+@router.delete("/step-files/")
+async def delete_step_file(
+    file_path: str = Query(...),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        if not os.path.exists(file_path):
+            return {"success": False, "message": "文件不存在"}
+
+        os.remove(file_path)
+        return {"success": True, "message": "文件已删除"}
+    except Exception as e:
+        return {"success": False, "message": f"删除失败: {str(e)}"}
+
+
+@router.get("/step-files/preview")
+async def preview_step_file(
+    file_path: str = Query(...),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        if not os.path.exists(file_path):
+            return {"success": False, "message": "文件不存在"}
+
+        df = pd.read_excel(file_path)
+        records = df.head(20).fillna('').to_dict('records')
+        columns = df.columns.tolist()
+
+        return {
+            "success": True,
+            "filename": os.path.basename(file_path),
+            "total_rows": len(df),
+            "columns": columns,
+            "preview": records
+        }
+    except Exception as e:
+        return {"success": False, "message": f"预览失败: {str(e)}"}
+
+
+@router.get("/download-result/{workflow_id}")
+async def download_workflow_result(
+    workflow_id: int,
+    step_index: int = Query(None),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user)
+):
+    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+    workflow = result.scalar_one_or_none()
+
+    if not workflow:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+
+    steps = workflow.steps or []
+
+    if step_index is not None and step_index < len(steps):
+        step = steps[step_index]
+        step_config = step.get("config", {})
+        output_filename = step_config.get("output_filename")
+        date_str = step_config.get("date_str")
+
+        if not date_str:
+            for i in range(len(steps)):
+                prev_date = steps[i].get("config", {}).get("date_str")
+                if prev_date:
+                    date_str = prev_date
+                    break
+
+        if not date_str:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+
+        if output_filename:
+            file_path = os.path.join(BASE_DIR, date_str, output_filename)
+        else:
+            target_dir = get_target_directory(step.get("type"), date_str)
+            files = glob.glob(os.path.join(target_dir, "*.xlsx"))
+            if files:
+                file_path = sorted(files)[-1]
+            else:
+                raise HTTPException(status_code=404, detail="未找到结果文件")
+    else:
+        for i in range(len(steps) - 1, -1, -1):
+            step = steps[i]
+            step_type = step.get("type")
+            step_config = step.get("config", {})
+            output_filename = step_config.get("output_filename")
+            date_str = step_config.get("date_str")
+
+            if not date_str:
+                for j in range(i, -1, -1):
+                    prev_date = steps[j].get("config", {}).get("date_str")
+                    if prev_date:
+                        date_str = prev_date
+                        break
+
+            if not date_str:
+                date_str = datetime.now().strftime("%Y-%m-%d")
+
+            if output_filename:
+                candidate_path = os.path.join(BASE_DIR, date_str, output_filename)
+                if os.path.exists(candidate_path):
+                    file_path = candidate_path
+                    break
+            else:
+                target_dir = get_target_directory(step_type, date_str)
+                files = glob.glob(os.path.join(target_dir, "*.xlsx"))
+                if files:
+                    file_path = sorted(files)[-1]
+                    break
+        else:
+            raise HTTPException(status_code=404, detail="未找到结果文件")
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"文件不存在: {file_path}")
+
+    return FileResponse(
+        path=file_path,
+        filename=os.path.basename(file_path),
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+
+
+PUBLIC_DIR = os.path.join(BASE_DIR, "2025public")
+
+
+@router.get("/public-files/")
+async def get_public_files(
+    current_user: User = Depends(get_current_user)
+):
+    os.makedirs(PUBLIC_DIR, exist_ok=True)
+
+    excel_files = []
+    for ext in ["*.xlsx", "*.xls"]:
+        pattern = os.path.join(PUBLIC_DIR, ext)
+        for file_path in glob.glob(pattern):
+            stat = os.stat(file_path)
+            excel_files.append({
+                "filename": os.path.basename(file_path),
+                "path": file_path,
+                "size": stat.st_size,
+                "modified_time": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+    excel_files.sort(key=lambda x: x["modified_time"], reverse=True)
+    return {"success": True, "files": excel_files, "directory": PUBLIC_DIR}
+
+
+@router.post("/public-files/upload/")
+async def upload_public_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    os.makedirs(PUBLIC_DIR, exist_ok=True)
+    file_path = os.path.join(PUBLIC_DIR, file.filename)
+
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        file_size = os.path.getsize(file_path)
+        return {
+            "success": True,
+            "message": f"文件上传成功",
+            "file": {
+                "filename": file.filename,
+                "path": file_path,
+                "size": file_size,
+                "target_dir": PUBLIC_DIR
+            }
+        }
+    except Exception as e:
+        logger.error(f"[Public Upload] failed: {str(e)}")
+        return {"success": False, "message": f"上传失败: {str(e)}"}
+
+
+@router.delete("/public-files/")
+async def delete_public_file(
+    file_path: str = Query(...),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        if not os.path.exists(file_path):
+            return {"success": False, "message": "文件不存在"}
+
+        os.remove(file_path)
+        return {"success": True, "message": "文件已删除"}
+    except Exception as e:
+        return {"success": False, "message": f"删除失败: {str(e)}"}
+
+
+@router.get("/public-files/preview")
+async def preview_public_file(
+    file_path: str = Query(...),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        if not os.path.exists(file_path):
+            return {"success": False, "message": "文件不存在"}
+
+        df = pd.read_excel(file_path, skiprows=1)
+        records = df.head(20).fillna('').to_dict('records')
+        columns = df.columns.tolist()
+
+        return {
+            "success": True,
+            "filename": os.path.basename(file_path),
+            "total_rows": len(df),
+            "columns": columns,
+            "preview": records
+        }
+    except Exception as e:
+        logger.error(f"[Preview] failed: {str(e)}")
+        return {"success": False, "message": f"预览失败: {str(e)}"}

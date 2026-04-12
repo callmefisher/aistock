@@ -124,7 +124,96 @@
                     format="YYYY-MM-DD"
                     value-format="YYYY-MM-DD"
                     style="width: 100%"
+                    @change="fetchUploadedFiles(step, index)"
                   />
+                </el-form-item>
+                <el-form-item label="上传数据">
+                  <div class="upload-section">
+                    <div class="target-dir-info">
+                      <el-tag type="info">目标目录: {{ step.config.date_str || '当日数据' }}/</el-tag>
+                    </div>
+                    <div class="upload-actions">
+                      <input
+                        type="file"
+                        accept=".xlsx,.xls"
+                        :id="`file-input-${index}`"
+                        @change="handleFileUpload($event, step, index)"
+                        style="display: none"
+                      />
+                      <el-button
+                        type="primary"
+                        size="small"
+                        @click="triggerFileInput(index)"
+                        :loading="uploadingSteps.has(`step_${index}`)"
+                      >
+                        <el-icon><Upload /></el-icon>
+                        上传Excel文件
+                      </el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+                <el-form-item label="上传公共数据">
+                  <div class="upload-section">
+                    <div class="target-dir-info">
+                      <el-tag type="warning">公共目录: 2025public/ (与当日数据一起合并)</el-tag>
+                    </div>
+                    <div class="upload-actions">
+                      <input
+                        type="file"
+                        accept=".xlsx,.xls"
+                        :id="`public-file-input-${index}`"
+                        @change="handlePublicFileUpload($event, step, index)"
+                        style="display: none"
+                      />
+                      <el-button
+                        type="warning"
+                        size="small"
+                        @click="triggerPublicFileInput(index)"
+                        :loading="uploadingSteps.has(`public_${index}`)"
+                      >
+                        <el-icon><Upload /></el-icon>
+                        上传到公共目录
+                      </el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+                <el-form-item label="公共文件列表" v-if="step.type === 'merge_excel'">
+                  <div class="uploaded-files-list" v-if="publicFiles[`step_${index}`]?.length > 0">
+                    <div v-for="file in publicFiles[`step_${index}`]" :key="file.path" class="file-item">
+                      <div class="file-info">
+                        <el-icon><Document /></el-icon>
+                        <span class="file-name">{{ file.filename }}</span>
+                        <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                      </div>
+                      <div class="file-actions">
+                        <el-button size="small" link @click="previewPublicFile(file.path)">
+                          <el-icon><View /></el-icon>
+                        </el-button>
+                        <el-button size="small" link type="danger" @click="deletePublicFile(file.path, step, index)">
+                          <el-icon><Delete /></el-icon>
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
+                </el-form-item>
+                <el-form-item label="已上传文件" v-if="['import_excel', 'merge_excel', 'match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)">
+                  <div class="uploaded-files-list" v-if="uploadedFiles[`step_${index}`]?.length > 0">
+                    <div v-for="file in uploadedFiles[`step_${index}`]" :key="file.path" class="file-item">
+                      <div class="file-info">
+                        <el-icon><Document /></el-icon>
+                        <span class="file-name">{{ file.filename }}</span>
+                        <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                      </div>
+                      <div class="file-actions">
+                        <el-button size="small" link @click="previewFile(file.path)">
+                          <el-icon><View /></el-icon>
+                        </el-button>
+                        <el-button size="small" link type="danger" @click="deleteUploadedFile(file.path, step, index)">
+                          <el-icon><Delete /></el-icon>
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
                 </el-form-item>
                 <el-form-item label="输出文件名">
                   <el-input v-model="step.config.output_filename" placeholder="默认: total_1.xlsx" />
@@ -191,6 +280,50 @@
                 <el-form-item label="源目录">
                   <el-input v-model="step.config.source_dir" placeholder="百日新高" />
                 </el-form-item>
+                <el-form-item label="上传匹配数据">
+                  <div class="upload-section">
+                    <div class="target-dir-info">
+                      <el-tag type="info">目标目录: 百日新高/</el-tag>
+                    </div>
+                    <div class="upload-actions">
+                      <input
+                        type="file"
+                        accept=".xlsx,.xls"
+                        :id="`file-input-${index}`"
+                        @change="handleFileUpload($event, step, index)"
+                        style="display: none"
+                      />
+                      <el-button
+                        type="primary"
+                        size="small"
+                        @click="triggerFileInput(index)"
+                        :loading="uploadingSteps.has(`step_${index}`)"
+                      >
+                        <el-icon><Upload /></el-icon>
+                        上传Excel文件
+                      </el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+                <el-form-item label="已上传文件" v-if="step.type === 'match_high_price'">
+                  <div class="uploaded-files-list" v-if="uploadedFiles[`step_${index}`]?.length > 0">
+                    <div v-for="file in uploadedFiles[`step_${index}`]" :key="file.path" class="file-item">
+                      <div class="file-info">
+                        <el-icon><Document /></el-icon>
+                        <span class="file-name">{{ file.filename }}</span>
+                        <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                      </div>
+                      <div class="file-actions">
+                        <el-button size="small" link @click="previewFile(file.path)">
+                          <el-icon><View /></el-icon>
+                        </el-button>
+                        <el-button size="small" link type="danger" @click="deleteUploadedFile(file.path, step, index)">
+                          <el-icon><Delete /></el-icon>
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
+                </el-form-item>
                 <el-form-item label="新增列名">
                   <el-input v-model="step.config.new_column_name" placeholder="百日新高" />
                 </el-form-item>
@@ -202,6 +335,50 @@
               <template v-if="step.type === 'match_ma20'">
                 <el-form-item label="源目录">
                   <el-input v-model="step.config.source_dir" placeholder="20日均线" />
+                </el-form-item>
+                <el-form-item label="上传匹配数据">
+                  <div class="upload-section">
+                    <div class="target-dir-info">
+                      <el-tag type="info">目标目录: 20日均线/</el-tag>
+                    </div>
+                    <div class="upload-actions">
+                      <input
+                        type="file"
+                        accept=".xlsx,.xls"
+                        :id="`file-input-${index}`"
+                        @change="handleFileUpload($event, step, index)"
+                        style="display: none"
+                      />
+                      <el-button
+                        type="primary"
+                        size="small"
+                        @click="triggerFileInput(index)"
+                        :loading="uploadingSteps.has(`step_${index}`)"
+                      >
+                        <el-icon><Upload /></el-icon>
+                        上传Excel文件
+                      </el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+                <el-form-item label="已上传文件" v-if="step.type === 'match_ma20'">
+                  <div class="uploaded-files-list" v-if="uploadedFiles[`step_${index}`]?.length > 0">
+                    <div v-for="file in uploadedFiles[`step_${index}`]" :key="file.path" class="file-item">
+                      <div class="file-info">
+                        <el-icon><Document /></el-icon>
+                        <span class="file-name">{{ file.filename }}</span>
+                        <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                      </div>
+                      <div class="file-actions">
+                        <el-button size="small" link @click="previewFile(file.path)">
+                          <el-icon><View /></el-icon>
+                        </el-button>
+                        <el-button size="small" link type="danger" @click="deleteUploadedFile(file.path, step, index)">
+                          <el-icon><Delete /></el-icon>
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
                 </el-form-item>
                 <el-form-item label="新增列名">
                   <el-input v-model="step.config.new_column_name" placeholder="20日均线" />
@@ -215,6 +392,50 @@
                 <el-form-item label="源目录">
                   <el-input v-model="step.config.source_dir" placeholder="国企" />
                 </el-form-item>
+                <el-form-item label="上传匹配数据">
+                  <div class="upload-section">
+                    <div class="target-dir-info">
+                      <el-tag type="info">目标目录: 国企/</el-tag>
+                    </div>
+                    <div class="upload-actions">
+                      <input
+                        type="file"
+                        accept=".xlsx,.xls"
+                        :id="`file-input-${index}`"
+                        @change="handleFileUpload($event, step, index)"
+                        style="display: none"
+                      />
+                      <el-button
+                        type="primary"
+                        size="small"
+                        @click="triggerFileInput(index)"
+                        :loading="uploadingSteps.has(`step_${index}`)"
+                      >
+                        <el-icon><Upload /></el-icon>
+                        上传Excel文件
+                      </el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+                <el-form-item label="已上传文件" v-if="step.type === 'match_soe'">
+                  <div class="uploaded-files-list" v-if="uploadedFiles[`step_${index}`]?.length > 0">
+                    <div v-for="file in uploadedFiles[`step_${index}`]" :key="file.path" class="file-item">
+                      <div class="file-info">
+                        <el-icon><Document /></el-icon>
+                        <span class="file-name">{{ file.filename }}</span>
+                        <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                      </div>
+                      <div class="file-actions">
+                        <el-button size="small" link @click="previewFile(file.path)">
+                          <el-icon><View /></el-icon>
+                        </el-button>
+                        <el-button size="small" link type="danger" @click="deleteUploadedFile(file.path, step, index)">
+                          <el-icon><Delete /></el-icon>
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
+                </el-form-item>
                 <el-form-item label="新增列名">
                   <el-input v-model="step.config.new_column_name" placeholder="国企" />
                 </el-form-item>
@@ -226,6 +447,50 @@
               <template v-if="step.type === 'match_sector'">
                 <el-form-item label="源目录">
                   <el-input v-model="step.config.source_dir" placeholder="一级板块" />
+                </el-form-item>
+                <el-form-item label="上传匹配数据">
+                  <div class="upload-section">
+                    <div class="target-dir-info">
+                      <el-tag type="info">目标目录: 一级板块/</el-tag>
+                    </div>
+                    <div class="upload-actions">
+                      <input
+                        type="file"
+                        accept=".xlsx,.xls"
+                        :id="`file-input-${index}`"
+                        @change="handleFileUpload($event, step, index)"
+                        style="display: none"
+                      />
+                      <el-button
+                        type="primary"
+                        size="small"
+                        @click="triggerFileInput(index)"
+                        :loading="uploadingSteps.has(`step_${index}`)"
+                      >
+                        <el-icon><Upload /></el-icon>
+                        上传Excel文件
+                      </el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+                <el-form-item label="已上传文件" v-if="step.type === 'match_sector'">
+                  <div class="uploaded-files-list" v-if="uploadedFiles[`step_${index}`]?.length > 0">
+                    <div v-for="file in uploadedFiles[`step_${index}`]" :key="file.path" class="file-item">
+                      <div class="file-info">
+                        <el-icon><Document /></el-icon>
+                        <span class="file-name">{{ file.filename }}</span>
+                        <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                      </div>
+                      <div class="file-actions">
+                        <el-button size="small" link @click="previewFile(file.path)">
+                          <el-icon><View /></el-icon>
+                        </el-button>
+                        <el-button size="small" link type="danger" @click="deleteUploadedFile(file.path, step, index)">
+                          <el-icon><Delete /></el-icon>
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
                 </el-form-item>
                 <el-form-item label="新增列名">
                   <el-input v-model="step.config.new_column_name" placeholder="一级板块" />
@@ -310,9 +575,6 @@
         <template v-if="executionComplete && resultData.length">
           <el-form-item label="过滤结果">
             <span>{{ filteredResultData.length }} 条 / {{ resultData.length }} 条</span>
-            <el-button type="text" @click="openOutputDirectory" style="margin-left: 20px">
-              <el-icon><FolderOpened /></el-icon> 打开目录
-            </el-button>
           </el-form-item>
           <el-table :data="filteredResultData" border max-height="400" size="small">
             <el-table-column v-for="col in resultColumns" :key="col" :prop="col" :label="col" width="130" show-overflow-tooltip />
@@ -323,9 +585,19 @@
         <el-button @click="showExecuteDialog = false" v-if="!executing">关闭</el-button>
         <el-button type="primary" @click="startExecution" v-if="!executing && !executionComplete">开始执行</el-button>
         <el-button type="success" @click="downloadResult" v-if="executionComplete && executionResult?.file_path">
+          <el-icon><Download /></el-icon>
           下载结果
         </el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="previewDialogVisible" title="文件预览" width="800px">
+      <div v-if="previewData.filename">
+        <el-alert :title="`${previewData.filename} (共 ${previewData.total_rows} 行)`" type="info" :closable="false" />
+        <el-table :data="previewData.preview" border max-height="400" size="small" style="margin-top: 15px">
+          <el-table-column v-for="col in previewData.columns" :key="col" :prop="col" :label="col" width="130" show-overflow-tooltip />
+        </el-table>
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -334,7 +606,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Timer, FolderOpened } from '@element-plus/icons-vue'
+import { Timer, FolderOpened, Upload, Delete, View, Download, Document } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const showDialog = ref(false)
@@ -355,6 +627,13 @@ const fileInputRefs = ref([])
 const executionStartTime = ref(null)
 const executionTimer = ref(null)
 const executionTime = ref('00:00:00')
+
+const uploadedFiles = ref({})
+const publicFiles = ref({})
+const uploadingSteps = ref(new Set())
+const previewDialogVisible = ref(false)
+const previewData = ref({})
+const editingStepIndex = ref(null)
 
 const openOutputDirectory = async () => {
   const basePath = '/app/data/excel'
@@ -539,9 +818,9 @@ const onColumnModeChange = (step) => {
 }
 
 const triggerFileInput = (index) => {
-  const inputs = document.querySelectorAll('.file-input')
-  if (inputs[index]) {
-    inputs[index].click()
+  const input = document.getElementById(`file-input-${index}`)
+  if (input) {
+    input.click()
   }
 }
 
@@ -674,8 +953,212 @@ const startExecution = async () => {
   ElMessage.success('工作流执行完成')
 }
 
-const downloadResult = () => {
-  ElMessage.info('下载功能待实现')
+const downloadResult = async () => {
+  if (!currentWorkflow.value?.id) {
+    ElMessage.error('工作流信息不完整')
+    return
+  }
+  try {
+    const lastStep = currentWorkflow.value.steps.length - 1
+    const filename = `workflow_result_${currentWorkflow.value.name}_${Date.now()}.xlsx`
+    await api.download(`/workflows/download-result/${currentWorkflow.value.id}?step_index=${lastStep}`, filename)
+    ElMessage.success('下载成功')
+  } catch (error) {
+    console.error('下载失败', error)
+    ElMessage.error('下载失败')
+  }
+}
+
+const getTargetDirName = (stepType) => {
+  const dirMap = {
+    'merge_excel': '当日数据',
+    'match_high_price': '百日新高',
+    'match_ma20': '20日均线',
+    'match_soe': '国企',
+    'match_sector': '一级板块'
+  }
+  return dirMap[stepType] || '数据'
+}
+
+const fetchUploadedFiles = async (step, index) => {
+  const key = `step_${index}`
+  try {
+    const response = await api.get('/workflows/step-files/', {
+      params: {
+        step_type: step.type,
+        date_str: step.config?.date_str
+      }
+    })
+    console.log('[Debug] fetchUploadedFiles response:', response)
+    if (response?.files !== undefined) {
+      uploadedFiles.value[key] = response.files
+      console.log('[Debug] uploadedFiles updated:', key, uploadedFiles.value[key])
+    }
+  } catch (error) {
+    console.error('获取上传文件失败', error)
+    ElMessage.error('获取上传文件列表失败')
+  }
+}
+
+const handleFileUpload = async (event, step, index) => {
+  const file = event.target.files?.[0]
+  if (!file) {
+    console.log('[Upload] No file selected')
+    return
+  }
+  console.log('[Upload] File selected:', file.name, 'step_type:', step.type, 'date_str:', step.config?.date_str)
+
+  const key = `step_${index}`
+  uploadingSteps.value.add(key)
+
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('workflow_id', String(editingId.value || 0))
+  formData.append('step_index', String(index))
+  formData.append('step_type', step.type)
+  if (step.config?.date_str) {
+    formData.append('date_str', step.config.date_str)
+  }
+
+  console.log('[Upload] Sending request to /workflows/upload-step-file/')
+
+  try {
+    const response = await api.post('/workflows/upload-step-file/', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    console.log('[Upload] Success:', response)
+    ElMessage.success('上传成功')
+    await fetchUploadedFiles(step, index)
+  } catch (error) {
+    console.error('[Upload] Failed:', error)
+    ElMessage.error('上传失败: ' + (error.message || '未知错误'))
+  } finally {
+    uploadingSteps.value.delete(key)
+    event.target.value = ''
+  }
+}
+
+const deleteUploadedFile = async (filePath, step, index) => {
+  try {
+    await ElMessageBox.confirm('确定删除此文件?', '提示', { type: 'warning' })
+    await api.delete('/workflows/step-files/', {
+      params: { file_path: filePath }
+    })
+    ElMessage.success('删除成功')
+    await fetchUploadedFiles(step, index)
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除失败', error)
+      ElMessage.error('删除失败')
+    }
+  }
+}
+
+const previewFile = async (filePath) => {
+  try {
+    const response = await api.get('/workflows/step-files/preview', {
+      params: { file_path: filePath }
+    })
+    if (response?.success) {
+      previewData.value = response
+      previewDialogVisible.value = true
+    } else {
+      ElMessage.error(response?.message || '预览失败')
+    }
+  } catch (error) {
+    console.error('预览失败', error)
+    ElMessage.error('预览失败')
+  }
+}
+
+const fetchPublicFiles = async (step, index) => {
+  const key = `step_${index}`
+  try {
+    const response = await api.get('/workflows/public-files/')
+    console.log('[Debug] fetchPublicFiles response:', response)
+    if (response?.files !== undefined) {
+      publicFiles.value[key] = response.files
+      console.log('[Debug] publicFiles updated:', key, publicFiles.value[key])
+    }
+  } catch (error) {
+    console.error('获取公共文件列表失败', error)
+  }
+}
+
+const triggerPublicFileInput = (index) => {
+  document.getElementById(`public-file-input-${index}`)?.click()
+}
+
+const handlePublicFileUpload = async (event, step, index) => {
+  const file = event.target.files?.[0]
+  if (!file) return
+
+  const key = `public_${index}`
+  uploadingSteps.value.add(key)
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  try {
+    const response = await api.post('/workflows/public-files/upload/', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    console.log('[Debug] upload response:', response)
+    if (response?.success) {
+      ElMessage.success('上传成功')
+    } else {
+      ElMessage.error(response?.message || '上传失败')
+    }
+    await fetchPublicFiles(step, index)
+  } catch (error) {
+    console.error('上传失败', error)
+    ElMessage.error('上传失败')
+    await fetchPublicFiles(step, index)
+  } finally {
+    uploadingSteps.value.delete(key)
+    event.target.value = ''
+  }
+}
+
+const previewPublicFile = async (filePath) => {
+  try {
+    const response = await api.get('/workflows/public-files/preview', {
+      params: { file_path: filePath }
+    })
+    if (response?.success) {
+      previewData.value = response
+      previewDialogVisible.value = true
+    } else {
+      ElMessage.error(response?.message || '预览失败')
+    }
+  } catch (error) {
+    console.error('预览失败', error)
+    ElMessage.error('预览失败')
+  }
+}
+
+const deletePublicFile = async (filePath, step, index) => {
+  try {
+    await ElMessageBox.confirm('确定删除此文件?', '提示', { type: 'warning' })
+    await api.delete('/workflows/public-files/', {
+      params: { file_path: filePath }
+    })
+    ElMessage.success('删除成功')
+    await fetchPublicFiles(step, index)
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除失败', error)
+      ElMessage.error('删除失败')
+    }
+  }
+}
+
+const formatFileSize = (bytes) => {
+  if (!bytes) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
 const handleViewSteps = (workflow) => {
@@ -684,6 +1167,7 @@ const handleViewSteps = (workflow) => {
 }
 
 const handleEdit = (row) => {
+  console.log('[Debug] handleEdit called, row:', row)
   isEditing.value = true
   editingId.value = row.id
   form.value = {
@@ -699,6 +1183,19 @@ const handleEdit = (row) => {
     form.value.steps = [defaultStep()]
   }
   showDialog.value = true
+
+  uploadedFiles.value = {}
+  publicFiles.value = {}
+  setTimeout(() => {
+    form.value.steps.forEach((step, index) => {
+      if (['merge_excel', 'match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)) {
+        fetchUploadedFiles(step, index)
+      }
+      if (step.type === 'merge_excel') {
+        fetchPublicFiles(step, index)
+      }
+    })
+  }, 300)
 }
 
 const handleDelete = async (id) => {
@@ -773,6 +1270,76 @@ watch(() => form.value.steps, (steps) => {
 }
 
 .file-btn {
+  flex-shrink: 0;
+}
+
+.upload-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.target-dir-info {
+  margin-bottom: 5px;
+}
+
+.upload-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.uploaded-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+
+.file-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: white;
+  border-radius: 4px;
+  border: 1px solid #e4e7ed;
+}
+
+.file-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.file-info .el-icon {
+  color: #409eff;
+  flex-shrink: 0;
+}
+
+.file-name {
+  font-size: 13px;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  font-size: 12px;
+  color: #909399;
+  flex-shrink: 0;
+}
+
+.file-actions {
+  display: flex;
+  gap: 5px;
   flex-shrink: 0;
 }
 </style>

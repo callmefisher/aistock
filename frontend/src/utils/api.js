@@ -54,4 +54,22 @@ api.interceptors.response.use(
   }
 )
 
+api.download = async (url, filename) => {
+  const token = localStorage.getItem('token')
+  const response = await axios.get(`/api/v1${url}`, {
+    responseType: 'blob',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    timeout: 300000
+  })
+  const blob = new Blob([response.data], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  })
+  const downloadUrl = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = downloadUrl
+  link.download = filename
+  link.click()
+  window.URL.revokeObjectURL(downloadUrl)
+}
+
 export default api

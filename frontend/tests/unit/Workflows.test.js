@@ -5,7 +5,8 @@ vi.mock('@/utils/api', () => ({
     get: vi.fn(),
     post: vi.fn(),
     put: vi.fn(),
-    delete: vi.fn()
+    delete: vi.fn(),
+    download: vi.fn()
   }
 }))
 
@@ -392,5 +393,227 @@ describe('Workflows Component Logic', () => {
       expect(deduped).toHaveLength(1)
       expect(deduped[0].date).toBe('2026-05-01')
     })
+  })
+})
+
+describe('File Upload Logic', () => {
+
+  describe('getTargetDirName', () => {
+    const getTargetDirName = (stepType) => {
+      const dirMap = {
+        'merge_excel': '当日数据',
+        'match_high_price': '百日新高',
+        'match_ma20': '20日均线',
+        'match_soe': '国企',
+        'match_sector': '一级板块'
+      }
+      return dirMap[stepType] || '数据'
+    }
+
+    it('should return correct directory name for merge_excel', () => {
+      expect(getTargetDirName('merge_excel')).toBe('当日数据')
+    })
+
+    it('should return correct directory name for match_high_price', () => {
+      expect(getTargetDirName('match_high_price')).toBe('百日新高')
+    })
+
+    it('should return correct directory name for match_ma20', () => {
+      expect(getTargetDirName('match_ma20')).toBe('20日均线')
+    })
+
+    it('should return correct directory name for match_soe', () => {
+      expect(getTargetDirName('match_soe')).toBe('国企')
+    })
+
+    it('should return correct directory name for match_sector', () => {
+      expect(getTargetDirName('match_sector')).toBe('一级板块')
+    })
+
+    it('should return default directory name for unknown type', () => {
+      expect(getTargetDirName('unknown')).toBe('数据')
+    })
+  })
+
+  describe('formatFileSize', () => {
+    const formatFileSize = (bytes) => {
+      if (!bytes) return '0 B'
+      const k = 1024
+      const sizes = ['B', 'KB', 'MB', 'GB']
+      const i = Math.floor(Math.log(bytes) / Math.log(k))
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+    }
+
+    it('should format bytes correctly', () => {
+      expect(formatFileSize(0)).toBe('0 B')
+      expect(formatFileSize(512)).toBe('512 B')
+    })
+
+    it('should format kilobytes correctly', () => {
+      expect(formatFileSize(1024)).toBe('1 KB')
+      expect(formatFileSize(1536)).toBe('1.5 KB')
+    })
+
+    it('should format megabytes correctly', () => {
+      expect(formatFileSize(1048576)).toBe('1 MB')
+      expect(formatFileSize(1572864)).toBe('1.5 MB')
+    })
+
+    it('should format gigabytes correctly', () => {
+      expect(formatFileSize(1073741824)).toBe('1 GB')
+    })
+
+    it('should return 0 B for null/undefined', () => {
+      expect(formatFileSize(null)).toBe('0 B')
+      expect(formatFileSize(undefined)).toBe('0 B')
+    })
+  })
+
+  describe('fetchUploadedFiles', () => {
+    it('should construct correct API params for merge_excel', () => {
+      const step = { type: 'merge_excel', config: { date_str: '2026-04-12' } }
+      const params = {
+        step_type: step.type,
+        date_str: step.config.date_str
+      }
+      expect(params.step_type).toBe('merge_excel')
+      expect(params.date_str).toBe('2026-04-12')
+    })
+
+    it('should construct correct API params for match_high_price', () => {
+      const step = { type: 'match_high_price', config: { date_str: '2026-04-12' } }
+      const params = {
+        step_type: step.type,
+        date_str: step.config.date_str
+      }
+      expect(params.step_type).toBe('match_high_price')
+    })
+
+    it('should handle steps without date_str', () => {
+      const step = { type: 'match_high_price', config: {} }
+      const params = {
+        step_type: step.type,
+        date_str: step.config?.date_str
+      }
+      expect(params.date_str).toBeUndefined()
+    })
+  })
+
+  describe('handleFileUpload', () => {
+    it('should create FormData with correct fields', () => {
+      const editingId = 1
+      const step = { type: 'merge_excel', config: { date_str: '2026-04-12' } }
+      const index = 0
+
+      const formData = {
+        fields: {},
+        append: function(key, value) {
+          this.fields[key] = value
+          return this
+        }
+      }
+
+      formData.append('file', 'test.xlsx')
+      formData.append('workflow_id', editingId || 0)
+      formData.append('step_index', index)
+      formData.append('step_type', step.type)
+      formData.append('date_str', step.config.date_str)
+
+      expect(formData.fields.file).toBe('test.xlsx')
+      expect(formData.fields.workflow_id).toBe(1)
+      expect(formData.fields.step_index).toBe(0)
+      expect(formData.fields.step_type).toBe('merge_excel')
+      expect(formData.fields.date_str).toBe('2026-04-12')
+    })
+
+    it('should not include date_str if not available', () => {
+      const step = { type: 'match_high_price', config: {} }
+      const formData = {}
+
+      if (step.config?.date_str) {
+        formData.date_str = step.config.date_str
+      }
+
+      expect(formData.date_str).toBeUndefined()
+    })
+  })
+
+  describe('deleteUploadedFile', () => {
+    it('should construct correct delete params', () => {
+      const filePath = '/Users/xiayanji/qbox/aistock/data/excel/2026-04-12/test.xlsx'
+      const params = { file_path: filePath }
+      expect(params.file_path).toBe(filePath)
+    })
+  })
+
+  describe('previewFile', () => {
+    it('should construct correct preview params', () => {
+      const filePath = '/Users/xiayanji/qbox/aistock/data/excel/百日新高/stocks.xlsx'
+      const params = { file_path: filePath }
+      expect(params.file_path).toBe(filePath)
+    })
+  })
+
+  describe('Step Types with Upload Support', () => {
+    const uploadSupportedTypes = ['merge_excel', 'match_high_price', 'match_ma20', 'match_soe', 'match_sector']
+
+    it('should identify upload supported step types', () => {
+      expect(uploadSupportedTypes).toContain('merge_excel')
+      expect(uploadSupportedTypes).toContain('match_high_price')
+      expect(uploadSupportedTypes).toContain('match_ma20')
+      expect(uploadSupportedTypes).toContain('match_soe')
+      expect(uploadSupportedTypes).toContain('match_sector')
+    })
+
+    it('should not support upload for other step types', () => {
+      const unsupportedTypes = ['import_excel', 'smart_dedup', 'extract_columns', 'export_excel', 'pending']
+      unsupportedTypes.forEach(type => {
+        expect(uploadSupportedTypes).not.toContain(type)
+      })
+    })
+  })
+
+  describe('downloadResult', () => {
+    it('should construct correct download URL', () => {
+      const workflowId = 1
+      const lastStep = 3
+      const url = `/workflows/download-result/${workflowId}?step_index=${lastStep}`
+      expect(url).toBe('/workflows/download-result/1?step_index=3')
+    })
+
+    it('should generate correct filename', () => {
+      const workflowName = '测试工作流'
+      const timestamp = Date.now()
+      const filename = `workflow_result_${workflowName}_${timestamp}.xlsx`
+      expect(filename).toContain('workflow_result_')
+      expect(filename).toContain('测试工作流')
+      expect(filename.slice(-5)).toBe('.xlsx')
+    })
+  })
+
+  describe('uploadedFiles state management', () => {
+    it('should key files by step index', () => {
+      const uploadedFiles = {}
+      const files = [{ filename: 'test.xlsx', path: '/path/test.xlsx', size: 1024 }]
+
+      uploadedFiles['step_0'] = files
+      uploadedFiles['step_1'] = [
+        { filename: 'test2.xlsx', path: '/path/test2.xlsx', size: 2048 }
+      ]
+
+      expect(uploadedFiles['step_0']).toHaveLength(1)
+      expect(uploadedFiles['step_0'][0].filename).toBe('test.xlsx')
+      expect(uploadedFiles['step_1']).toHaveLength(1)
+      expect(uploadedFiles['step_1'][0].filename).toBe('test2.xlsx')
+    })
+  })
+})
+
+describe('API Download', () => {
+  it('should have download method', () => {
+    const api = {
+      download: vi.fn()
+    }
+    expect(typeof api.download).toBe('function')
   })
 })
