@@ -337,3 +337,234 @@ class TestSmartDedupLogic:
         df_deduped = df_sorted.drop_duplicates(subset=["证券代码"], keep="first")
 
         assert len(df_deduped) == 3
+
+
+class TestMergeExcelStartRow:
+    """测试合并Excel时从序号=1开始读取"""
+
+    TEST_DATE = "2026-04-13"
+
+    @pytest.fixture
+    def temp_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    @pytest.fixture
+    def executor(self, temp_dir):
+        return WorkflowExecutor(base_dir=temp_dir)
+
+    def _get_upload_dir(self, temp_dir):
+        """创建并返回日期子目录"""
+        upload_dir = os.path.join(temp_dir, self.TEST_DATE)
+        os.makedirs(upload_dir, exist_ok=True)
+        return upload_dir
+
+    def test_merge_skips_metadata_rows_before_seq1(self, executor, temp_dir):
+        """序号=1不在第一行时，跳过前面的元数据行"""
+        import asyncio
+        upload_dir = self._get_upload_dir(temp_dir)
+
+        # 模拟文件：前2行是元数据，序号=1在第3行
+        df = pd.DataFrame({
+            "序号": ["合计", "日期:2026-04-02", 1, 2],
+            "证券代码": ["", "", "000001.SZ", "000002.SZ"],
+            "证券简称": ["", "", "平安银行", "万科A"],
+            "最新公告日": ["2026-04-02", "2026-04-02", "2025-12-23", "2026-01-05"]
+        })
+        df.to_excel(os.path.join(upload_dir, "file1.xlsx"), index=False)
+
+        config = {"output_filename": "total_1.xlsx", "date_str": self.TEST_DATE}
+        result = asyncio.run(executor._merge_excel(config, date_str=self.TEST_DATE))
+
+        assert result["success"] is True
+        # 应该只有2行数据（序号=1和序号=2），元数据行被跳过
+        assert result["rows"] == 2
+
+        output_df = pd.read_excel(result["file_path"])
+        codes = output_df["证券代码"].astype(str).tolist()
+        assert all(c != "" and c != "nan" for c in codes)
+
+    def test_merge_seq1_at_first_row_works(self, executor, temp_dir):
+        """序号=1在第一行时，正常读取所有数据"""
+        import asyncio
+        upload_dir = self._get_upload_dir(temp_dir)
+
+        df = pd.DataFrame({
+            "序号": [1, 2, 3],
+            "证券代码": ["000001.SZ", "000002.SZ", "000003.SZ"],
+            "证券简称": ["平安银行", "万科A", "国农科技"],
+            "最新公告日": ["2026-04-02", "2026-01-05", "2025-12-23"]
+        })
+        df.to_excel(os.path.join(upload_dir, "file1.xlsx"), index=False)
+
+        config = {"output_filename": "total_1.xlsx"}
+        result = asyncio.run(executor._merge_excel(config, date_str=self.TEST_DATE))
+
+        assert result["success"] is True
+        assert result["rows"] == 3
+
+    def test_merge_no_seq_column_reads_all(self, executor, temp_dir):
+        """无序号列时，读取全部数据"""
+        import asyncio
+        upload_dir = self._get_upload_dir(temp_dir)
+
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ", "000002.SZ"],
+            "证券简称": ["平安银行", "万科A"],
+            "最新公告日": ["2026-04-02", "2026-01-05"]
+        })
+        df.to_excel(os.path.join(upload_dir, "file1.xlsx"), index=False)
+
+        config = {"output_filename": "total_1.xlsx"}
+        result = asyncio.run(executor._merge_excel(config, date_str=self.TEST_DATE))
+
+        assert result["success"] is True
+        assert result["rows"] == 2
+
+    def test_merge_metadata_date_not_pollute_output(self, executor, temp_dir):
+        """元数据行的日期不应污染最终输出的最新公告日"""
+        import asyncio
+        upload_dir = self._get_upload_dir(temp_dir)
+
+        # 元数据行有一个"假"日期 2099-01-01
+        df = pd.DataFrame({
+            "序号": ["统计", 1, 2],
+            "证券代码": ["汇总", "000001.SZ", "000001.SZ"],
+            "证券简称": ["", "平安银行", "平安银行"],
+            "最新公告日": ["2099-01-01", "2026-04-02", "2025-12-23"]
+        })
+        df.to_excel(os.path.join(upload_dir, "file1.xlsx"), index=False)
+
+        config = {"output_filename": "total_1.xlsx"}
+        result = asyncio.run(executor._merge_excel(config, date_str=self.TEST_DATE))
+
+        assert result["success"] is True
+        output_df = pd.read_excel(result["file_path"])
+        # 确认元数据行的假日期 2099-01-01 不在输出中
+        dates = output_df["最新公告日"].tolist()
+        assert "2099-01-01" not in [str(d)[:10] for d in dates]
+
+    def test_merge_latest_date_preserved_after_full_workflow(self, executor, temp_dir):
+        """完整流程：合并+去重后，同一证券代码保留最新公告日"""
+        import asyncio
+        upload_dir = self._get_upload_dir(temp_dir)
+
+        # 同一证券代码出现3次，不同日期
+        df = pd.DataFrame({
+            "序号": [1, 2, 3],
+            "证券代码": ["000001.SZ", "000001.SZ", "000001.SZ"],
+            "证券简称": ["平安银行", "平安银行", "平安银行"],
+            "最新公告日": ["2026-01-05", "2026-04-02", "2025-12-23"]
+        })
+        df.to_excel(os.path.join(upload_dir, "file1.xlsx"), index=False)
+
+        # Step 1: merge
+        config = {"output_filename": "total_1.xlsx"}
+        merge_result = asyncio.run(executor._merge_excel(config, date_str=self.TEST_DATE))
+        assert merge_result["success"] is True
+
+        # Step 2: smart_dedup
+        merged_df = pd.read_excel(merge_result["file_path"])
+        dedup_result = asyncio.run(executor._smart_dedup({}, merged_df, date_str=self.TEST_DATE))
+        assert dedup_result["success"] is True
+        assert dedup_result["deduped_rows"] == 1
+
+        # 最新公告日应为最大日期 2026-04-02
+        final_df = pd.read_excel(dedup_result["file_path"])
+        assert final_df.iloc[0]["最新公告日"] == "2026-04-02"
+
+    def test_merge_multirow_header(self, executor, temp_dir):
+        """双行表头格式：第1行分组头、第2行实际列名，序号=1在第3行"""
+        import asyncio
+        from openpyxl import Workbook
+
+        upload_dir = self._get_upload_dir(temp_dir)
+
+        # 手动构造双行表头 Excel（模拟截图中的格式）
+        wb = Workbook()
+        ws = wb.active
+        # Row 1: 分组表头
+        ws["A1"] = "序号"
+        ws["B1"] = "披露方"
+        ws.merge_cells("B1:C1")
+        ws["D1"] = ""
+        ws["E1"] = ""
+        # Row 2: 实际列名
+        ws["A2"] = ""
+        ws["B2"] = "证券代码"
+        ws["C2"] = "证券简称"
+        ws["D2"] = "最新公告日"
+        ws["E2"] = "首次公告日"
+        # Row 3: 数据
+        ws["A3"] = 1
+        ws["B3"] = "400272.NQ"
+        ws["C3"] = "鹏博士3"
+        ws["D3"] = "2026-04-13"
+        ws["E3"] = "2025-12-31"
+        # Row 4: 数据
+        ws["A4"] = 2
+        ws["B4"] = "600981.SH"
+        ws["C4"] = "苏豪汇鸿"
+        ws["D4"] = "2026-04-13"
+        ws["E4"] = "2026-04-13"
+
+        filepath = os.path.join(upload_dir, "multirow_header.xlsx")
+        wb.save(filepath)
+
+        config = {"output_filename": "total_1.xlsx"}
+        result = asyncio.run(executor._merge_excel(config, date_str=self.TEST_DATE))
+
+        assert result["success"] is True
+        # 应该读到2行数据（序号1和序号2），不丢失
+        assert result["rows"] == 2
+
+        output_df = pd.read_excel(result["file_path"])
+        # 列名应已正确重映射为实际列名
+        assert "证券代码" in output_df.columns
+        assert "证券简称" in output_df.columns
+        assert "最新公告日" in output_df.columns
+        # 数据内容正确
+        codes = output_df["证券代码"].astype(str).tolist()
+        assert "600981.SH" in codes
+
+    def test_merge_multirow_header_with_duplicate_subcolumns(self, executor, temp_dir):
+        """双行表头+重复子列名（如受让方/转让方各有'名称'列）不报错"""
+        import asyncio
+        from openpyxl import Workbook
+
+        upload_dir = self._get_upload_dir(temp_dir)
+        wb = Workbook()
+        ws = wb.active
+        # Row 1: 分组表头
+        ws["A1"] = "序号"
+        ws["B1"] = "披露方"
+        ws.merge_cells("B1:C1")
+        ws["D1"] = ""
+        ws["E1"] = "受让方"
+        ws["F1"] = "转让方"
+        # Row 2: 子列名（名称重复）
+        ws["A2"] = ""
+        ws["B2"] = "证券代码"
+        ws["C2"] = "证券简称"
+        ws["D2"] = "最新公告日"
+        ws["E2"] = "名称"
+        ws["F2"] = "名称"
+        # Row 3-4: 数据
+        for row, data in enumerate(
+            [(1, "000001.SZ", "平安银行", "2026-04-13", "受让A", "转让B"),
+             (2, "600519.SH", "贵州茅台", "2026-04-13", "受让C", "转让D")],
+            start=3
+        ):
+            for col, val in enumerate(data, start=1):
+                ws.cell(row=row, column=col, value=val)
+
+        wb.save(os.path.join(upload_dir, "dup_cols.xlsx"))
+
+        config = {"output_filename": "total_1.xlsx"}
+        result = asyncio.run(executor._merge_excel(config, date_str=self.TEST_DATE))
+
+        assert result["success"] is True
+        assert result["rows"] == 2
+        output_df = pd.read_excel(result["file_path"])
+        assert "证券代码" in output_df.columns
+        assert "最新公告日" in output_df.columns

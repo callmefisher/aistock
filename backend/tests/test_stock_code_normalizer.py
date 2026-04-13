@@ -11,16 +11,13 @@ from utils.stock_code_normalizer import (
 
 
 class TestStockCodeNormalizer:
-    """股票代码标准化模块测试"""
 
     def test_normalize_stock_code_basic(self):
-        """测试基本标准化功能"""
         assert normalize_stock_code('601398') == '601398'
         assert normalize_stock_code('  601398  ') == '601398'
         assert normalize_stock_code('601398.SH') == '601398.SH'
 
     def test_normalize_stock_code_none_values(self):
-        """测试空值处理"""
         assert normalize_stock_code(None) == ''
         assert normalize_stock_code('') == ''
         assert normalize_stock_code('nan') == ''
@@ -28,9 +25,32 @@ class TestStockCodeNormalizer:
         assert normalize_stock_code('undefined') == ''
 
     def test_normalize_stock_code_whitespace(self):
-        """测试空格和特殊字符"""
         assert normalize_stock_code('\t601398\n') == '601398'
         assert normalize_stock_code('  300001  SZ  ') == '300001SZ'
+
+    def test_normalize_stock_code_numeric_zero_padding(self):
+        assert normalize_stock_code(638) == '000638'
+        assert normalize_stock_code(1280) == '001280'
+        assert normalize_stock_code(8) == '000008'
+        assert normalize_stock_code(30) == '000030'
+        assert normalize_stock_code(601398) == '601398'
+        assert normalize_stock_code('638') == '000638'
+        assert normalize_stock_code('1280') == '001280'
+
+    def test_normalize_stock_code_float_handling(self):
+        assert normalize_stock_code(638.0) == '000638'
+        assert normalize_stock_code(1280.0) == '001280'
+        assert normalize_stock_code('638.0') == '000638'
+
+    def test_normalize_stock_code_suffix_zero_padding(self):
+        assert normalize_stock_code('638.SZ') == '000638.SZ'
+        assert normalize_stock_code('1280.SH') == '001280.SH'
+        assert normalize_stock_code('000638.SZ') == '000638.SZ'
+        assert normalize_stock_code('601398.SH') == '601398.SH'
+
+    def test_normalize_stock_code_non_numeric_preserved(self):
+        assert normalize_stock_code('*ST万方') == '*ST万方'
+        assert normalize_stock_code('ST数源') == 'ST数源'
 
     def test_extract_numeric_code_basic(self):
         """测试提取纯数字代码"""
@@ -161,10 +181,8 @@ class TestEquityMergeWithPublic:
 
 
 class TestSOEMatchWithNormalization:
-    """国企匹配字符串格式化测试"""
 
     def test_soe_match_with_various_formats(self):
-        """测试各种格式的股票代码都能正确匹配国企"""
         soe_dict = {
             '601398': '工商银行',
             '601939.SH': '中国银行',
@@ -178,13 +196,27 @@ class TestSOEMatchWithNormalization:
         assert match_stock_code_flexible('601939', soe_dict) == '中国银行'
 
     def test_soe_match_edge_cases(self):
-        """测试边界情况"""
         soe_dict = {'601398': '工商银行'}
 
         assert match_stock_code_flexible(None, soe_dict) == ''
         assert match_stock_code_flexible('', soe_dict) == ''
         assert match_stock_code_flexible('nan', soe_dict) == ''
         assert match_stock_code_flexible('  ', soe_dict) == ''
+
+    def test_soe_match_integer_code_from_excel(self):
+        soe_dict = {
+            '000638': '*ST万方',
+            '001280': '中国铀业',
+            '601398': '工商银行',
+            '000008': '神州高铁',
+        }
+
+        assert match_stock_code_flexible('000638.SZ', soe_dict) == '*ST万方'
+        assert match_stock_code_flexible('001280.SZ', soe_dict) == '中国铀业'
+        assert match_stock_code_flexible('601398.SH', soe_dict) == '工商银行'
+        assert match_stock_code_flexible('000008.SZ', soe_dict) == '神州高铁'
+        assert match_stock_code_flexible('000638', soe_dict) == '*ST万方'
+        assert match_stock_code_flexible('638', soe_dict) == '*ST万方'
 
 
 class TestDataConsistencyAcrossWorkflowTypes:

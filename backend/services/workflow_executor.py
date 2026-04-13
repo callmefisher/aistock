@@ -213,10 +213,56 @@ class WorkflowExecutor:
                     else:
                         df_all = pd.read_excel(filepath)
                         if len(df_all) > 0:
-                            first_row = df_all.iloc[[0]]
-                            df = df_all.iloc[1:]
-                            dfs.append(first_row)
-                            logger.info(f"保留首行: {filepath}")
+                            start_idx = 0
+                            seq_col = None
+                            for col in df_all.columns:
+                                if '序号' in str(col):
+                                    seq_col = col
+                                    break
+
+                            if seq_col:
+                                for idx in range(len(df_all)):
+                                    val = df_all.iloc[idx][seq_col]
+                                    try:
+                                        if pd.notna(val) and int(float(str(val).strip())) == 1:
+                                            start_idx = idx
+                                            break
+                                    except (ValueError, TypeError):
+                                        continue
+
+                            if start_idx > 0:
+                                header_row = df_all.iloc[start_idx - 1]
+                                known_col_names = {"证券代码", "证券简称", "最新公告日", "公告日期", "代码", "名称", "首次公告日", "交易概述"}
+                                header_values = set()
+                                for val in header_row:
+                                    if pd.notna(val) and isinstance(val, str) and val.strip():
+                                        header_values.add(val.strip())
+
+                                if header_values & known_col_names:
+                                    new_columns = []
+                                    for orig_col, new_name in zip(df_all.columns, header_row):
+                                        if pd.notna(new_name) and isinstance(new_name, str) and new_name.strip():
+                                            new_columns.append(new_name.strip())
+                                        else:
+                                            new_columns.append(orig_col)
+                                    # 去重列名：重复的追加后缀（如 名称→名称_1），仅保留首次出现的
+                                    seen = {}
+                                    unique_columns = []
+                                    for col in new_columns:
+                                        if col in seen:
+                                            seen[col] += 1
+                                            unique_columns.append(f"{col}_{seen[col]}")
+                                        else:
+                                            seen[col] = 0
+                                            unique_columns.append(col)
+                                    df = df_all.iloc[start_idx:].copy()
+                                    df.columns = unique_columns
+                                    logger.info(f"双行表头，列名重映射({len(unique_columns)}列): {filepath}")
+                                else:
+                                    df = df_all.iloc[start_idx:].copy()
+                                    logger.info(f"跳过前{start_idx}行元数据: {filepath}")
+                            else:
+                                df = df_all.copy()
                         else:
                             continue
 
@@ -559,7 +605,7 @@ class WorkflowExecutor:
         excel_files = self._get_excel_files_in_dir(source_path)
         for excel_file in excel_files:
             try:
-                hf_df = pd.read_excel(excel_file)
+                hf_df = pd.read_excel(excel_file, dtype=str)
                 for _, row in hf_df.iterrows():
                     stock_code = normalize_stock_code(row.get('股票代码', ''))
                     stock_name = normalize_stock_code(row.get('股票简称', ''))
@@ -620,7 +666,7 @@ class WorkflowExecutor:
         excel_files = self._get_excel_files_in_dir(source_path)
         for excel_file in excel_files:
             try:
-                ma_df = pd.read_excel(excel_file, engine='openpyxl')
+                ma_df = pd.read_excel(excel_file, engine='openpyxl', dtype=str)
                 code_col = None
                 name_col = None
                 for col in ma_df.columns:
@@ -698,7 +744,7 @@ class WorkflowExecutor:
         excel_files = self._get_excel_files_in_dir(source_path)
         for excel_file in excel_files:
             try:
-                soe_df = pd.read_excel(excel_file)
+                soe_df = pd.read_excel(excel_file, dtype=str)
                 code_col = next((col for col in ['股票代码.1', '股票代码', '证券代码'] if col in soe_df.columns), None)
                 name_col = next((col for col in ['股票简称', '证券简称'] if col in soe_df.columns), None)
                 if code_col and name_col:
@@ -768,12 +814,25 @@ class WorkflowExecutor:
         excel_files = self._get_excel_files_in_dir(source_path)
         for excel_file in excel_files:
             try:
-                sector_df = pd.read_excel(excel_file)
-                for _, row in sector_df.iterrows():
-                    code = normalize_stock_code(row.get('证券代码', ''))
-                    name = normalize_stock_code(row.get('所属一级板块', ''))
-                    if code and name:
-                        all_sector_stocks[code] = name
+                sector_df = pd.read_excel(excel_file, dtype=str)
+                sector_code_col = next((col for col in ['股票代码.1', '股票代码', '证券代码'] if col in sector_df.columns), None)
+                sector_name_col = next((col for col in ['所属一级板块', '所属板块', '一级板块', '板块'] if col in sector_df.columns), None)
+                if sector_code_col and sector_name_col:
+                    for _, row in sector_df.iterrows():
+                        code = normalize_stock_code(row.get(sector_code_col, ''))
+                        name = normalize_stock_code(row.get(sector_name_col, ''))
+                        if code and name:
+                            all_sector_stocks[code] = name
+                elif '证券代码' in sector_df.columns:
+                    for _, row in sector_df.iterrows():
+                        code = normalize_stock_code(row['证券代码'])
+                        name = ''
+                        for col in ['所属一级板块', '所属板块', '一级板块', '板块']:
+                            if col in sector_df.columns and pd.notna(row[col]):
+                                name = normalize_stock_code(row[col])
+                                break
+                        if code and name:
+                            all_sector_stocks[code] = name
             except Exception as e:
                 logger.warning(f"读取{excel_file}失败: {e}")
 

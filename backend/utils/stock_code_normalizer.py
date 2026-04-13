@@ -3,29 +3,6 @@ from typing import Optional, Tuple
 
 
 def normalize_stock_code(code: str) -> str:
-    """
-    统一标准化股票代码格式
-
-    处理规则：
-    1. 去除首尾空格
-    2. 转换为字符串
-    3. 去除可能的空格、制表符等
-    4. 统一为大写格式
-
-    Args:
-        code: 股票代码（可能包含各种格式）
-
-    Returns:
-        标准化后的股票代码
-
-    Examples:
-        >>> normalize_stock_code(' 601398 ')
-        '601398'
-        >>> normalize_stock_code('601398.SH')
-        '601398.SH'
-        >>> normalize_stock_code('  300001  ')
-        '300001'
-    """
     if code is None:
         return ''
 
@@ -36,6 +13,19 @@ def normalize_stock_code(code: str) -> str:
 
     code_str = code_str.upper()
     code_str = re.sub(r'\s+', '', code_str)
+
+    if re.match(r'^\d+\.\d+$', code_str):
+        code_str = str(int(float(code_str)))
+
+    if re.match(r'^\d+$', code_str) and len(code_str) < 6:
+        code_str = code_str.zfill(6)
+
+    suffix_match = re.match(r'^(\d+)\.(SH|SZ|BJ)$', code_str)
+    if suffix_match:
+        numeric_part = suffix_match.group(1)
+        if len(numeric_part) < 6:
+            numeric_part = numeric_part.zfill(6)
+        code_str = f"{numeric_part}.{suffix_match.group(2)}"
 
     return code_str
 
