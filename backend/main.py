@@ -25,6 +25,32 @@ async def lifespan(app: FastAPI):
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
+    from sqlalchemy import text
+    from core.database import AsyncSessionLocal
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(text("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'workflows'
+                AND COLUMN_NAME = 'workflow_type'
+            """))
+            count = result.scalar()
+            if count == 0:
+                await session.execute(text("""
+                    ALTER TABLE workflows
+                    ADD COLUMN workflow_type VARCHAR(50) DEFAULT ''
+                    COMMENT '工作流类型'
+                    AFTER description
+                """))
+                await session.commit()
+                logger.info("已自动添加 workflow_type 字段")
+            else:
+                logger.info("workflow_type 字段已存在")
+    except Exception as e:
+        logger.warning(f"数据库迁移检查: {e}")
+    
     from service.scheduler_service import scheduler_service
     await scheduler_service.start()
     

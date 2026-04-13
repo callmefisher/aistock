@@ -11,19 +11,19 @@
         text-color="#fff"
         active-text-color="#ffd04b"
       >
-        <el-menu-item index="/dashboard">
+        <el-menu-item index="/dashboard" v-show="false">
           <el-icon><DataAnalysis /></el-icon>
           <span>仪表盘</span>
         </el-menu-item>
-        <el-menu-item index="/data-sources">
+        <el-menu-item index="/data-sources" v-show="false">
           <el-icon><Connection /></el-icon>
           <span>数据源管理</span>
         </el-menu-item>
-        <el-menu-item index="/rules">
+        <el-menu-item index="/rules" v-show="false">
           <el-icon><Filter /></el-icon>
           <span>规则管理</span>
         </el-menu-item>
-        <el-menu-item index="/tasks">
+        <el-menu-item index="/tasks" v-show="false">
           <el-icon><Timer /></el-icon>
           <span>任务管理</span>
         </el-menu-item>
@@ -38,6 +38,10 @@
         <el-menu-item index="/workflows">
           <el-icon><Operation /></el-icon>
           <span>工作流</span>
+        </el-menu-item>
+        <el-menu-item index="/excel-compare">
+          <el-icon><DocumentCopy /></el-icon>
+          <span>Excel比对</span>
         </el-menu-item>
       </el-menu>
     </el-aside>

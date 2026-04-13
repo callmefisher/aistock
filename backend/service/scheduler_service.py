@@ -36,27 +36,7 @@ class SchedulerService:
                 await asyncio.sleep(60)
 
     async def _check_and_run_tasks(self, now: datetime):
-        from fetcher.akshare_fetcher import stock_fetcher
-        from service.db_writer import db_writer
-
-        current_year = now.year
-        current_month = now.month
-        current_day = now.day
-        day_of_year = now.timetuple().tm_yday
-
-        stock_list = stock_fetcher.fetch_stock_list()
-        if stock_list.empty:
-            logger.warning("获取股票列表失败")
-            return
-
-        need_update_stocks = self._determine_stocks_to_update(stock_list, now)
-        logger.info(f"需要更新的股票数量: {len(need_update_stocks)}")
-
-        for stock_code in need_update_stocks[:10]:
-            try:
-                await self._update_stock_daily(stock_code, now)
-            except Exception as e:
-                logger.error(f"更新股票 {stock_code} 失败: {e}")
+        pass
 
     def _determine_stocks_to_update(
         self,

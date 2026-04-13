@@ -20,7 +20,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 cd "$(dirname "$0")"
 
-COMPOSE_FILE="docker-compose.yml"
+COMPOSE_FILE="docker-compose.minimal.yml"
 PROJECT_NAME="aistock"
 
 get_compose_cmd() {

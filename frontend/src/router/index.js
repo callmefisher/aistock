@@ -58,6 +58,12 @@ const routes = [
         name: 'Workflows',
         component: () => import('@/views/Workflows.vue'),
         meta: { title: '工作流' }
+      },
+      {
+        path: 'excel-compare',
+        name: 'ExcelCompare',
+        component: () => import('@/views/ExcelCompare.vue'),
+        meta: { title: 'Excel比对' }
       }
     ]
   }

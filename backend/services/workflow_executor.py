@@ -10,6 +10,12 @@ import logging
 from pathlib import Path
 
 from services.path_resolver import get_resolver
+from utils.stock_code_normalizer import (
+    normalize_stock_code,
+    extract_numeric_code,
+    match_stock_code_flexible,
+    is_public_file as check_is_public_file
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +205,7 @@ class WorkflowExecutor:
                 if should_exclude:
                     continue
 
-                is_public_file = "2025public" in filepath
+                is_public_file = check_is_public_file(filepath, public_dir)
 
                 try:
                     if is_public_file:
@@ -555,18 +561,17 @@ class WorkflowExecutor:
             try:
                 hf_df = pd.read_excel(excel_file)
                 for _, row in hf_df.iterrows():
-                    stock_code = str(row.get('股票代码', '')).strip()
-                    stock_name = str(row.get('股票简称', '')).strip()
-                    if stock_code and stock_code != 'nan':
+                    stock_code = normalize_stock_code(row.get('股票代码', ''))
+                    stock_name = normalize_stock_code(row.get('股票简称', ''))
+                    if stock_code:
                         all_high_stocks[stock_code] = stock_name
             except Exception as e:
                 logger.warning(f"读取{excel_file}失败: {e}")
 
         logger.info(f"从{source_dir}目录共加载{len(all_high_stocks)}只新高股票")
 
-        df[new_column_name] = df.apply(
-            lambda row: all_high_stocks.get(str(row.get('证券代码', '')).strip(), ''),
-            axis=1
+        df[new_column_name] = df['证券代码'].apply(
+            lambda code: match_stock_code_flexible(code, all_high_stocks)
         )
 
         matched_count = (df[new_column_name] != '').sum()
@@ -626,9 +631,9 @@ class WorkflowExecutor:
                         name_col = col
                 if code_col and name_col:
                     for _, row in ma_df.iterrows():
-                        code_str = str(row[code_col]).strip()
-                        name_str = str(row[name_col]).strip()
-                        if code_str and code_str != 'nan' and code_str != 'undefined':
+                        code_str = normalize_stock_code(row[code_col])
+                        name_str = normalize_stock_code(row[name_col])
+                        if code_str:
                             all_ma20_stocks[code_str] = name_str
             except Exception as e:
                 logger.warning(f"读取{excel_file}失败: {e}")
@@ -640,7 +645,9 @@ class WorkflowExecutor:
                 return {"success": False, "message": f"输入数据缺少'证券代码'列, 可用列: {list(df.columns)}"}
 
             df = df.copy()
-            df[new_column_name] = df['证券代码'].astype(str).str.strip().map(all_ma20_stocks).fillna('')
+            df[new_column_name] = df['证券代码'].apply(
+                lambda code: match_stock_code_flexible(code, all_ma20_stocks)
+            )
 
             matched_count = (df[new_column_name] != '').sum()
             logger.info(f"匹配完成，共匹配{matched_count}条记录")
@@ -699,28 +706,21 @@ class WorkflowExecutor:
                         stock_code = ''
                         for col in ['股票代码.1', '股票代码', '证券代码']:
                             if col in soe_df.columns and pd.notna(row[col]):
-                                val = str(row[col]).strip()
-                                if val and val != 'nan':
+                                val = normalize_stock_code(row[col])
+                                if val:
                                     stock_code = val
                                     break
-                        stock_name = str(row[name_col]).strip() if pd.notna(row[name_col]) else ''
-                        if stock_code and stock_code != 'nan':
+                        stock_name = normalize_stock_code(row[name_col]) if pd.notna(row[name_col]) else ''
+                        if stock_code:
                             all_soe_stocks[stock_code] = stock_name
             except Exception as e:
                 logger.warning(f"读取{excel_file}失败: {e}")
 
         logger.info(f"从{source_dir}目录共加载{len(all_soe_stocks)}只国企股票")
 
-        def match_stock_code(code):
-            code_str = str(code).strip()
-            if code_str in all_soe_stocks:
-                return all_soe_stocks[code_str]
-            numeric_code = code_str.split('.')[0] if '.' in code_str else code_str
-            if numeric_code in all_soe_stocks:
-                return all_soe_stocks[numeric_code]
-            return ''
-
-        df[new_column_name] = df['证券代码'].apply(match_stock_code)
+        df[new_column_name] = df['证券代码'].apply(
+            lambda code: match_stock_code_flexible(code, all_soe_stocks)
+        )
 
         matched_count = (df[new_column_name] != '').sum()
         logger.info(f"匹配完成，共匹配{matched_count}条记录")
@@ -769,17 +769,19 @@ class WorkflowExecutor:
         for excel_file in excel_files:
             try:
                 sector_df = pd.read_excel(excel_file)
-                stock_codes = sector_df['证券代码'].astype(str).str.strip()
-                sector_names = sector_df['所属一级板块'].astype(str).str.strip()
-                valid_mask = (stock_codes != 'nan') & (stock_codes != '')
-                for code, name in zip(stock_codes[valid_mask], sector_names[valid_mask]):
-                    all_sector_stocks[code] = name
+                for _, row in sector_df.iterrows():
+                    code = normalize_stock_code(row.get('证券代码', ''))
+                    name = normalize_stock_code(row.get('所属一级板块', ''))
+                    if code and name:
+                        all_sector_stocks[code] = name
             except Exception as e:
                 logger.warning(f"读取{excel_file}失败: {e}")
 
         logger.info(f"从{source_dir}目录共加载{len(all_sector_stocks)}只股票")
 
-        df[new_column_name] = df['证券代码'].astype(str).str.strip().map(all_sector_stocks).fillna('')
+        df[new_column_name] = df['证券代码'].apply(
+            lambda code: match_stock_code_flexible(code, all_sector_stocks)
+        )
 
         matched_count = (df[new_column_name] != '').sum()
         logger.info(f"匹配完成，共匹配{matched_count}条记录")
