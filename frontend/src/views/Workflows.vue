@@ -624,7 +624,7 @@
       </div>
     </el-dialog>
 
-    <el-drawer v-model="batchProgressDrawer" title="并行执行进度" direction="rtl" size="450px" :close-on-press-escape="true" @close="stopBatchPolling">
+    <el-drawer v-model="batchProgressDrawer" title="并行执行进度" direction="rtl" size="450px" :close-on-press-escape="true" @close="() => { stopBatchPolling(); stopBatchTimer() }">
       <div class="batch-progress-container">
         <div class="batch-overview">
           <el-descriptions :column="2" border size="small">
@@ -698,7 +698,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus } from '@element-plus/icons-vue'
@@ -1375,6 +1375,15 @@ onMounted(() => {
   fetchWorkflowTypes()
 })
 
+onBeforeUnmount(() => {
+  if (executionTimer.value) {
+    clearInterval(executionTimer.value)
+    executionTimer.value = null
+  }
+  stopBatchTimer()
+  stopBatchPolling()
+})
+
 const handleSelectionChange = (rows) => {
   selectedWorkflows.value = rows
 }
@@ -1493,7 +1502,6 @@ const stopBatchPolling = () => {
     clearInterval(batchPollingTimer.value)
     batchPollingTimer.value = null
   }
-  stopBatchTimer()
 }
 
 watch(() => form.value.workflow_type, (newType, oldType) => {
