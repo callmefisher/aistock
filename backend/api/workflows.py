@@ -48,12 +48,14 @@ class WorkflowStep(BaseModel):
 class WorkflowCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    workflow_type: Optional[str] = ""
     steps: List[WorkflowStep]
 
 
 class WorkflowUpdate(BaseModel):
     name: str = None
     description: str = None
+    workflow_type: str = None
     steps: List[WorkflowStep] = None
     status: str = None
     is_active: bool = None
@@ -63,6 +65,7 @@ class WorkflowResponse(BaseModel):
     id: int
     name: str
     description: Optional[str] = None
+    workflow_type: str = ""
     steps: Union[List[dict], None] = None
     status: str
     last_run_time: Optional[datetime] = None
@@ -80,12 +83,25 @@ async def create_workflow(
     db_workflow = Workflow(
         name=workflow.name,
         description=workflow.description,
+        workflow_type=workflow.workflow_type or "",
         steps=[step.dict() for step in workflow.steps]
     )
     db.add(db_workflow)
     await db.commit()
     await db.refresh(db_workflow)
     return db_workflow
+
+
+@router.get("/types/")
+async def get_workflow_types(
+    current_user: User = Depends(get_current_user)
+):
+    from config.workflow_type_config import get_available_types
+    types = get_available_types()
+    return {
+        "success": True,
+        "types": [{"value": "", "display_name": "默认（并购重组）"}] + types
+    }
 
 
 @router.get("/", response_model=List[WorkflowResponse])
@@ -131,6 +147,11 @@ async def update_workflow(
     for field, value in update_data.items():
         if field == "steps" and value is not None:
             setattr(db_workflow, field, [step.dict() if hasattr(step, 'dict') else step for step in value])
+        elif field == "workflow_type":
+            from config.workflow_type_config import WORKFLOW_TYPE_CONFIG
+            if value and value not in WORKFLOW_TYPE_CONFIG:
+                logger.warning(f"未知的工作流类型: {value}, 将使用默认配置")
+            setattr(db_workflow, field, value or "")
         else:
             setattr(db_workflow, field, value)
 
@@ -192,6 +213,10 @@ async def execute_workflow_step(
 
     output_date_str = first_step_date or date_str
 
+    workflow_type = workflow.workflow_type or ""
+    from services.workflow_executor import WorkflowExecutor
+    executor_with_type = WorkflowExecutor(base_dir=BASE_DIR, workflow_type=workflow_type)
+
     if not date_str:
         for i in range(step_index, -1, -1):
             prev_config = steps[i].get("config", {})
@@ -209,9 +234,9 @@ async def execute_workflow_step(
         logger.info(f"步骤{step_index}读取上一步: type={prev_type}, prev_date={output_date_str}, current_date={date_str}")
 
         if prev_type == "merge_excel":
-            output_filename = prev_output_filename or "total_1.xlsx"
+            output_filename = prev_output_filename or executor_with_type.resolver.get_output_filename("merge_excel", output_date_str)
             prev_output = os.path.join(
-                workflow_executor._get_daily_dir(output_date_str),
+                executor_with_type._get_daily_dir(output_date_str),
                 output_filename
             )
             logger.info(f"步骤{step_index}尝试读取merge_excel输出: {prev_output}")
@@ -223,22 +248,10 @@ async def execute_workflow_step(
                 logger.warning(f"步骤{step_index}上一步输出文件不存在: {prev_output}")
 
         elif prev_type in ["smart_dedup", "extract_columns", "match_high_price", "match_ma20", "match_soe", "match_sector"]:
-            fixed_output_map = {
-                "smart_dedup": "deduped.xlsx",
-            }
-            if prev_type in fixed_output_map:
-                output_filename = fixed_output_map[prev_type]
-            else:
-                type_defaults = {
-                    "match_high_price": "output_3.xlsx",
-                    "match_ma20": "output_4.xlsx",
-                    "match_soe": "output_5.xlsx",
-                    "extract_columns": "output_2.xlsx",
-                }
-                output_filename = prev_output_filename or type_defaults.get(prev_type, "output.xlsx")
+            output_filename = prev_output_filename or executor_with_type.resolver.get_output_filename(prev_type, output_date_str)
             if output_filename:
                 prev_output = os.path.join(
-                    workflow_executor._get_daily_dir(output_date_str),
+                    executor_with_type._get_daily_dir(output_date_str),
                     output_filename
                 )
                 logger.info(f"步骤{step_index}尝试读取{prev_type}输出: {prev_output}")
@@ -254,7 +267,7 @@ async def execute_workflow_step(
     logger.info(f"执行工作流{workflow_id}步骤{step_index}: {step_type}, config: {step_config}, date_str: {date_str}, output_date: {output_date_str}")
     logger.info(f"步骤{step_index}输入数据: {'None' if input_data is None else f'DataFrame({len(input_data)}行)'}")
 
-    result_data = await workflow_executor.execute_step(
+    result_data = await executor_with_type.execute_step(
         step_type=step_type,
         step_config=step_config,
         input_data=input_data,
@@ -335,22 +348,15 @@ class StepFileUploadRequest(BaseModel):
     step_type: str
 
 
-def get_target_directory(step_type: str, date_str: Optional[str] = None) -> str:
-    if date_str is None:
-        date_str = datetime.now().strftime("%Y-%m-%d")
+def get_target_directory(step_type: str, date_str: Optional[str] = None, workflow_type: str = ""):
+    from services.path_resolver import get_resolver
 
-    if step_type == "merge_excel":
-        return os.path.join(BASE_DIR, date_str)
-    elif step_type == "match_high_price":
-        return os.path.join(BASE_DIR, "百日新高")
-    elif step_type == "match_ma20":
-        return os.path.join(BASE_DIR, "20日均线")
-    elif step_type == "match_soe":
-        return os.path.join(BASE_DIR, "国企")
-    elif step_type == "match_sector":
-        return os.path.join(BASE_DIR, "一级板块")
+    resolver = get_resolver(BASE_DIR, workflow_type)
+
+    if step_type in ["match_high_price", "match_ma20", "match_soe", "match_sector"]:
+        return resolver.get_match_source_directory(step_type)
     else:
-        return os.path.join(BASE_DIR, date_str)
+        return resolver.get_upload_directory(date_str)
 
 
 @router.post("/upload-step-file/")
@@ -358,12 +364,24 @@ async def upload_step_file(
     workflow_id: int = Form(...),
     step_index: int = Form(...),
     step_type: str = Form(...),
+    workflow_type: str = Form(""),
     date_str: Optional[str] = Form(None),
     file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user)
 ):
     logger.info(f"[Upload] step_type={step_type}, date_str={date_str}, filename={file.filename}")
-    target_dir = get_target_directory(step_type, date_str)
+
+    if not workflow_type and workflow_id:
+        try:
+            result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+            wf = result.scalar_one_or_none()
+            if wf:
+                workflow_type = wf.workflow_type or ""
+        except Exception as e:
+            logger.warning(f"[Upload] 获取workflow_type失败: {e}")
+
+    target_dir = get_target_directory(step_type, date_str, workflow_type)
     logger.info(f"[Upload] target_dir={target_dir}")
     os.makedirs(target_dir, exist_ok=True)
 
@@ -394,9 +412,10 @@ async def upload_step_file(
 async def get_step_files(
     step_type: str = Query(...),
     date_str: Optional[str] = Query(None),
+    workflow_type: str = Query(""),
     current_user: User = Depends(get_current_user)
 ):
-    target_dir = get_target_directory(step_type, date_str)
+    target_dir = get_target_directory(step_type, date_str, workflow_type)
 
     if not os.path.exists(target_dir):
         return {"success": True, "files": [], "directory": target_dir}
@@ -528,6 +547,11 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                 start_time = datetime.now()
                 input_data = None
 
+                workflow_type = workflow.workflow_type or ""
+
+                from services.workflow_executor import WorkflowExecutor
+                executor_with_type = WorkflowExecutor(base_dir=BASE_DIR, workflow_type=workflow_type)
+
                 first_step_date = None
                 for s in steps:
                     d = (s.get("config") or {}).get("date_str")
@@ -543,9 +567,9 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
 
                     step_result = {"step_index": i, "type": step_type, "status": "running"}
                     try:
-                        logger.info(f"[批量] 工作流{wf_id} 执行步骤{i}: {step_type}, date={step_date_str}")
+                        logger.info(f"[批量] 工作流{wf_id} 执行步骤{i}: {step_type}, date={step_date_str}, type={workflow_type}")
 
-                        exec_result = await workflow_executor.execute_step(
+                        exec_result = await executor_with_type.execute_step(
                             step_type=step_type,
                             step_config=step_config,
                             input_data=input_data,
@@ -666,6 +690,48 @@ async def get_batch_status(
     return response
 
 
+@router.get("/batch-download/{task_id}")
+async def batch_download_results(
+    task_id: str,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user)
+):
+    import zipfile
+    import io
+
+    batch = await db.get(BatchExecution, task_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="批次任务不存在")
+
+    if batch.status not in ['completed', 'partial']:
+        raise HTTPException(status_code=400, detail="批次任务尚未完成")
+
+    # 创建内存中的zip文件
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for result in batch.results:
+            workflow_id = result.get('workflow_id')
+            output_file = result.get('output_file')
+
+            if output_file and os.path.exists(output_file):
+                # 使用工作流ID和原文件名作为zip中的文件名
+                arcname = f"workflow_{workflow_id}_{os.path.basename(output_file)}"
+                zip_file.write(output_file, arcname)
+
+    zip_buffer.seek(0)
+
+    # 返回zip文件
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        io.BytesIO(zip_buffer.read()),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename=batch_{task_id}.zip"
+        }
+    )
+
+
 @router.get("/download-result/{workflow_id}")
 async def download_workflow_result(
     workflow_id: int,
@@ -680,6 +746,10 @@ async def download_workflow_result(
         raise HTTPException(status_code=404, detail="工作流不存在")
 
     steps = workflow.steps or []
+    workflow_type = workflow.workflow_type or ""
+
+    from services.workflow_executor import WorkflowExecutor
+    executor_with_type = WorkflowExecutor(base_dir=BASE_DIR, workflow_type=workflow_type)
 
     output_date_str = None
     for i in range(len(steps)):
@@ -696,15 +766,16 @@ async def download_workflow_result(
         output_filename = step_config.get("output_filename")
 
         if output_filename:
-            file_path = os.path.join(BASE_DIR, output_date_str, output_filename)
+            file_path = os.path.join(executor_with_type._get_daily_dir(output_date_str), output_filename)
         else:
-            target_dir = get_target_directory(step.get("type"), output_date_str)
+            target_dir = get_target_directory(step.get("type"), output_date_str, workflow_type)
             files = glob.glob(os.path.join(target_dir, "*.xlsx"))
             if files:
                 file_path = sorted(files)[-1]
             else:
                 raise HTTPException(status_code=404, detail="未找到结果文件")
     else:
+        file_path = None
         for i in range(len(steps) - 1, -1, -1):
             step = steps[i]
             step_type = step.get("type")
@@ -712,17 +783,25 @@ async def download_workflow_result(
             output_filename = step_config.get("output_filename")
 
             if output_filename:
-                candidate_path = os.path.join(BASE_DIR, output_date_str, output_filename)
+                candidate_path = os.path.join(executor_with_type._get_daily_dir(output_date_str), output_filename)
                 if os.path.exists(candidate_path):
                     file_path = candidate_path
                     break
-            else:
-                target_dir = get_target_directory(step_type, output_date_str)
-                files = glob.glob(os.path.join(target_dir, "*.xlsx"))
-                if files:
-                    file_path = sorted(files)[-1]
+
+            auto_filename = executor_with_type.resolver.get_output_filename(step_type, output_date_str)
+            if auto_filename:
+                candidate_path = os.path.join(executor_with_type._get_daily_dir(output_date_str), auto_filename)
+                if os.path.exists(candidate_path):
+                    file_path = candidate_path
                     break
-        else:
+
+            target_dir = get_target_directory(step_type, output_date_str, workflow_type)
+            files = glob.glob(os.path.join(target_dir, "*.xlsx"))
+            if files:
+                file_path = sorted(files)[-1]
+                break
+
+        if not file_path:
             raise HTTPException(status_code=404, detail="未找到结果文件")
 
     if not os.path.exists(file_path):
@@ -740,13 +819,18 @@ PUBLIC_DIR = os.path.join(BASE_DIR, "2025public")
 
 @router.get("/public-files/")
 async def get_public_files(
+    workflow_type: str = Query(""),
     current_user: User = Depends(get_current_user)
 ):
-    os.makedirs(PUBLIC_DIR, exist_ok=True)
+    from services.path_resolver import get_resolver
+    resolver = get_resolver(BASE_DIR, workflow_type)
+    public_dir = resolver.get_public_directory()
+
+    os.makedirs(public_dir, exist_ok=True)
 
     excel_files = []
     for ext in ["*.xlsx", "*.xls"]:
-        pattern = os.path.join(PUBLIC_DIR, ext)
+        pattern = os.path.join(public_dir, ext)
         for file_path in glob.glob(pattern):
             stat = os.stat(file_path)
             excel_files.append({
@@ -757,16 +841,21 @@ async def get_public_files(
             })
 
     excel_files.sort(key=lambda x: x["modified_time"], reverse=True)
-    return {"success": True, "files": excel_files, "directory": PUBLIC_DIR}
+    return {"success": True, "files": excel_files, "directory": public_dir}
 
 
 @router.post("/public-files/upload/")
 async def upload_public_file(
     file: UploadFile = File(...),
+    workflow_type: str = Form(""),
     current_user: User = Depends(get_current_user)
 ):
-    os.makedirs(PUBLIC_DIR, exist_ok=True)
-    file_path = os.path.join(PUBLIC_DIR, file.filename)
+    from services.path_resolver import get_resolver
+    resolver = get_resolver(BASE_DIR, workflow_type)
+    public_dir = resolver.get_public_directory()
+
+    os.makedirs(public_dir, exist_ok=True)
+    file_path = os.path.join(public_dir, file.filename)
 
     try:
         with open(file_path, "wb") as buffer:
@@ -780,7 +869,7 @@ async def upload_public_file(
                 "filename": file.filename,
                 "path": file_path,
                 "size": file_size,
-                "target_dir": PUBLIC_DIR
+                "target_dir": public_dir
             }
         }
     except Exception as e:

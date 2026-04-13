@@ -9,6 +9,8 @@ from openpyxl.utils import get_column_letter
 import logging
 from pathlib import Path
 
+from services.path_resolver import get_resolver
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,7 @@ def clean_df_for_json(df: pd.DataFrame) -> List[Dict]:
 
 
 class WorkflowExecutor:
-    def __init__(self, base_dir: str = None):
+    def __init__(self, base_dir: str = None, workflow_type: str = ""):
         if base_dir is None:
             import platform
             system = platform.system()
@@ -57,15 +59,13 @@ class WorkflowExecutor:
             else:
                 base_dir = "/app/data/excel"
         self.base_dir = base_dir
+        self.workflow_type = workflow_type
+        self.resolver = get_resolver(base_dir, workflow_type)
         self.today = datetime.now().strftime("%Y-%m-%d")
         os.makedirs(self.base_dir, exist_ok=True)
 
     def _get_daily_dir(self, date_str: Optional[str] = None) -> str:
-        if date_str is None:
-            date_str = self.today
-        daily_dir = os.path.join(self.base_dir, date_str)
-        os.makedirs(daily_dir, exist_ok=True)
-        return daily_dir
+        return self.resolver.get_daily_dir(date_str)
 
     def _resolve_path(self, file_path: str, date_str: Optional[str] = None) -> str:
         if os.path.isabs(file_path):
@@ -161,10 +161,10 @@ class WorkflowExecutor:
             }
 
     async def _merge_excel(self, config: Dict, date_str: Optional[str] = None) -> Dict[str, Any]:
-        daily_dir = self._get_daily_dir(date_str)
+        daily_dir = self.resolver.get_upload_directory(date_str)
         files = self._get_excel_files_in_dir(daily_dir)
 
-        public_dir = os.path.join(self.base_dir, "2025public")
+        public_dir = self.resolver.get_public_directory()
         public_files = []
         if os.path.exists(public_dir):
             public_files = self._get_excel_files_in_dir(public_dir)
@@ -228,6 +228,15 @@ class WorkflowExecutor:
 
             merged_df = pd.concat(dfs, ignore_index=True)
 
+            if self.workflow_type == "股权转让":
+                column_mapping = {
+                    "代码": "证券代码",
+                    "名称": "证券简称",
+                    "公告日期": "最新公告日"
+                }
+                merged_df = merged_df.rename(columns=column_mapping)
+                logger.info(f"股权转让类型：列名映射完成 - {column_mapping}")
+
             keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
             existing_columns = [col for col in keep_columns if col in merged_df.columns]
             merged_df = merged_df[existing_columns]
@@ -265,7 +274,7 @@ class WorkflowExecutor:
                 merged_df = merged_df.dropna(subset=["序号"])
                 merged_df["序号"] = range(1, len(merged_df) + 1)
 
-            output_filename = config.get("output_filename", "total_1.xlsx")
+            output_filename = config.get("output_filename") or self.resolver.get_output_filename("merge_excel", date_str)
             output_path = os.path.join(daily_dir, output_filename)
             merged_df.to_excel(output_path, index=False)
             auto_adjust_excel_width(output_path)
@@ -375,8 +384,9 @@ class WorkflowExecutor:
 
         removed_rows = original_rows - len(df_deduped)
 
-        daily_dir = self._get_daily_dir(date_str)
-        deduped_path = os.path.join(daily_dir, "deduped.xlsx")
+        daily_dir = self.resolver.get_upload_directory(date_str)
+        deduped_filename = self.resolver.get_output_filename("smart_dedup", date_str, config.get("output_filename"))
+        deduped_path = os.path.join(daily_dir, deduped_filename)
         df_deduped.to_excel(deduped_path, index=False)
         auto_adjust_excel_width(deduped_path)
 
@@ -460,7 +470,7 @@ class WorkflowExecutor:
         output_filename = config.get("output_filename")
         file_path = None
         if output_filename:
-            daily_dir = self._get_daily_dir(date_str)
+            daily_dir = self.resolver.get_upload_directory(date_str)
             file_path = os.path.join(daily_dir, output_filename)
 
             from openpyxl import Workbook
@@ -502,8 +512,8 @@ class WorkflowExecutor:
                 "message": "没有可导出的数据"
             }
 
-        filename = config.get("output_filename", "excel_2.xlsx")
-        daily_dir = self._get_daily_dir(date_str)
+        filename = config.get("output_filename") or self.resolver.get_output_filename("export_excel", date_str)
+        daily_dir = self.resolver.get_upload_directory(date_str)
         filepath = os.path.join(daily_dir, filename)
 
         try:
@@ -529,7 +539,7 @@ class WorkflowExecutor:
                 "message": "没有可匹配的数据"
             }
 
-        source_dir = config.get("source_dir", "百日新高")
+        source_dir = config.get("source_dir") or self.resolver.get_match_source_directory("match_high_price")
         new_column_name = config.get("new_column_name", "百日新高")
 
         source_path = os.path.join(self.base_dir, source_dir)
@@ -562,7 +572,7 @@ class WorkflowExecutor:
         matched_count = (df[new_column_name] != '').sum()
         logger.info(f"匹配完成，共匹配{matched_count}条记录")
 
-        output_filename = config.get("output_filename", "output_2.xlsx")
+        output_filename = config.get("output_filename") or self.resolver.get_output_filename("match_high_price", date_str)
         output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
         df.to_excel(output_path, index=False)
         auto_adjust_excel_width(output_path)
@@ -591,7 +601,7 @@ class WorkflowExecutor:
                 "message": "没有可匹配的数据"
             }
 
-        source_dir = config.get("source_dir", "20日均线")
+        source_dir = config.get("source_dir") or self.resolver.get_match_source_directory("match_ma20")
         new_column_name = config.get("new_column_name", "20日均线")
 
         source_path = os.path.join(self.base_dir, source_dir)
@@ -635,7 +645,7 @@ class WorkflowExecutor:
             matched_count = (df[new_column_name] != '').sum()
             logger.info(f"匹配完成，共匹配{matched_count}条记录")
 
-            output_filename = config.get("output_filename", "output_4.xlsx")
+            output_filename = config.get("output_filename") or self.resolver.get_output_filename("match_ma20", date_str)
             output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
             df.to_excel(output_path, index=False)
             auto_adjust_excel_width(output_path)
@@ -667,7 +677,7 @@ class WorkflowExecutor:
                 "message": "没有可匹配的数据"
             }
 
-        source_dir = config.get("source_dir", "国企")
+        source_dir = config.get("source_dir") or self.resolver.get_match_source_directory("match_soe")
         new_column_name = config.get("new_column_name", "国企")
 
         source_path = os.path.join(self.base_dir, source_dir)
@@ -715,7 +725,7 @@ class WorkflowExecutor:
         matched_count = (df[new_column_name] != '').sum()
         logger.info(f"匹配完成，共匹配{matched_count}条记录")
 
-        output_filename = config.get("output_filename", "output_5.xlsx")
+        output_filename = config.get("output_filename") or self.resolver.get_output_filename("match_soe", date_str)
         output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
         df.to_excel(output_path, index=False)
         auto_adjust_excel_width(output_path)
@@ -744,7 +754,7 @@ class WorkflowExecutor:
                 "message": "没有可匹配的数据"
             }
 
-        source_dir = config.get("source_dir", "一级板块")
+        source_dir = config.get("source_dir") or self.resolver.get_match_source_directory("match_sector")
         new_column_name = config.get("new_column_name", "一级板块")
 
         source_path = os.path.join(self.base_dir, source_dir)
@@ -774,7 +784,7 @@ class WorkflowExecutor:
         matched_count = (df[new_column_name] != '').sum()
         logger.info(f"匹配完成，共匹配{matched_count}条记录")
 
-        output_filename = config.get("output_filename", f"并购重组{date_str}.xlsx" if date_str else "output.xlsx")
+        output_filename = config.get("output_filename") or self.resolver.get_output_filename("match_sector", date_str)
         output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
         df.to_excel(output_path, index=False)
         auto_adjust_excel_width(output_path)

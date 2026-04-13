@@ -102,6 +102,7 @@ class Workflow(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False, comment="工作流名称")
     description = Column(Text, comment="工作流描述")
+    workflow_type = Column(String(50), default="", comment="工作流类型: 空/并购重组/融资/...")
     steps = Column(JSON, comment="工作流步骤配置")
     status = Column(String(50), default="active", comment="状态: active/inactive/running/completed/failed")
     last_run_time = Column(DateTime, comment="最后运行时间")

@@ -54,6 +54,23 @@
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" rows="2" placeholder="请输入描述" />
         </el-form-item>
+        <el-form-item label="工作流类型">
+          <el-select v-model="form.workflow_type" style="width: 100%" placeholder="请选择工作流类型">
+            <el-option
+              v-for="type in workflowTypes"
+              :key="type.value"
+              :label="type.display_name"
+              :value="type.value"
+            />
+          </el-select>
+          <el-alert
+            v-if="form.workflow_type === '股权转让'"
+            title="股权转让类型将使用独立的数据目录和输出文件命名"
+            type="info"
+            :closable="false"
+            style="margin-top: 8px"
+          />
+        </el-form-item>
 
         <el-divider content-position="left">工作流步骤</el-divider>
 
@@ -137,7 +154,7 @@
                 <el-form-item label="上传数据">
                   <div class="upload-section">
                     <div class="target-dir-info">
-                      <el-tag type="info">目标目录: {{ step.config.date_str || '当日数据' }}/</el-tag>
+                      <el-tag type="info">目标目录: {{ getTargetDirDisplay('merge_excel', step.config.date_str) }}</el-tag>
                     </div>
                     <div class="upload-actions">
                       <input
@@ -162,7 +179,7 @@
                 <el-form-item label="上传公共数据">
                   <div class="upload-section">
                     <div class="target-dir-info">
-                      <el-tag type="warning">公共目录: 2025public/ (与当日数据一起合并)</el-tag>
+                      <el-tag type="warning">公共目录: {{ getPublicDirDisplay() }} (与当日数据一起合并)</el-tag>
                     </div>
                     <div class="upload-actions">
                       <input
@@ -290,7 +307,7 @@
                 <el-form-item label="上传匹配数据">
                   <div class="upload-section">
                     <div class="target-dir-info">
-                      <el-tag type="info">目标目录: 百日新高/</el-tag>
+                      <el-tag type="info">目标目录: {{ getTargetDirDisplay('match_high_price') }}</el-tag>
                     </div>
                     <div class="upload-actions">
                       <input
@@ -346,7 +363,7 @@
                 <el-form-item label="上传匹配数据">
                   <div class="upload-section">
                     <div class="target-dir-info">
-                      <el-tag type="info">目标目录: 20日均线/</el-tag>
+                      <el-tag type="info">目标目录: {{ getTargetDirDisplay('match_ma20') }}</el-tag>
                     </div>
                     <div class="upload-actions">
                       <input
@@ -402,7 +419,7 @@
                 <el-form-item label="上传匹配数据">
                   <div class="upload-section">
                     <div class="target-dir-info">
-                      <el-tag type="info">目标目录: 国企/</el-tag>
+                      <el-tag type="info">目标目录: {{ getTargetDirDisplay('match_soe') }}</el-tag>
                     </div>
                     <div class="upload-actions">
                       <input
@@ -458,7 +475,7 @@
                 <el-form-item label="上传匹配数据">
                   <div class="upload-section">
                     <div class="target-dir-info">
-                      <el-tag type="info">目标目录: 一级板块/</el-tag>
+                      <el-tag type="info">目标目录: {{ getTargetDirDisplay('match_sector') }}</el-tag>
                     </div>
                     <div class="upload-actions">
                       <input
@@ -692,6 +709,7 @@ const resultData = ref([])
 const resultColumns = ref([])
 const workflows = ref([])
 const dataSources = ref([])
+const workflowTypes = ref([])
 const currentWorkflow = ref(null)
 const isEditing = ref(false)
 const editingId = ref(null)
@@ -775,6 +793,7 @@ const defaultStep = () => ({
 const form = ref({
   name: '',
   description: '',
+  workflow_type: '',
   steps: [defaultStep()]
 })
 
@@ -846,6 +865,7 @@ const openCreateDialog = () => {
   form.value = {
     name: '',
     description: '',
+    workflow_type: '',
     steps: [defaultStep()]
   }
   showDialog.value = true
@@ -930,6 +950,17 @@ const fetchDataSources = async () => {
   }
 }
 
+const fetchWorkflowTypes = async () => {
+  try {
+    const response = await api.get('/workflows/types/')
+    if (response?.success && response?.types) {
+      workflowTypes.value = response.types
+    }
+  } catch (error) {
+    console.error('获取工作流类型失败', error)
+  }
+}
+
 const handleSave = async () => {
   if (!form.value.name) {
     ElMessage.warning('请输入工作流名称')
@@ -945,6 +976,7 @@ const handleSave = async () => {
     const payload = {
       name: form.value.name,
       description: form.value.description,
+      workflow_type: form.value.workflow_type || '',
       steps: form.value.steps.map(step => ({
         type: step.type,
         config: step.config,
@@ -992,6 +1024,8 @@ const startExecution = async () => {
   executionTimer.value = setInterval(updateExecutionTime, 1000)
   updateExecutionTime()
 
+  let lastFilePath = null
+
   for (let i = 0; i < currentWorkflow.value.steps.length; i++) {
     executionStep.value = i
     try {
@@ -1002,6 +1036,9 @@ const startExecution = async () => {
       if (response.data?.records) {
         resultData.value = response.data.records
         resultColumns.value = response.data.columns || []
+      }
+      if (response.data?.file_path) {
+        lastFilePath = response.data.file_path
       }
     } catch (error) {
       if (executionTimer.value) {
@@ -1027,7 +1064,7 @@ const startExecution = async () => {
   executionResult.value = {
     type: 'success',
     message: '工作流执行完成',
-    file_path: '/app/data/excel/excel_2.xlsx'
+    file_path: lastFilePath
   }
   ElMessage.success('工作流执行完成')
 }
@@ -1038,8 +1075,7 @@ const downloadResult = async () => {
     return
   }
   try {
-    const lastStep = currentWorkflow.value.steps.length - 1
-    await api.download(`/workflows/download-result/${currentWorkflow.value.id}?step_index=${lastStep}`)
+    await api.download(`/workflows/download-result/${currentWorkflow.value.id}`)
     ElMessage.success('下载成功')
   } catch (error) {
     console.error('下载失败', error)
@@ -1068,13 +1104,33 @@ const getTargetDirName = (stepType) => {
   return dirMap[stepType] || '数据'
 }
 
+const getTargetDirDisplay = (stepType, dateStr) => {
+  const workflowType = form.value.workflow_type || ''
+  if (stepType === 'merge_excel') {
+    if (workflowType === '股权转让') {
+      return `股权转让/${dateStr || '当日数据'}/`
+    }
+    return `${dateStr || '当日数据'}/`
+  }
+  return `${getTargetDirName(stepType)}/`
+}
+
+const getPublicDirDisplay = () => {
+  const workflowType = form.value.workflow_type || ''
+  if (workflowType === '股权转让') {
+    return '股权转让/public/'
+  }
+  return '2025public/'
+}
+
 const fetchUploadedFiles = async (step, index) => {
   const key = `step_${index}`
   try {
     const response = await api.get('/workflows/step-files/', {
       params: {
         step_type: step.type,
-        date_str: step.config?.date_str
+        date_str: step.config?.date_str,
+        workflow_type: form.value.workflow_type || ''
       }
     })
     console.log('[Debug] fetchUploadedFiles response:', response)
@@ -1104,6 +1160,7 @@ const handleFileUpload = async (event, step, index) => {
   formData.append('workflow_id', String(editingId.value || 0))
   formData.append('step_index', String(index))
   formData.append('step_type', step.type)
+  formData.append('workflow_type', form.value.workflow_type || '')
   if (step.config?.date_str) {
     formData.append('date_str', step.config.date_str)
   }
@@ -1162,7 +1219,11 @@ const previewFile = async (filePath) => {
 const fetchPublicFiles = async (step, index) => {
   const key = `step_${index}`
   try {
-    const response = await api.get('/workflows/public-files/')
+    const response = await api.get('/workflows/public-files/', {
+      params: {
+        workflow_type: form.value.workflow_type || ''
+      }
+    })
     console.log('[Debug] fetchPublicFiles response:', response)
     if (response?.files !== undefined) {
       publicFiles.value[key] = response.files
@@ -1186,6 +1247,7 @@ const handlePublicFileUpload = async (event, step, index) => {
 
   const formData = new FormData()
   formData.append('file', file)
+  formData.append('workflow_type', form.value.workflow_type || '')
 
   try {
     const response = await api.post('/workflows/public-files/upload/', formData, {
@@ -1261,6 +1323,7 @@ const handleEdit = (row) => {
   form.value = {
     name: row.name,
     description: row.description || '',
+    workflow_type: row.workflow_type || '',
     steps: (row.steps || []).map(step => ({
       type: step.type,
       config: { ...step.config },
@@ -1304,6 +1367,7 @@ const handleDelete = async (id) => {
 onMounted(() => {
   fetchWorkflows()
   fetchDataSources()
+  fetchWorkflowTypes()
 })
 
 const handleSelectionChange = (rows) => {
@@ -1402,12 +1466,48 @@ const stopBatchPolling = () => {
   }
 }
 
+watch(() => form.value.workflow_type, (newType, oldType) => {
+  if (newType !== oldType && showDialog.value) {
+    uploadedFiles.value = {}
+    publicFiles.value = {}
+
+    form.value.steps.forEach((step) => {
+      if (step.type === 'match_sector') {
+        const firstStepWithDate = form.value.steps.find(s => s.config?.date_str)
+        const dateStr = firstStepWithDate?.config?.date_str?.replace(/-/g, '') || new Date().toISOString().split('T')[0].replace(/-/g, '')
+        let prefix = '并购重组'
+        if (newType === '股权转让') {
+          prefix = '股权转让'
+        }
+        step.config.output_filename = `${prefix}${dateStr}.xlsx`
+      }
+    })
+
+    setTimeout(() => {
+      form.value.steps.forEach((step, index) => {
+        if (['merge_excel', 'match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)) {
+          fetchUploadedFiles(step, index)
+        }
+        if (step.type === 'merge_excel') {
+          fetchPublicFiles(step, index)
+        }
+      })
+    }, 100)
+  }
+})
+
 watch(() => form.value.steps, (steps) => {
   const firstStepWithDate = steps.find(s => s.config?.date_str)
   if (!firstStepWithDate) return
   const lastStep = steps[steps.length - 1]
   if (lastStep?.type === 'match_sector') {
-    lastStep.config.output_filename = `并购重组${firstStepWithDate.config.date_str}.xlsx`
+    const workflowType = form.value.workflow_type || ''
+    let prefix = '并购重组'
+    if (workflowType === '股权转让') {
+      prefix = '股权转让'
+    }
+    const dateStr = firstStepWithDate.config.date_str.replace(/-/g, '')
+    lastStep.config.output_filename = `${prefix}${dateStr}.xlsx`
   }
 }, { deep: true })
 </script>
