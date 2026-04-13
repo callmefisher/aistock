@@ -736,6 +736,7 @@ async def batch_download_results(
 async def download_workflow_result(
     workflow_id: int,
     step_index: int = Query(None),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -806,6 +807,30 @@ async def download_workflow_result(
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"文件不存在: {file_path}")
+
+    # 收集所有步骤生成的文件路径，下载后清理
+    generated_files = set()
+    daily_dir = executor_with_type._get_daily_dir(output_date_str)
+    for step in steps:
+        step_type = step.get("type")
+        step_config = step.get("config", {})
+        fname = step_config.get("output_filename")
+        if fname:
+            generated_files.add(os.path.join(daily_dir, fname))
+        auto_fname = executor_with_type.resolver.get_output_filename(step_type, output_date_str)
+        if auto_fname:
+            generated_files.add(os.path.join(daily_dir, auto_fname))
+
+    def cleanup_generated_files():
+        for gf in generated_files:
+            try:
+                if os.path.exists(gf):
+                    os.remove(gf)
+                    logger.info(f"下载后清理生成文件: {gf}")
+            except Exception as e:
+                logger.warning(f"清理文件失败: {gf}, {e}")
+
+    background_tasks.add_task(cleanup_generated_files)
 
     return FileResponse(
         path=file_path,
