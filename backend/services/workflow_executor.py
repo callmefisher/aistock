@@ -19,28 +19,46 @@ from utils.stock_code_normalizer import (
 
 logger = logging.getLogger(__name__)
 
+# 模块级缓存：只读匹配源数据 + 公共文件
+# key: (dir_path, max_mtime) → value: cached data
+_match_source_cache: Dict[str, tuple] = {}  # dir_path → (max_mtime, stock_dict)
+_public_file_cache: Dict[str, tuple] = {}   # file_path → (mtime, DataFrame)
 
-def auto_adjust_excel_width(output_path: str):
+
+def _get_dir_mtime(dir_path: str) -> float:
+    """获取目录下所有 Excel 文件的最大修改时间"""
+    max_mtime = 0.0
+    for ext in ("*.xlsx", "*.xls"):
+        for f in glob.glob(os.path.join(dir_path, ext)):
+            mt = os.path.getmtime(f)
+            if mt > max_mtime:
+                max_mtime = mt
+    return max_mtime
+
+
+def invalidate_public_cache(dir_path: str = None):
+    """清除公共文件缓存，上传新文件后调用"""
+    if dir_path:
+        keys_to_remove = [k for k in _public_file_cache if k.startswith(dir_path)]
+        for k in keys_to_remove:
+            del _public_file_cache[k]
+        logger.info(f"已清除公共文件缓存: {dir_path} ({len(keys_to_remove)}个)")
+    else:
+        _public_file_cache.clear()
+        logger.info("已清除所有公共文件缓存")
+
+
+def auto_adjust_excel_width(output_path: str, fixed_width: int = 20):
+    """设置固定列宽（不遍历单元格，极快）"""
     try:
         wb = load_workbook(output_path)
         ws = wb.active
         ws.auto_filter.ref = ws.dimensions
-        for col_idx, column in enumerate(ws.columns, 1):
-            max_length = 0
-            column_letter = get_column_letter(col_idx)
-            for cell in column:
-                try:
-                    if cell.value:
-                        cell_len = len(str(cell.value))
-                        if cell_len > max_length:
-                            max_length = cell_len
-                except:
-                    pass
-            adjusted_width = min(max(max_length + 4, 15), 200)
-            ws.column_dimensions[column_letter].width = adjusted_width
+        for col_idx in range(1, ws.max_column + 1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = fixed_width
         wb.save(output_path)
     except Exception as e:
-        logger.warning(f"自动调整列宽失败: {output_path}, {e}")
+        logger.warning(f"设置列宽失败: {output_path}, {e}")
 
 
 def clean_df_for_json(df: pd.DataFrame) -> List[Dict]:
@@ -69,6 +87,64 @@ class WorkflowExecutor:
         self.resolver = get_resolver(base_dir, workflow_type)
         self.today = datetime.now().strftime("%Y-%m-%d")
         os.makedirs(self.base_dir, exist_ok=True)
+
+    def _load_match_source(self, source_path: str, code_col_candidates: List[str], name_col_candidates: List[str]) -> Dict[str, str]:
+        """加载匹配源数据，带 mtime 缓存。支持逐行多列回退取值。"""
+        current_mtime = _get_dir_mtime(source_path)
+        cached = _match_source_cache.get(source_path)
+        if cached and cached[0] == current_mtime:
+            logger.info(f"匹配源缓存命中: {source_path} ({len(cached[1])}条)")
+            return cached[1]
+
+        stock_dict = {}
+        excel_files = self._get_excel_files_in_dir(source_path)
+        for excel_file in excel_files:
+            try:
+                src_df = pd.read_excel(excel_file, dtype=str)
+                code_cols = [c for c in code_col_candidates if c in src_df.columns]
+                name_col = next((c for c in name_col_candidates if c in src_df.columns), None)
+                if not code_cols or not name_col:
+                    continue
+
+                # 向量化 coalesce：按优先级从多个代码列中取第一个非空值
+                combined_code = pd.Series('', index=src_df.index)
+                for cc in reversed(code_cols):
+                    vals = src_df[cc].fillna('').astype(str).str.strip()
+                    mask = vals != ''
+                    combined_code[mask] = vals[mask]
+
+                names = src_df[name_col].fillna('').astype(str)
+                for code_val, name_val in zip(combined_code, names):
+                    nc = normalize_stock_code(code_val)
+                    if nc:
+                        stock_dict[nc] = normalize_stock_code(name_val)
+            except Exception as e:
+                logger.warning(f"读取{excel_file}失败: {e}")
+
+        # 预建反向索引：同时存 原始key 和 纯数字key，让匹配 O(1)
+        expanded = {}
+        for key, val in stock_dict.items():
+            expanded[key] = val
+            numeric = extract_numeric_code(key)
+            if numeric and numeric != key:
+                expanded[numeric] = val
+
+        _match_source_cache[source_path] = (current_mtime, expanded)
+        logger.info(f"匹配源加载并缓存: {source_path} ({len(stock_dict)}条, 索引{len(expanded)}条)")
+        return expanded
+
+    def _read_public_file_cached(self, filepath: str, skiprows: int = 1) -> pd.DataFrame:
+        """读取公共文件，带 mtime 缓存"""
+        current_mtime = os.path.getmtime(filepath)
+        cached = _public_file_cache.get(filepath)
+        if cached and cached[0] == current_mtime:
+            logger.info(f"公共文件缓存命中: {os.path.basename(filepath)}")
+            return cached[1].copy()
+
+        df = pd.read_excel(filepath, skiprows=skiprows)
+        _public_file_cache[filepath] = (current_mtime, df)
+        logger.info(f"公共文件加载并缓存: {os.path.basename(filepath)} ({len(df)}行)")
+        return df.copy()
 
     def _get_daily_dir(self, date_str: Optional[str] = None) -> str:
         return self.resolver.get_daily_dir(date_str)
@@ -193,6 +269,14 @@ class WorkflowExecutor:
                 base_name = os.path.splitext(output_filename)[0]
                 if base_name not in [p for p in exclude_patterns]:
                     extra_excludes.append(base_name)
+            # 排除所有步骤可能产生的输出文件
+            for step_type in ["merge_excel", "smart_dedup", "extract_columns",
+                              "match_high_price", "match_ma20", "match_soe", "match_sector"]:
+                auto_name = self.resolver.get_output_filename(step_type, date_str)
+                if auto_name:
+                    bn = os.path.splitext(auto_name)[0]
+                    if bn not in exclude_patterns and bn not in extra_excludes:
+                        extra_excludes.append(bn)
 
             for filepath in all_files:
                 filename = os.path.basename(filepath)
@@ -209,7 +293,7 @@ class WorkflowExecutor:
 
                 try:
                     if is_public_file:
-                        df = pd.read_excel(filepath, skiprows=1)
+                        df = self._read_public_file_cached(filepath, skiprows=1)
                     else:
                         df_all = pd.read_excel(filepath)
                         if len(df_all) > 0:
@@ -267,6 +351,11 @@ class WorkflowExecutor:
                             continue
 
                     df["_source_file"] = filename
+                    # 提前过滤到需要的列，减少 concat 内存（55列→4列）
+                    target_cols = ["序号", "证券代码", "证券简称", "最新公告日", "代码", "名称", "公告日期", "_source_file"]
+                    available = [c for c in target_cols if c in df.columns]
+                    if available:
+                        df = df[available]
                     dfs.append(df)
                     logger.info(f"读取文件: {filepath}, 行数: {len(df)}")
                 except Exception as e:
@@ -292,6 +381,8 @@ class WorkflowExecutor:
             keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
             existing_columns = [col for col in keep_columns if col in merged_df.columns]
             merged_df = merged_df[existing_columns]
+            # 去除重复列名（concat 不同格式文件 + rename 可能产生重复列）
+            merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
 
             date_col = None
             for col in ["最新公告日", "公告日", "日期", "date"]:
@@ -329,7 +420,6 @@ class WorkflowExecutor:
             output_filename = config.get("output_filename") or self.resolver.get_output_filename("merge_excel", date_str)
             output_path = os.path.join(daily_dir, output_filename)
             merged_df.to_excel(output_path, index=False)
-            auto_adjust_excel_width(output_path)
 
             return {
                 "success": True,
@@ -338,7 +428,8 @@ class WorkflowExecutor:
                 "file_path": output_path,
                 "rows": len(merged_df),
                 "files_merged": len(dfs),
-                "date_str": date_str or self.today
+                "date_str": date_str or self.today,
+                "_df": merged_df
             }
         except Exception as e:
             return {
@@ -440,7 +531,6 @@ class WorkflowExecutor:
         deduped_filename = self.resolver.get_output_filename("smart_dedup", date_str, config.get("output_filename"))
         deduped_path = os.path.join(daily_dir, deduped_filename)
         df_deduped.to_excel(deduped_path, index=False)
-        auto_adjust_excel_width(deduped_path)
 
         return {
             "success": True,
@@ -451,7 +541,8 @@ class WorkflowExecutor:
             "deduped_rows": len(df_deduped),
             "removed_rows": removed_rows,
             "stock_code_column": stock_code_col,
-            "date_column": date_col
+            "date_column": date_col,
+            "_df": df_deduped
         }
 
     async def _extract_columns(self, config: Dict, df: Optional[pd.DataFrame], date_str: Optional[str] = None) -> Dict[str, Any]:
@@ -601,18 +692,11 @@ class WorkflowExecutor:
                 "message": f"目录不存在: {source_path}"
             }
 
-        all_high_stocks = {}
-        excel_files = self._get_excel_files_in_dir(source_path)
-        for excel_file in excel_files:
-            try:
-                hf_df = pd.read_excel(excel_file, dtype=str)
-                for _, row in hf_df.iterrows():
-                    stock_code = normalize_stock_code(row.get('股票代码', ''))
-                    stock_name = normalize_stock_code(row.get('股票简称', ''))
-                    if stock_code:
-                        all_high_stocks[stock_code] = stock_name
-            except Exception as e:
-                logger.warning(f"读取{excel_file}失败: {e}")
+        all_high_stocks = self._load_match_source(
+            source_path,
+            code_col_candidates=['股票代码', '股票代码.1', '证券代码'],
+            name_col_candidates=['股票简称', '证券简称']
+        )
 
         logger.info(f"从{source_dir}目录共加载{len(all_high_stocks)}只新高股票")
 
@@ -626,7 +710,6 @@ class WorkflowExecutor:
         output_filename = config.get("output_filename") or self.resolver.get_output_filename("match_high_price", date_str)
         output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
         df.to_excel(output_path, index=False)
-        auto_adjust_excel_width(output_path)
         logger.info(f"结果已保存到: {output_path}")
 
         df_clean = df.fillna('')
@@ -642,7 +725,8 @@ class WorkflowExecutor:
             "data": records,
             "columns": df.columns.tolist(),
             "rows": len(df),
-            "file_path": output_path
+            "file_path": output_path,
+            "_df": df
         }
 
     async def _match_ma20(self, config: Dict, df: Optional[pd.DataFrame], date_str: Optional[str] = None) -> Dict[str, Any]:
@@ -662,27 +746,11 @@ class WorkflowExecutor:
                 "message": f"目录不存在: {source_path}"
             }
 
-        all_ma20_stocks = {}
-        excel_files = self._get_excel_files_in_dir(source_path)
-        for excel_file in excel_files:
-            try:
-                ma_df = pd.read_excel(excel_file, engine='openpyxl', dtype=str)
-                code_col = None
-                name_col = None
-                for col in ma_df.columns:
-                    c = str(col).strip()
-                    if '股票代码' in c and code_col is None:
-                        code_col = col
-                    if '股票简称' in c and name_col is None:
-                        name_col = col
-                if code_col and name_col:
-                    for _, row in ma_df.iterrows():
-                        code_str = normalize_stock_code(row[code_col])
-                        name_str = normalize_stock_code(row[name_col])
-                        if code_str:
-                            all_ma20_stocks[code_str] = name_str
-            except Exception as e:
-                logger.warning(f"读取{excel_file}失败: {e}")
+        all_ma20_stocks = self._load_match_source(
+            source_path,
+            code_col_candidates=['股票代码', '股票代码.1', '证券代码'],
+            name_col_candidates=['股票简称', '证券简称']
+        )
 
         logger.info(f"从{source_dir}目录共加载{len(all_ma20_stocks)}只股票")
 
@@ -701,7 +769,6 @@ class WorkflowExecutor:
             output_filename = config.get("output_filename") or self.resolver.get_output_filename("match_ma20", date_str)
             output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
             df.to_excel(output_path, index=False)
-            auto_adjust_excel_width(output_path)
             logger.info(f"结果已保存到: {output_path}")
         except Exception as e:
             logger.error(f"匹配20日均线执行失败: {e}")
@@ -720,7 +787,8 @@ class WorkflowExecutor:
             "data": records,
             "columns": df.columns.tolist(),
             "rows": len(df),
-            "file_path": output_path
+            "file_path": output_path,
+            "_df": df
         }
 
     async def _match_soe(self, config: Dict, df: Optional[pd.DataFrame], date_str: Optional[str] = None) -> Dict[str, Any]:
@@ -740,27 +808,11 @@ class WorkflowExecutor:
                 "message": f"目录不存在: {source_path}"
             }
 
-        all_soe_stocks = {}
-        excel_files = self._get_excel_files_in_dir(source_path)
-        for excel_file in excel_files:
-            try:
-                soe_df = pd.read_excel(excel_file, dtype=str)
-                code_col = next((col for col in ['股票代码.1', '股票代码', '证券代码'] if col in soe_df.columns), None)
-                name_col = next((col for col in ['股票简称', '证券简称'] if col in soe_df.columns), None)
-                if code_col and name_col:
-                    for _, row in soe_df.iterrows():
-                        stock_code = ''
-                        for col in ['股票代码.1', '股票代码', '证券代码']:
-                            if col in soe_df.columns and pd.notna(row[col]):
-                                val = normalize_stock_code(row[col])
-                                if val:
-                                    stock_code = val
-                                    break
-                        stock_name = normalize_stock_code(row[name_col]) if pd.notna(row[name_col]) else ''
-                        if stock_code:
-                            all_soe_stocks[stock_code] = stock_name
-            except Exception as e:
-                logger.warning(f"读取{excel_file}失败: {e}")
+        all_soe_stocks = self._load_match_source(
+            source_path,
+            code_col_candidates=['股票代码.1', '股票代码', '证券代码'],
+            name_col_candidates=['股票简称', '证券简称']
+        )
 
         logger.info(f"从{source_dir}目录共加载{len(all_soe_stocks)}只国企股票")
 
@@ -774,7 +826,6 @@ class WorkflowExecutor:
         output_filename = config.get("output_filename") or self.resolver.get_output_filename("match_soe", date_str)
         output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
         df.to_excel(output_path, index=False)
-        auto_adjust_excel_width(output_path)
         logger.info(f"结果已保存到: {output_path}")
 
         df_clean = df.fillna('')
@@ -790,7 +841,8 @@ class WorkflowExecutor:
             "data": records,
             "columns": df.columns.tolist(),
             "rows": len(df),
-            "file_path": output_path
+            "file_path": output_path,
+            "_df": df
         }
 
     async def _match_sector(self, config: Dict, df: Optional[pd.DataFrame], date_str: Optional[str] = None) -> Dict[str, Any]:
@@ -810,31 +862,11 @@ class WorkflowExecutor:
                 "message": f"目录不存在: {source_path}"
             }
 
-        all_sector_stocks = {}
-        excel_files = self._get_excel_files_in_dir(source_path)
-        for excel_file in excel_files:
-            try:
-                sector_df = pd.read_excel(excel_file, dtype=str)
-                sector_code_col = next((col for col in ['股票代码.1', '股票代码', '证券代码'] if col in sector_df.columns), None)
-                sector_name_col = next((col for col in ['所属一级板块', '所属板块', '一级板块', '板块'] if col in sector_df.columns), None)
-                if sector_code_col and sector_name_col:
-                    for _, row in sector_df.iterrows():
-                        code = normalize_stock_code(row.get(sector_code_col, ''))
-                        name = normalize_stock_code(row.get(sector_name_col, ''))
-                        if code and name:
-                            all_sector_stocks[code] = name
-                elif '证券代码' in sector_df.columns:
-                    for _, row in sector_df.iterrows():
-                        code = normalize_stock_code(row['证券代码'])
-                        name = ''
-                        for col in ['所属一级板块', '所属板块', '一级板块', '板块']:
-                            if col in sector_df.columns and pd.notna(row[col]):
-                                name = normalize_stock_code(row[col])
-                                break
-                        if code and name:
-                            all_sector_stocks[code] = name
-            except Exception as e:
-                logger.warning(f"读取{excel_file}失败: {e}")
+        all_sector_stocks = self._load_match_source(
+            source_path,
+            code_col_candidates=['股票代码.1', '股票代码', '证券代码'],
+            name_col_candidates=['所属一级板块', '所属板块', '一级板块', '板块']
+        )
 
         logger.info(f"从{source_dir}目录共加载{len(all_sector_stocks)}只股票")
 
@@ -864,7 +896,8 @@ class WorkflowExecutor:
             "data": records,
             "columns": df.columns.tolist(),
             "rows": len(df),
-            "file_path": output_path
+            "file_path": output_path,
+            "_df": df
         }
 
 

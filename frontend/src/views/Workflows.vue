@@ -638,6 +638,11 @@
             <el-descriptions-item label="失败">
               <el-tag type="danger" size="small">{{ batchStatus.failed || 0 }}</el-tag>
             </el-descriptions-item>
+            <el-descriptions-item label="耗时">
+              <span :style="{ color: batchExecuting ? '#E6A23C' : '#67C23A', fontWeight: 'bold' }">
+                {{ formatElapsed(batchElapsedSeconds) }}
+              </span>
+            </el-descriptions-item>
           </el-descriptions>
           <el-progress
             v-if="batchStatus.total"
@@ -661,6 +666,7 @@
               <el-tag :type="result.status === 'completed' ? 'success' : result.status === 'failed' ? 'danger' : 'primary'" size="small" effect="plain">
                 {{ batchStatusText(result.status) }}
               </el-tag>
+              <el-text v-if="result.duration" type="info" size="small" style="margin-left: 6px">{{ result.duration }}s</el-text>
               <el-button
                 v-if="result.status === 'completed'"
                 type="primary"
@@ -730,6 +736,8 @@ const batchExecuting = ref(false)
 const batchProgressDrawer = ref(false)
 const batchStatus = ref({})
 const batchPollingTimer = ref(null)
+const batchElapsedSeconds = ref(0)
+const batchTimerInterval = ref(null)
 const workflowTableRef = ref(null)
 
 const openOutputDirectory = async () => {
@@ -1024,34 +1032,37 @@ const startExecution = async () => {
   executionTimer.value = setInterval(updateExecutionTime, 1000)
   updateExecutionTime()
 
-  let lastFilePath = null
+  try {
+    // 一键执行全部步骤（后端内存传递，无中间磁盘IO）
+    const response = await api.post(`/workflows/${currentWorkflow.value.id}/run/`)
 
-  for (let i = 0; i < currentWorkflow.value.steps.length; i++) {
-    executionStep.value = i
-    try {
-      const response = await api.post(`/workflows/${currentWorkflow.value.id}/execute-step/`, {
-        step_index: i
-      })
-      currentWorkflow.value.steps[i].status = 'completed'
-      if (response.data?.records) {
-        resultData.value = response.data.records
-        resultColumns.value = response.data.columns || []
-      }
-      if (response.data?.file_path) {
-        lastFilePath = response.data.file_path
-      }
-    } catch (error) {
-      if (executionTimer.value) {
-        clearInterval(executionTimer.value)
-        executionTimer.value = null
-      }
-      currentWorkflow.value.steps[i].status = 'failed'
+    // 标记各步骤状态
+    const stepResults = response.steps || []
+    for (let i = 0; i < currentWorkflow.value.steps.length; i++) {
+      const sr = stepResults[i]
+      currentWorkflow.value.steps[i].status = sr ? sr.status : 'completed'
+    }
+
+    if (response.data?.records) {
+      resultData.value = response.data.records
+    }
+    if (response.data?.file_path) {
       executionResult.value = {
-        type: 'error',
-        message: `步骤 ${i + 1} 执行失败`
+        type: 'success',
+        message: response.message || '工作流执行完成',
+        file_path: response.data.file_path
       }
-      executing.value = false
-      return
+    } else {
+      executionResult.value = {
+        type: 'success',
+        message: response.message || '工作流执行完成'
+      }
+    }
+    ElMessage.success(response.message || '工作流执行完成')
+  } catch (error) {
+    executionResult.value = {
+      type: 'error',
+      message: error.response?.data?.detail || '执行失败'
     }
   }
 
@@ -1061,12 +1072,6 @@ const startExecution = async () => {
     clearInterval(executionTimer.value)
     executionTimer.value = null
   }
-  executionResult.value = {
-    type: 'success',
-    message: '工作流执行完成',
-    file_path: lastFilePath
-  }
-  ElMessage.success('工作流执行完成')
 }
 
 const downloadResult = async () => {
@@ -1397,6 +1402,27 @@ const batchProgressStatus = computed(() => {
   return undefined
 })
 
+const formatElapsed = (seconds) => {
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return m > 0 ? `${m}分${s}秒` : `${s}秒`
+}
+
+const startBatchTimer = () => {
+  stopBatchTimer()
+  batchElapsedSeconds.value = 0
+  batchTimerInterval.value = setInterval(() => {
+    batchElapsedSeconds.value++
+  }, 1000)
+}
+
+const stopBatchTimer = () => {
+  if (batchTimerInterval.value) {
+    clearInterval(batchTimerInterval.value)
+    batchTimerInterval.value = null
+  }
+}
+
 const handleBatchRun = async () => {
   if (selectedWorkflows.value.length === 0) {
     ElMessage.warning('请先选择要执行的工作流')
@@ -1416,6 +1442,7 @@ const handleBatchRun = async () => {
   batchExecuting.value = true
   batchStatus.value = { status: 'pending', total: selectedWorkflows.value.length, completed: 0, failed: 0, results: [] }
   batchProgressDrawer.value = true
+  startBatchTimer()
 
   try {
     const response = await api.post('/workflows/batch-run/', {
@@ -1432,6 +1459,7 @@ const handleBatchRun = async () => {
     ElMessage.error('批量执行启动失败: ' + (error.message || '未知错误'))
     batchStatus.value = { ...batchStatus.value, status: 'failed' }
     batchExecuting.value = false
+    stopBatchTimer()
   }
 }
 
@@ -1444,6 +1472,7 @@ const startBatchPolling = (taskId) => {
         batchStatus.value = response
         if (['completed', 'partial', 'failed', 'cancelled'].includes(response.status)) {
           stopBatchPolling()
+          stopBatchTimer()
           batchExecuting.value = false
           const msg = response.status === 'completed'
             ? '全部工作流执行完成'
@@ -1464,6 +1493,7 @@ const stopBatchPolling = () => {
     clearInterval(batchPollingTimer.value)
     batchPollingTimer.value = null
   }
+  stopBatchTimer()
 }
 
 watch(() => form.value.workflow_type, (newType, oldType) => {

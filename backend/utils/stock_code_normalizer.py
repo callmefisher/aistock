@@ -66,25 +66,9 @@ def match_stock_code_flexible(
     """
     灵活匹配股票代码（支持多种格式）
 
-    匹配策略：
-    1. 先尝试精确匹配原始格式
-    2. 再尝试匹配纯数字代码
-    3. 支持带后缀和不带后缀的匹配
-
-    Args:
-        code: 待匹配的股票代码
-        stock_dict: 股票代码字典 {code: name}
-        return_value: 是否返回匹配到的值（True）还是返回键（False）
-
-    Returns:
-        匹配成功返回对应值/键，失败返回空字符串
-
-    Examples:
-        >>> stock_dict = {'601398': '工商银行', '601398.SH': '工商银行'}
-        >>> match_stock_code_flexible('601398.SH', stock_dict)
-        '工商银行'
-        >>> match_stock_code_flexible('601398', stock_dict)
-        '工商银行'
+    匹配策略（全部 O(1) 查找）：
+    1. 精确匹配标准化后的代码 (如 601398.SH)
+    2. 匹配纯数字代码 (如 601398)
     """
     normalized = normalize_stock_code(code)
     if not normalized:
@@ -94,18 +78,8 @@ def match_stock_code_flexible(
         return stock_dict[normalized] if return_value else normalized
 
     numeric_code = extract_numeric_code(normalized)
-    if numeric_code in stock_dict:
+    if numeric_code and numeric_code in stock_dict:
         return stock_dict[numeric_code] if return_value else numeric_code
-
-    for key in stock_dict.keys():
-        key_normalized = normalize_stock_code(key)
-        key_numeric = extract_numeric_code(key_normalized)
-
-        if normalized == key_normalized or normalized == key_numeric:
-            return stock_dict[key] if return_value else key
-
-        if numeric_code and (numeric_code == key_normalized or numeric_code == key_numeric):
-            return stock_dict[key] if return_value else key
 
     return ''
 

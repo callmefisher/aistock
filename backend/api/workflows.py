@@ -12,6 +12,7 @@ import asyncio
 import uuid
 import json
 from fastapi.responses import FileResponse
+from services.workflow_executor import clean_df_for_json
 from core.database import get_async_db
 from models.models import Workflow, BatchExecution
 from api.auth import get_current_user
@@ -315,11 +316,77 @@ async def run_workflow(
     if not workflow:
         raise HTTPException(status_code=404, detail="工作流不存在")
 
-    workflow.status = "running"
-    await db.commit()
-    await db.refresh(workflow)
+    steps = workflow.steps or []
+    if not steps:
+        raise HTTPException(status_code=400, detail="工作流无步骤")
 
-    return {"message": f"工作流 {workflow_id} 已开始执行", "workflow_id": workflow_id}
+    workflow_type = workflow.workflow_type or ""
+    from services.workflow_executor import WorkflowExecutor
+    executor = WorkflowExecutor(base_dir=BASE_DIR, workflow_type=workflow_type)
+
+    first_step_date = None
+    for s in steps:
+        d = (s.get("config") or {}).get("date_str")
+        if d:
+            first_step_date = d
+            break
+    output_date_str = first_step_date or datetime.now().strftime("%Y-%m-%d")
+
+    start_time = datetime.now()
+    input_data = None
+    step_results = []
+    last_output_file = None
+
+    for i, step in enumerate(steps):
+        step_type = step.get("type", "")
+        step_config = step.get("config", {})
+
+        logger.info(f"[单工作流] {workflow_id} 步骤{i}: {step_type}")
+        exec_result = await executor.execute_step(
+            step_type=step_type,
+            step_config=step_config,
+            input_data=input_data,
+            date_str=output_date_str
+        )
+
+        if exec_result.get("success"):
+            # 内存传递 DataFrame，避免磁盘读写
+            if "_df" in exec_result and exec_result["_df"] is not None:
+                input_data = exec_result["_df"]
+            output_file = exec_result.get("file_path")
+            if output_file:
+                last_output_file = output_file
+            step_results.append({"step": i, "type": step_type, "status": "completed",
+                                 "message": exec_result.get("message", "")})
+        else:
+            step_results.append({"step": i, "type": step_type, "status": "failed",
+                                 "error": exec_result.get("message", "")})
+            logger.warning(f"[单工作流] {workflow_id} 步骤{i}({step_type})失败: {exec_result.get('message')}")
+
+    duration = round((datetime.now() - start_time).total_seconds(), 2)
+
+    workflow.status = "active"
+    workflow.last_run_time = datetime.now()
+    await db.commit()
+
+    failed = [s for s in step_results if s["status"] == "failed"]
+    # 构建最后一步的预览数据
+    preview_data = []
+    if input_data is not None and hasattr(input_data, 'head'):
+        preview_data = clean_df_for_json(input_data)
+
+    return {
+        "message": f"工作流执行完成，耗时{duration}秒" + (f"，{len(failed)}个步骤失败" if failed else ""),
+        "workflow_id": workflow_id,
+        "duration": duration,
+        "steps": step_results,
+        "output_file": last_output_file,
+        "data": {
+            "rows": len(input_data) if input_data is not None and hasattr(input_data, '__len__') else 0,
+            "records": preview_data,
+            "file_path": last_output_file
+        }
+    }
 
 
 from pydantic import BaseModel
@@ -580,23 +647,20 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                             step_result["status"] = "completed"
                             step_result["message"] = exec_result.get("message", "")
 
-                            output_file = exec_result.get("file_path")
-                            if output_file and os.path.exists(output_file):
-                                try:
-                                    input_data = await loop.run_in_executor(None, pd.read_excel, output_file)
-                                    logger.info(f"[批量] 工作流{wf_id} 步骤{i} 从文件读取完整数据: {output_file}, {len(input_data)}行")
-                                except Exception as read_err:
-                                    logger.warning(f"[批量] 读取输出文件失败: {read_err}, 回退到data字段")
-                                    result_data = exec_result.get("data")
-                                    if isinstance(result_data, list) and len(result_data) > 0:
-                                        input_data = await loop.run_in_executor(None, pd.DataFrame, result_data)
+                            # 优先使用内存中的 DataFrame，避免磁盘读写
+                            if "_df" in exec_result and exec_result["_df"] is not None:
+                                input_data = exec_result["_df"]
+                                logger.info(f"[批量] 工作流{wf_id} 步骤{i} 内存传递DataFrame: {len(input_data)}行")
                             else:
-                                result_data = exec_result.get("data")
-                                if isinstance(result_data, list) and len(result_data) > 0:
-                                    input_data = await loop.run_in_executor(None, pd.DataFrame, result_data)
-                                elif hasattr(result_data, 'to_dict'):
-                                    input_data = result_data
+                                output_file = exec_result.get("file_path")
+                                if output_file and os.path.exists(output_file):
+                                    try:
+                                        input_data = await loop.run_in_executor(None, pd.read_excel, output_file)
+                                        logger.info(f"[批量] 工作流{wf_id} 步骤{i} 从文件读取: {len(input_data)}行")
+                                    except Exception as read_err:
+                                        logger.warning(f"[批量] 读取输出文件失败: {read_err}")
 
+                            output_file = exec_result.get("file_path")
                             if output_file:
                                 step_result["output_file"] = output_file
                                 if i == len(steps) - 1:
@@ -887,6 +951,10 @@ async def upload_public_file(
             shutil.copyfileobj(file.file, buffer)
 
         file_size = os.path.getsize(file_path)
+
+        from services.workflow_executor import invalidate_public_cache
+        invalidate_public_cache(public_dir)
+
         return {
             "success": True,
             "message": f"文件上传成功",
