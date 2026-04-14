@@ -341,22 +341,60 @@ const canCompare = computed(() => {
 const SKIP_COMPARE_COLUMNS = ['序号']
 const KEY_COLUMN_KEYWORDS = ['证券代码', '代码', '股票代码']
 
-const generateMappings = () => {
-  const allCols = new Set([...columnsA.value, ...columnsB.value])
-  const mappings = []
+// 同义列名组：同组内的列名视为同一字段
+const COLUMN_SYNONYMS = [
+  ['证券代码', '代码', '股票代码'],
+  ['证券简称', '名称', '股票简称'],
+  ['最新公告日', '公告日期', '首次公告日'],
+  ['20日均线', '站上20日线'],
+  ['国企', '国央企'],
+  ['一级板块', '所属板块'],
+  ['序号'],
+  ['百日新高'],
+]
 
-  allCols.forEach(col => {
-    const inA = columnsA.value.includes(col)
-    const inB = columnsB.value.includes(col)
-    const isSkipCompare = SKIP_COMPARE_COLUMNS.includes(col.trim())
-    const isKey = KEY_COLUMN_KEYWORDS.some(k => col.includes(k))
+const findSynonymMatch = (colA, colsB) => {
+  if (colsB.includes(colA)) return colA
+  for (const group of COLUMN_SYNONYMS) {
+    if (group.includes(colA)) {
+      for (const synonym of group) {
+        if (colsB.includes(synonym)) return synonym
+      }
+    }
+  }
+  return ''
+}
+
+const generateMappings = () => {
+  const mappings = []
+  const usedB = new Set()
+
+  columnsA.value.forEach(colA => {
+    const matchedB = findSynonymMatch(colA, columnsB.value)
+    if (matchedB) usedB.add(matchedB)
+
+    const isSkipCompare = SKIP_COMPARE_COLUMNS.includes(colA.trim())
+    const isKey = KEY_COLUMN_KEYWORDS.some(k => colA.includes(k))
     mappings.push({
-      label: col,
-      columnA: inA ? col : '',
-      columnB: inB ? col : '',
-      isKey: isKey && inA && inB,
-      enabled: !isSkipCompare && inA && inB
+      label: colA,
+      columnA: colA,
+      columnB: matchedB,
+      isKey: isKey && !!matchedB,
+      enabled: !isSkipCompare && !!matchedB
     })
+  })
+
+  // B文件中未匹配到的列
+  columnsB.value.forEach(colB => {
+    if (!usedB.has(colB)) {
+      mappings.push({
+        label: colB,
+        columnA: '',
+        columnB: colB,
+        isKey: false,
+        enabled: false
+      })
+    }
   })
 
   columnMappings.value = mappings
