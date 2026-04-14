@@ -2,7 +2,7 @@
   <div class="excel-compare">
     <div class="page-header">
       <h1>Excel数据比对</h1>
-      <p class="subtitle">比较两个Excel文件的数据差异，智能匹配列名和主键</p>
+      <p class="subtitle">比较两个Excel文件的数据差异，支持自定义列映射和主键</p>
     </div>
 
     <div class="upload-section">
@@ -35,6 +35,12 @@
           <span>{{ dataA.length }} 行数据</span>
           <span class="divider">|</span>
           <span>{{ columnsA.length }} 列</span>
+        </div>
+        <div v-if="sheetsA.length" class="sheet-selector">
+          <span class="sheet-label">Sheet:</span>
+          <el-select v-model="selectedSheetA" size="small" @change="onSheetChange('A')">
+            <el-option v-for="s in sheetsA" :key="s" :label="s" :value="s" />
+          </el-select>
         </div>
       </div>
 
@@ -72,25 +78,42 @@
           <span class="divider">|</span>
           <span>{{ columnsB.length }} 列</span>
         </div>
+        <div v-if="sheetsB.length" class="sheet-selector">
+          <span class="sheet-label">Sheet:</span>
+          <el-select v-model="selectedSheetB" size="small" @change="onSheetChange('B')">
+            <el-option v-for="s in sheetsB" :key="s" :label="s" :value="s" />
+          </el-select>
+        </div>
       </div>
     </div>
 
-    <div v-if="dataA.length && dataB.length" class="mapping-section">
+    <div v-if="columnsA.length && columnsB.length" class="mapping-section">
       <div class="section-title">
         <el-icon><Connection /></el-icon>
-        <span>列名映射</span>
-        <el-tag type="info" size="small">自动识别</el-tag>
+        <span>列映射配置</span>
+        <div class="section-actions">
+          <el-button size="small" @click="autoMatch">
+            <el-icon><Refresh /></el-icon>
+            自动匹配
+          </el-button>
+          <el-button size="small" type="primary" @click="addMappingRow">
+            <el-icon><Plus /></el-icon>
+            添加映射
+          </el-button>
+        </div>
       </div>
       <div class="mapping-grid">
         <div class="mapping-header">
-          <span>标准列名</span>
-          <span>A文件列名</span>
-          <span>B文件列名</span>
+          <span>对比列名</span>
+          <span>A文件列</span>
+          <span>B文件列</span>
           <span>主键</span>
+          <span>对比</span>
+          <span></span>
         </div>
-        <div v-for="mapping in columnMappings" :key="mapping.standard" class="mapping-row">
-          <span class="standard-name">{{ mapping.standard }}</span>
-          <el-select v-model="mapping.columnA" placeholder="选择列" size="small" clearable>
+        <div v-for="(mapping, idx) in columnMappings" :key="idx" class="mapping-row">
+          <el-input v-model="mapping.label" size="small" placeholder="列名" />
+          <el-select v-model="mapping.columnA" placeholder="选择列" size="small" clearable filterable>
             <el-option
               v-for="col in columnsA"
               :key="col"
@@ -98,7 +121,7 @@
               :value="col"
             />
           </el-select>
-          <el-select v-model="mapping.columnB" placeholder="选择列" size="small" clearable>
+          <el-select v-model="mapping.columnB" placeholder="选择列" size="small" clearable filterable>
             <el-option
               v-for="col in columnsB"
               :key="col"
@@ -106,12 +129,16 @@
               :value="col"
             />
           </el-select>
-          <el-checkbox v-model="mapping.isKey" :disabled="!mapping.columnA && !mapping.columnB" />
+          <el-checkbox v-model="mapping.isKey" />
+          <el-checkbox v-model="mapping.enabled" />
+          <el-button link type="danger" size="small" @click="removeMappingRow(idx)" :disabled="columnMappings.length <= 1">
+            <el-icon><Delete /></el-icon>
+          </el-button>
         </div>
       </div>
       <div class="key-hint">
         <el-icon><InfoFilled /></el-icon>
-        <span>主键列用于匹配同一数据，建议选择：证券代码 + 最新公告日 + 百日新高 + 20日均线 + 国企 + 一级板块</span>
+        <span>主键列用于匹配同一条数据；对比列决定哪些字段参与差异检测</span>
       </div>
     </div>
 
@@ -160,7 +187,15 @@
               :label="col"
               min-width="120"
               show-overflow-tooltip
-            />
+              :class-name="keyColumnLabels.has(col) ? 'key-col-cell' : ''"
+            >
+              <template #header>
+                <span :style="keyColumnLabels.has(col) ? keyHeaderStyle : {}">{{ col }}</span>
+              </template>
+              <template #default="{ row }">
+                <span :style="keyColumnLabels.has(col) ? keyHighlightStyle : {}">{{ row[col] }}</span>
+              </template>
+            </el-table-column>
           </el-table>
         </div>
 
@@ -177,7 +212,15 @@
               :label="col"
               min-width="120"
               show-overflow-tooltip
-            />
+              :class-name="keyColumnLabels.has(col) ? 'key-col-cell' : ''"
+            >
+              <template #header>
+                <span :style="keyColumnLabels.has(col) ? keyHeaderStyle : {}">{{ col }}</span>
+              </template>
+              <template #default="{ row }">
+                <span :style="keyColumnLabels.has(col) ? keyHighlightStyle : {}">{{ row[col] }}</span>
+              </template>
+            </el-table-column>
           </el-table>
         </div>
 
@@ -203,17 +246,17 @@
             <el-icon><Warning /></el-icon>
             <span>两文件中都存在但值不同的数据 ({{ compareResult.diff.length }}条)</span>
           </div>
-          <el-table :data="compareResult.diff" stripe border max-height="500" style="width: 100%">
-            <el-table-column prop="_keyDisplay" label="主键" min-width="200" fixed show-overflow-tooltip />
-            <el-table-column prop="_diffField" label="差异字段" width="120" />
-            <el-table-column label="A文件值" min-width="150">
+          <el-table :data="compareResult.diff" border max-height="500" style="width: 100%">
+            <el-table-column
+              v-for="col in diffDisplayColumns"
+              :key="col.prop"
+              :prop="col.prop"
+              :label="col.label"
+              min-width="130"
+              show-overflow-tooltip
+            >
               <template #default="{ row }">
-                <span class="value-a">{{ row._valueA }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="B文件值" min-width="150">
-              <template #default="{ row }">
-                <span class="value-b">{{ row._valueB }}</span>
+                <span :style="getDiffStyle(col.prop, row)">{{ row[col.prop] }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -224,120 +267,187 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, shallowRef, computed } from 'vue'
 import * as XLSX from 'xlsx'
 import { ElMessage } from 'element-plus'
-
-const COLUMN_NAME_MAPPINGS = {
-  '证券代码': ['证券代码', '代码', '股票代码', 'code', 'CODE'],
-  '证券简称': ['证券简称', '名称', '股票名称', '简称', 'name', 'NAME'],
-  '最新公告日': ['最新公告日', '公告日期', '公告日', '日期', 'date', 'DATE'],
-  '百日新高': ['百日新高', '百日新高日期', '新高'],
-  '20日均线': ['20日均线', '站上20日线', '20日线', '均线'],
-  '国企': ['国企', '国央企', '国有企业', '央企'],
-  '一级板块': ['一级板块', '所属板块', '板块', '行业板块']
-}
-
-const KEY_COLUMNS = ['证券代码', '最新公告日', '百日新高', '20日均线', '国企', '一级板块']
+import {
+  UploadFilled, Document, Switch, Connection, DataAnalysis,
+  Warning, CircleCheck, InfoFilled, Delete, Refresh, Plus
+} from '@element-plus/icons-vue'
 
 const fileA = ref(null)
 const fileB = ref(null)
-const dataA = ref([])
-const dataB = ref([])
+const dataA = shallowRef([])
+const dataB = shallowRef([])
 const columnsA = ref([])
 const columnsB = ref([])
+const sheetsA = ref([])
+const sheetsB = ref([])
+const selectedSheetA = ref('')
+const selectedSheetB = ref('')
+const workbookA = shallowRef(null)
+const workbookB = shallowRef(null)
 const comparing = ref(false)
-const compareResult = ref(null)
+const compareResult = shallowRef(null)
 const activeTab = ref('onlyA')
-
 const columnMappings = ref([])
-
-const initColumnMappings = () => {
-  columnMappings.value = Object.keys(COLUMN_NAME_MAPPINGS).map(standard => ({
-    standard,
-    columnA: '',
-    columnB: '',
-    isKey: KEY_COLUMNS.includes(standard)
-  }))
-}
-
-initColumnMappings()
 
 const displayColumns = computed(() => {
   return columnMappings.value
     .filter(m => m.columnA || m.columnB)
-    .map(m => m.standard)
+    .map(m => m.label)
+})
+
+const keyColumnLabels = computed(() => {
+  return new Set(columnMappings.value.filter(m => m.isKey).map(m => m.label))
+})
+
+const alwaysShowLabels = computed(() => {
+  const labels = new Set()
+  columnMappings.value.forEach(m => {
+    if (m.isKey || SKIP_COMPARE_COLUMNS.includes(m.label.trim())) {
+      labels.add(m.label)
+    }
+  })
+  return labels
+})
+
+const diffDisplayColumns = computed(() => {
+  if (!compareResult.value) return []
+  const allDiffLabels = new Set()
+  compareResult.value.diff.forEach(row => {
+    if (row._diffColumns) {
+      row._diffColumns.forEach(l => allDiffLabels.add(l))
+    }
+  })
+
+  const cols = []
+  const pairedMappings = columnMappings.value.filter(m => m.columnA && m.columnB)
+  pairedMappings.forEach(m => {
+    const show = alwaysShowLabels.value.has(m.label) || allDiffLabels.has(m.label)
+    if (show) {
+      cols.push({ prop: `A_${m.label}`, label: `A: ${m.label}` })
+      cols.push({ prop: `B_${m.label}`, label: `B: ${m.label}` })
+    }
+  })
+  return cols
 })
 
 const canCompare = computed(() => {
-  const hasKey = columnMappings.value.some(m => m.isKey && (m.columnA || m.columnB))
+  const hasKey = columnMappings.value.some(m => m.isKey && m.columnA && m.columnB)
   return dataA.value.length > 0 && dataB.value.length > 0 && hasKey
 })
 
-const normalizeColumnName = (colName) => {
-  const normalized = colName?.toString().trim() || ''
-  for (const [standard, aliases] of Object.entries(COLUMN_NAME_MAPPINGS)) {
-    if (aliases.some(alias => normalized.includes(alias))) {
-      return standard
-    }
+const SKIP_COMPARE_COLUMNS = ['序号']
+const KEY_COLUMN_KEYWORDS = ['证券代码', '代码', '股票代码']
+
+const generateMappings = () => {
+  const allCols = new Set([...columnsA.value, ...columnsB.value])
+  const mappings = []
+
+  allCols.forEach(col => {
+    const inA = columnsA.value.includes(col)
+    const inB = columnsB.value.includes(col)
+    const isSkipCompare = SKIP_COMPARE_COLUMNS.includes(col.trim())
+    const isKey = KEY_COLUMN_KEYWORDS.some(k => col.includes(k))
+    mappings.push({
+      label: col,
+      columnA: inA ? col : '',
+      columnB: inB ? col : '',
+      isKey: isKey && inA && inB,
+      enabled: !isSkipCompare && inA && inB
+    })
+  })
+
+  columnMappings.value = mappings
+}
+
+const autoMatch = () => {
+  generateMappings()
+  ElMessage.success('已重新自动匹配列')
+}
+
+const addMappingRow = () => {
+  columnMappings.value.push({
+    label: '',
+    columnA: '',
+    columnB: '',
+    isKey: false,
+    enabled: true
+  })
+}
+
+const removeMappingRow = (idx) => {
+  columnMappings.value.splice(idx, 1)
+}
+
+const parseSheet = (workbook, sheetName, type) => {
+  const worksheet = workbook.Sheets[sheetName]
+  const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' })
+
+  if (jsonData.length === 0) {
+    ElMessage.warning('该Sheet没有数据')
+    return
   }
-  return normalized
+
+  if (type === 'A') {
+    dataA.value = jsonData
+    columnsA.value = Object.keys(jsonData[0])
+  } else {
+    dataB.value = jsonData
+    columnsB.value = Object.keys(jsonData[0])
+  }
+
+  if (columnsA.value.length && columnsB.value.length) {
+    generateMappings()
+  }
 }
 
 const handleFileChange = async (file, type) => {
   const fileRef = type === 'A' ? fileA : fileB
-  const dataRef = type === 'A' ? dataA : dataB
-  const columnsRef = type === 'A' ? columnsA : columnsB
 
   fileRef.value = file.raw
+  compareResult.value = null
 
   try {
     const data = await file.raw.arrayBuffer()
     const workbook = XLSX.read(data, { type: 'array' })
-    const sheetName = workbook.SheetNames[0]
-    const worksheet = workbook.Sheets[sheetName]
-    const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' })
 
-    if (jsonData.length === 0) {
-      ElMessage.warning('文件没有数据')
-      return
+    if (type === 'A') {
+      workbookA.value = workbook
+      sheetsA.value = workbook.SheetNames
+      selectedSheetA.value = workbook.SheetNames[0]
+    } else {
+      workbookB.value = workbook
+      sheetsB.value = workbook.SheetNames
+      selectedSheetB.value = workbook.SheetNames[0]
     }
 
-    dataRef.value = jsonData
-    columnsRef.value = Object.keys(jsonData[0])
+    parseSheet(workbook, workbook.SheetNames[0], type)
 
-    autoMapColumns(type)
-
-    ElMessage.success(`文件${type}加载成功：${jsonData.length}行数据`)
+    ElMessage.success(`文件${type}加载成功：${type === 'A' ? dataA.value.length : dataB.value.length}行数据`)
   } catch (error) {
-    console.error('解析文件失败:', error)
     ElMessage.error('解析文件失败，请检查文件格式')
   }
 }
 
-const autoMapColumns = (type) => {
-  const columns = type === 'A' ? columnsA.value : columnsB.value
-  const mappingKey = type === 'A' ? 'columnA' : 'columnB'
-
-  columns.forEach(col => {
-    const normalizedCol = normalizeColumnName(col)
-    const mapping = columnMappings.value.find(m => m.standard === normalizedCol)
-    if (mapping && !mapping[mappingKey]) {
-      mapping[mappingKey] = col
-    }
-  })
+const onSheetChange = (type) => {
+  compareResult.value = null
+  if (type === 'A' && workbookA.value) {
+    parseSheet(workbookA.value, selectedSheetA.value, 'A')
+  } else if (type === 'B' && workbookB.value) {
+    parseSheet(workbookB.value, selectedSheetB.value, 'B')
+  }
 }
 
-const buildKey = (row, mappings, file) => {
-  const keyParts = []
-  mappings.forEach(m => {
-    if (m.isKey) {
-      const colName = file === 'A' ? m.columnA : m.columnB
-      const value = row[colName]?.toString().trim() || ''
-      keyParts.push(`${m.standard}:${value}`)
-    }
+const buildKey = (row, keyMappings, file) => {
+  const parts = []
+  keyMappings.forEach(m => {
+    const colName = file === 'A' ? m.columnA : m.columnB
+    const value = (row[colName] ?? '').toString().trim()
+    parts.push(value)
   })
-  return keyParts.join('|')
+  return parts.join('|')
 }
 
 const buildDisplayRow = (row, mappings, file) => {
@@ -345,7 +455,7 @@ const buildDisplayRow = (row, mappings, file) => {
   mappings.forEach(m => {
     const colName = file === 'A' ? m.columnA : m.columnB
     if (colName) {
-      displayRow[m.standard] = row[colName] ?? ''
+      displayRow[m.label] = row[colName] ?? ''
     }
   })
   return displayRow
@@ -355,11 +465,11 @@ const startCompare = () => {
   comparing.value = true
 
   try {
-    const keyMappings = columnMappings.value.filter(m => m.isKey)
-    const compareMappings = columnMappings.value.filter(m => m.columnA && m.columnB)
+    const keyMappings = columnMappings.value.filter(m => m.isKey && m.columnA && m.columnB)
+    const compareMappings = columnMappings.value.filter(m => m.enabled && m.columnA && m.columnB)
 
     if (keyMappings.length === 0) {
-      ElMessage.warning('请至少选择一个主键列')
+      ElMessage.warning('请至少选择一个主键列（需要同时配置A和B列）')
       comparing.value = false
       return
     }
@@ -367,17 +477,13 @@ const startCompare = () => {
     const mapA = new Map()
     dataA.value.forEach(row => {
       const key = buildKey(row, keyMappings, 'A')
-      if (key) {
-        mapA.set(key, row)
-      }
+      if (key) mapA.set(key, row)
     })
 
     const mapB = new Map()
     dataB.value.forEach(row => {
       const key = buildKey(row, keyMappings, 'B')
-      if (key) {
-        mapB.set(key, row)
-      }
+      if (key) mapB.set(key, row)
     })
 
     const onlyA = []
@@ -388,31 +494,24 @@ const startCompare = () => {
     mapA.forEach((rowA, key) => {
       if (mapB.has(key)) {
         const rowB = mapB.get(key)
-        let hasDiff = false
-        const diffFields = []
+        const diffCols = []
 
         compareMappings.forEach(m => {
           const valA = (rowA[m.columnA] ?? '').toString().trim()
           const valB = (rowB[m.columnB] ?? '').toString().trim()
           if (valA !== valB) {
-            hasDiff = true
-            diffFields.push({
-              field: m.standard,
-              valueA: valA,
-              valueB: valB
-            })
+            diffCols.push(m.label)
           }
         })
 
-        if (hasDiff) {
-          diffFields.forEach(d => {
-            diff.push({
-              _keyDisplay: key,
-              _diffField: d.field,
-              _valueA: d.valueA,
-              _valueB: d.valueB
-            })
+        if (diffCols.length > 0) {
+          const diffRow = { _diffColumns: diffCols }
+          const allPaired = columnMappings.value.filter(m => m.columnA && m.columnB)
+          allPaired.forEach(m => {
+            diffRow[`A_${m.label}`] = (rowA[m.columnA] ?? '').toString().trim()
+            diffRow[`B_${m.label}`] = (rowB[m.columnB] ?? '').toString().trim()
           })
+          diff.push(diffRow)
         } else {
           same.push(buildDisplayRow(rowA, columnMappings.value, 'A'))
         }
@@ -432,11 +531,25 @@ const startCompare = () => {
 
     ElMessage.success(`比对完成！A有B无: ${onlyA.length}, B有A无: ${onlyB.length}, 相同: ${same.length}, 不同: ${diff.length}`)
   } catch (error) {
-    console.error('比对失败:', error)
     ElMessage.error('比对失败: ' + error.message)
   } finally {
     comparing.value = false
   }
+}
+
+const keyHighlightStyle = { color: '#d46b08', fontWeight: '700', background: '#fff7e6', padding: '2px 6px', borderRadius: '3px' }
+const keyHeaderStyle = { color: '#fff', fontWeight: '700', background: '#fa8c16', padding: '4px 10px', borderRadius: '4px', display: 'inline-block' }
+
+const getDiffStyle = (prop, row) => {
+  if (!row._diffColumns) return {}
+  const match = prop.match(/^[AB]_(.+)$/)
+  if (!match) return {}
+  const label = match[1]
+  if (!row._diffColumns.includes(label)) return {}
+  if (prop.startsWith('A_')) {
+    return { color: '#cf1322', fontWeight: '700', background: '#fff1f0', padding: '2px 6px', borderRadius: '3px' }
+  }
+  return { color: '#389e0d', fontWeight: '700', background: '#f6ffed', padding: '2px 6px', borderRadius: '3px' }
 }
 </script>
 
@@ -544,6 +657,25 @@ const startCompare = () => {
   color: #d9d9d9;
 }
 
+.sheet-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.sheet-label {
+  font-size: 13px;
+  color: #666;
+  white-space: nowrap;
+}
+
+.sheet-selector .el-select {
+  flex: 1;
+}
+
 .compare-icon {
   display: flex;
   align-items: center;
@@ -570,35 +702,41 @@ const startCompare = () => {
   color: #1a1a2e;
 }
 
+.section-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
 .mapping-grid {
   border: 1px solid #e8e8e8;
   border-radius: 8px;
   overflow: hidden;
+  max-height: 400px;
+  overflow-y: auto;
 }
 
 .mapping-header {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 60px;
-  gap: 16px;
+  grid-template-columns: 1.2fr 1.2fr 1.2fr 50px 50px 40px;
+  gap: 12px;
   padding: 12px 16px;
   background: #fafafa;
   font-weight: 500;
   font-size: 13px;
   color: #666;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .mapping-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 60px;
-  gap: 16px;
-  padding: 12px 16px;
+  grid-template-columns: 1.2fr 1.2fr 1.2fr 50px 50px 40px;
+  gap: 12px;
+  padding: 8px 16px;
   border-top: 1px solid #f0f0f0;
   align-items: center;
-}
-
-.standard-name {
-  font-weight: 500;
-  color: #1a1a2e;
 }
 
 .key-hint {
@@ -728,16 +866,6 @@ const startCompare = () => {
   color: #faad14;
 }
 
-.value-a {
-  color: #1890ff;
-  font-weight: 500;
-}
-
-.value-b {
-  color: #52c41a;
-  font-weight: 500;
-}
-
 :deep(.el-upload-dragger) {
   border: 2px dashed #d9d9d9;
   border-radius: 12px;
@@ -755,5 +883,11 @@ const startCompare = () => {
 :deep(.el-table th) {
   background: #fafafa;
   font-weight: 600;
+}
+
+:deep(.key-col-cell) {
+  background-color: #fff7e6 !important;
+  border-left: 2px solid #fa8c16 !important;
+  border-right: 2px solid #fa8c16 !important;
 }
 </style>
