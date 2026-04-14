@@ -7,6 +7,7 @@ from datetime import datetime
 import os
 import glob
 import shutil
+import copy
 import pandas as pd
 import asyncio
 import uuid
@@ -316,9 +317,8 @@ async def run_workflow(
     if not workflow:
         raise HTTPException(status_code=404, detail="工作流不存在")
 
-    steps = workflow.steps or []
-    if not steps:
-        raise HTTPException(status_code=400, detail="工作流无步骤")
+    steps = copy.deepcopy(workflow.steps or [])
+    if not steps:        raise HTTPException(status_code=400, detail="工作流无步骤")
 
     workflow_type = workflow.workflow_type or ""
     from services.workflow_executor import WorkflowExecutor
@@ -637,7 +637,7 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                     result_entry["error"] = "工作流不存在"
                     return result_entry
 
-                steps = workflow.steps or []
+                steps = copy.deepcopy(workflow.steps or [])
                 if not steps:
                     result_entry["status"] = "failed"
                     result_entry["error"] = "工作流无步骤"
@@ -666,6 +666,9 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                         steps[-1].setdefault("config", {})["output_filename"] = final_name
 
                 for i, step in enumerate(steps):
+                    # 每步前让出事件循环，让轮询请求得以处理
+                    await asyncio.sleep(0)
+
                     step_type = step.get("type", "")
                     step_config = step.get("config", {})
                     step_date_str = step_config.get("date_str") or output_date_str
@@ -688,13 +691,11 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                             # 优先使用内存中的 DataFrame，避免磁盘读写
                             if "_df" in exec_result and exec_result["_df"] is not None:
                                 input_data = exec_result["_df"]
-                                logger.info(f"[批量] 工作流{wf_id} 步骤{i} 内存传递DataFrame: {len(input_data)}行")
                             else:
                                 output_file = exec_result.get("file_path")
                                 if output_file and os.path.exists(output_file):
                                     try:
                                         input_data = await loop.run_in_executor(None, pd.read_excel, output_file)
-                                        logger.info(f"[批量] 工作流{wf_id} 步骤{i} 从文件读取: {len(input_data)}行")
                                     except Exception as read_err:
                                         logger.warning(f"[批量] 读取输出文件失败: {read_err}")
 
@@ -706,12 +707,10 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                         else:
                             step_result["status"] = "failed"
                             step_result["error"] = exec_result.get("message", "执行失败")
-                            logger.warning(f"[批量] 工作流{wf_id} 步骤{i}({step_type})失败: {step_result['error']}")
 
                     except Exception as e:
                         step_result["status"] = "failed"
                         step_result["error"] = str(e)
-                        logger.error(f"[批量] 工作流{wf_id} 步骤{i}({step_type})异常: {e}")
 
                     result_entry["steps"].append(step_result)
 
@@ -725,7 +724,7 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                 else:
                     result_entry["status"] = "completed"
 
-                # 执行成功后写入数据库
+                # 执行成功后写入 workflow_results
                 if result_entry["output_file"] and result_entry["status"] == "completed":
                     from services.workflow_result_service import save_workflow_result
                     try:
@@ -752,33 +751,39 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
             result_entry["error"] = str(e)
             logger.error(f"[批量] 工作流{wf_id}整体异常: {e}")
 
+        # 完成后返回结果（进度更新由外层处理）
         return result_entry
 
-    tasks = [run_single(wid) for wid in workflow_ids]
-    completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+    # 顺序执行，每完成一个立即更新进度（pandas是CPU阻塞的，gather无真正并行）
+    from core.database import AsyncSessionLocal
+    for wid in workflow_ids:
+        result_entry = await run_single(wid)
+        results.append(result_entry)
 
-    for r in completed_results:
-        if isinstance(r, Exception):
-            results.append({"workflow_id": 0, "status": "failed", "error": str(r), "steps": []})
-        else:
-            results.append(r)
+        # 立即更新 batch 进度
+        async with AsyncSessionLocal() as batch_db:
+            batch = await batch_db.get(BatchExecution, task_id)
+            if batch:
+                batch.results = list(results)
+                batch.completed = sum(1 for r in results if r.get("status") in ("completed", "partial"))
+                batch.failed = sum(1 for r in results if r.get("status") == "failed")
+                await batch_db.commit()
 
+        # 让出事件循环，让轮询请求得以处理
+        await asyncio.sleep(0)
+
+    # 全部完成，标记最终状态
     from core.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         batch = await db.get(BatchExecution, task_id)
         if batch:
-            batch.results = results
-            batch.completed = sum(1 for r in results if r.get("status") in ("completed", "partial"))
-            batch.failed = sum(1 for r in results if r.get("status") == "failed")
             batch.finished_at = datetime.now()
-
             if batch.failed == 0:
                 batch.status = "completed"
             elif batch.completed > 0:
                 batch.status = "partial"
             else:
                 batch.status = "failed"
-
             await db.commit()
 
 
@@ -791,6 +796,8 @@ async def get_batch_status(
     batch = await db.get(BatchExecution, task_id)
     if not batch:
         raise HTTPException(status_code=404, detail="批次任务不存在")
+    # 强制从DB刷新，不用session缓存（后台任务用独立session写入）
+    await db.refresh(batch)
 
     response = {
         "task_id": batch.id,
@@ -825,6 +832,7 @@ async def batch_download_results(
 
     # 创建内存中的zip文件
     zip_buffer = io.BytesIO()
+    files_to_clean = []
 
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         for result in batch.results:
@@ -832,11 +840,20 @@ async def batch_download_results(
             output_file = result.get('output_file')
 
             if output_file and os.path.exists(output_file):
-                # 使用工作流ID和原文件名作为zip中的文件名
                 arcname = f"workflow_{workflow_id}_{os.path.basename(output_file)}"
                 zip_file.write(output_file, arcname)
+                files_to_clean.append(output_file)
 
     zip_buffer.seek(0)
+
+    # zip已读入内存，立即删除源文件（数据已存入DB）
+    for f in files_to_clean:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+                logger.info(f"批量下载后清理: {f}")
+        except Exception as e:
+            logger.warning(f"清理文件失败: {f}, {e}")
 
     # 返回zip文件
     from fastapi.responses import StreamingResponse
@@ -844,7 +861,9 @@ async def batch_download_results(
         io.BytesIO(zip_buffer.read()),
         media_type="application/zip",
         headers={
-            "Content-Disposition": f"attachment; filename=batch_{task_id}.zip"
+            "Content-Disposition": f"attachment; filename=batch_{task_id}.zip",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache"
         }
     )
 
@@ -881,43 +900,45 @@ async def download_workflow_result(
     if step_index is not None and step_index < len(steps):
         step = steps[step_index]
         step_config = step.get("config", {})
+        step_type = step.get("type")
+        daily_dir = executor_with_type._get_daily_dir(output_date_str)
+
+        # 优先 resolver 文件名，再试 config 文件名，最后 glob 日期目录
+        auto_filename = executor_with_type.resolver.get_output_filename(step_type, output_date_str)
         output_filename = step_config.get("output_filename")
 
-        if output_filename:
-            file_path = os.path.join(executor_with_type._get_daily_dir(output_date_str), output_filename)
-        else:
-            target_dir = get_target_directory(step.get("type"), output_date_str, workflow_type)
-            files = glob.glob(os.path.join(target_dir, "*.xlsx"))
-            if files:
-                file_path = sorted(files)[-1]
-            else:
-                raise HTTPException(status_code=404, detail="未找到结果文件")
+        file_path = None
+        for fname in [auto_filename, output_filename]:
+            if fname:
+                candidate = os.path.join(daily_dir, fname)
+                if os.path.exists(candidate):
+                    file_path = candidate
+                    break
+        if not file_path:
+            raise HTTPException(status_code=404, detail="未找到结果文件")
     else:
         file_path = None
+        daily_dir = executor_with_type._get_daily_dir(output_date_str)
         for i in range(len(steps) - 1, -1, -1):
             step = steps[i]
             step_type = step.get("type")
             step_config = step.get("config", {})
-            output_filename = step_config.get("output_filename")
 
-            if output_filename:
-                candidate_path = os.path.join(executor_with_type._get_daily_dir(output_date_str), output_filename)
-                if os.path.exists(candidate_path):
-                    file_path = candidate_path
-                    break
-
+            # 优先用 resolver 最新配置的文件名（避免旧配置和实际文件不一致）
             auto_filename = executor_with_type.resolver.get_output_filename(step_type, output_date_str)
             if auto_filename:
-                candidate_path = os.path.join(executor_with_type._get_daily_dir(output_date_str), auto_filename)
+                candidate_path = os.path.join(daily_dir, auto_filename)
                 if os.path.exists(candidate_path):
                     file_path = candidate_path
                     break
 
-            target_dir = get_target_directory(step_type, output_date_str, workflow_type)
-            files = glob.glob(os.path.join(target_dir, "*.xlsx"))
-            if files:
-                file_path = sorted(files)[-1]
-                break
+            # 再试步骤配置里存的文件名
+            output_filename = step_config.get("output_filename")
+            if output_filename:
+                candidate_path = os.path.join(daily_dir, output_filename)
+                if os.path.exists(candidate_path):
+                    file_path = candidate_path
+                    break
 
         if not file_path:
             raise HTTPException(status_code=404, detail="未找到结果文件")
@@ -925,7 +946,7 @@ async def download_workflow_result(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"文件不存在: {file_path}")
 
-    # 收集所有步骤生成的文件路径，下载后清理（排除当前下载文件，防止流式传输中断）
+    # 收集所有步骤生成的文件路径，下载后全部清理
     generated_files = set()
     daily_dir = executor_with_type._get_daily_dir(output_date_str)
     for step in steps:
@@ -937,22 +958,39 @@ async def download_workflow_result(
         auto_fname = executor_with_type.resolver.get_output_filename(step_type, output_date_str)
         if auto_fname:
             generated_files.add(os.path.join(daily_dir, auto_fname))
+    # 最终文件也加入清理（数据已存入DB）
+    generated_files.add(file_path)
 
-    def cleanup_generated_files():
+    # 复制到临时文件用于下载，避免传输中被删
+    import tempfile
+    tmp_dir = tempfile.mkdtemp()
+    tmp_path = os.path.join(tmp_dir, os.path.basename(file_path))
+    shutil.copy2(file_path, tmp_path)
+
+    def cleanup_all():
         for gf in generated_files:
             try:
                 if os.path.exists(gf):
                     os.remove(gf)
-                    logger.info(f"下载后清理生成文件: {gf}")
+                    logger.info(f"下载后清理: {gf}")
             except Exception as e:
                 logger.warning(f"清理文件失败: {gf}, {e}")
+        # 清理临时文件
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
-    background_tasks.add_task(cleanup_generated_files)
+    background_tasks.add_task(cleanup_all)
 
     return FileResponse(
-        path=file_path,
+        path=tmp_path,
         filename=os.path.basename(file_path),
-        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        }
     )
 
 

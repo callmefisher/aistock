@@ -56,9 +56,10 @@ api.interceptors.response.use(
 
 api.download = async (url, filename) => {
   const token = localStorage.getItem('token')
-  const response = await axios.get(`/api/v1${url}`, {
+  const cacheBuster = `${url.includes('?') ? '&' : '?'}_t=${Date.now()}`
+  const response = await axios.get(`/api/v1${url}${cacheBuster}`, {
     responseType: 'blob',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: token ? { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' } : { 'Cache-Control': 'no-cache' },
     timeout: 300000
   })
   if (!filename) {

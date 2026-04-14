@@ -207,8 +207,8 @@ class WorkflowExecutor:
                 best_total = total
                 best_row_idx = idx
 
-        # 如果数据行提供了列头中没有的已知列名 → 需要重映射
-        if len(best_new_names) >= 1 and best_total >= 2:
+        # 如果数据行提供了列头中没有的已知列名 → 需要重映射（限前3行，防止误匹配数据行）
+        if len(best_new_names) >= 2 and best_total >= 2 and best_row_idx <= 3:
             header_row = df_all.iloc[best_row_idx]
             new_columns = []
             for orig_col, new_name in zip(df_all.columns, header_row):

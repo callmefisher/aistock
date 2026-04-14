@@ -211,7 +211,7 @@ const viewPreview = async (row) => {
 }
 
 const loadFull = async () => {
-  if (!currentResultId.value) return
+  if (!currentResultId.value || loadingFull.value) return
   loadingFull.value = true
   try {
     const res = await api.get(`/statistics/results/${currentResultId.value}/full`)
@@ -227,27 +227,20 @@ const loadFull = async () => {
 
 // 导出当前过滤后的数据为 Excel
 const exportExcel = async () => {
-  // 如果还是预览模式，先加载全部
-  if (isPreviewMode.value) {
-    loadingFull.value = true
-    exporting.value = true
-    try {
-      const res = await api.get(`/statistics/results/${currentResultId.value}/full`)
-      if (res?.success) {
-        previewData.value = res.data
-      }
-    } catch (e) {
-      ElMessage.error('加载完整数据失败')
-      exporting.value = false
-      loadingFull.value = false
-      return
-    } finally {
-      loadingFull.value = false
-    }
-  }
-
   exporting.value = true
   try {
+    // 如果还是预览模式，先加载全部
+    if (isPreviewMode.value) {
+      loadingFull.value = true
+      try {
+        const res = await api.get(`/statistics/results/${currentResultId.value}/full`)
+        if (res?.success) {
+          previewData.value = res.data
+        }
+      } finally {
+        loadingFull.value = false
+      }
+    }
     const columns = previewData.value?.columns || []
     const rows = filteredData.value
 
