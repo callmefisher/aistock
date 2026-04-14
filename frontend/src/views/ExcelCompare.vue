@@ -360,6 +360,16 @@ const generateMappings = () => {
   })
 
   columnMappings.value = mappings
+
+  const enabledIndices = mappings.reduce((acc, m, i) => {
+    if (m.enabled) acc.push(i)
+    return acc
+  }, [])
+  if (enabledIndices.length >= 9) {
+    enabledIndices.slice(9).forEach(i => {
+      mappings[i].enabled = false
+    })
+  }
 }
 
 const autoMatch = () => {
