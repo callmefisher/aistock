@@ -391,9 +391,84 @@ const removeMappingRow = (idx) => {
   columnMappings.value.splice(idx, 1)
 }
 
+const KNOWN_COLUMNS = new Set([
+  '证券代码', '证券简称', '最新公告日', '公告日期', '代码', '名称',
+  '百日新高', '20日均线', '国企', '一级板块', '首次公告日', '交易概述', '序号'
+])
+
 const parseSheet = (workbook, sheetName, type) => {
   const worksheet = workbook.Sheets[sheetName]
-  const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' })
+
+  // 先读为二维数组，检测双行表头
+  const rawData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' })
+
+  if (rawData.length === 0) {
+    ElMessage.warning('该Sheet没有数据')
+    return
+  }
+
+  let headerRowIndex = 0
+  let dataStartIndex = 1
+
+  // 查找序号=1的行（实际数据起始行），与后端 _merge_excel 逻辑一致
+  const maxSearch = Math.min(10, rawData.length)
+  for (let i = 1; i < maxSearch; i++) {
+    const firstCell = rawData[i][0]
+    try {
+      if (firstCell !== '' && firstCell != null && parseInt(String(firstCell).toString().trim()) === 1) {
+        // 检查上一行是否包含已知列名
+        const prevRow = rawData[i - 1]
+        const knownCount = prevRow.filter(cell => {
+          const val = (cell ?? '').toString().trim()
+          return KNOWN_COLUMNS.has(val)
+        }).length
+
+        if (knownCount >= 2) {
+          headerRowIndex = i - 1
+          dataStartIndex = i
+        }
+        break
+      }
+    } catch { /* ignore */ }
+  }
+
+  let jsonData
+  if (headerRowIndex > 0) {
+    // 双行表头：用检测到的行作为列名，空列名回退到分组行
+    const headerRow = rawData[headerRowIndex]
+    const groupRow = rawData[0]
+
+    const headers = headerRow.map((h, idx) => {
+      const val = (h ?? '').toString().trim()
+      if (val) return val
+      const groupVal = (groupRow[idx] ?? '').toString().trim()
+      return groupVal || `列${idx + 1}`
+    })
+
+    // 去重列名（重复的追加 _1 后缀）
+    const seen = {}
+    const uniqueHeaders = headers.map(h => {
+      if (h in seen) {
+        seen[h]++
+        return `${h}_${seen[h]}`
+      }
+      seen[h] = 0
+      return h
+    })
+
+    jsonData = []
+    for (let i = dataStartIndex; i < rawData.length; i++) {
+      const row = rawData[i]
+      if (row.every(cell => cell === '' || cell == null)) continue
+      const obj = {}
+      uniqueHeaders.forEach((header, idx) => {
+        obj[header] = row[idx] ?? ''
+      })
+      jsonData.push(obj)
+    }
+  } else {
+    jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' })
+  }
 
   if (jsonData.length === 0) {
     ElMessage.warning('该Sheet没有数据')
