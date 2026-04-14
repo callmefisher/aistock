@@ -739,6 +739,8 @@ const batchPollingTimer = ref(null)
 const batchElapsedSeconds = ref(0)
 const batchTimerInterval = ref(null)
 const workflowTableRef = ref(null)
+const pendingTimeouts = ref([])
+const executionAbortController = ref(null)
 
 const openOutputDirectory = async () => {
   const basePath = '/app/data/excel'
@@ -870,6 +872,8 @@ const getStepStatus = (status) => {
 const openCreateDialog = () => {
   isEditing.value = false
   editingId.value = null
+  uploadedFiles.value = {}
+  publicFiles.value = {}
   form.value = {
     name: '',
     description: '',
@@ -1024,17 +1028,24 @@ const handleRun = (workflow) => {
 }
 
 const startExecution = async () => {
+  if (executing.value) return
   executing.value = true
   executionResult.value = null
   resultData.value = []
   resultColumns.value = []
   executionStartTime.value = Date.now()
+  if (executionTimer.value) {
+    clearInterval(executionTimer.value)
+  }
   executionTimer.value = setInterval(updateExecutionTime, 1000)
   updateExecutionTime()
 
   try {
     // 一键执行全部步骤（后端内存传递，无中间磁盘IO）
-    const response = await api.post(`/workflows/${currentWorkflow.value.id}/run/`)
+    executionAbortController.value = new AbortController()
+    const response = await api.post(`/workflows/${currentWorkflow.value.id}/run/`, null, {
+      signal: executionAbortController.value.signal
+    })
 
     // 标记各步骤状态
     const stepResults = response.steps || []
@@ -1044,7 +1055,7 @@ const startExecution = async () => {
     }
 
     if (response.data?.records) {
-      resultData.value = response.data.records
+      resultData.value = response.data.records.slice(0, 200)
     }
     if (response.data?.file_path) {
       executionResult.value = {
@@ -1060,6 +1071,7 @@ const startExecution = async () => {
     }
     ElMessage.success(response.message || '工作流执行完成')
   } catch (error) {
+    if (error?.code === 'ERR_CANCELED') return
     executionResult.value = {
       type: 'error',
       message: error.response?.data?.detail || '执行失败'
@@ -1342,7 +1354,7 @@ const handleEdit = (row) => {
 
   uploadedFiles.value = {}
   publicFiles.value = {}
-  setTimeout(() => {
+  const t = setTimeout(() => {
     form.value.steps.forEach((step, index) => {
       if (['merge_excel', 'match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)) {
         fetchUploadedFiles(step, index)
@@ -1352,6 +1364,7 @@ const handleEdit = (row) => {
       }
     })
   }, 300)
+  pendingTimeouts.value.push(t)
 }
 
 const handleDelete = async (id) => {
@@ -1380,6 +1393,9 @@ onBeforeUnmount(() => {
     clearInterval(executionTimer.value)
     executionTimer.value = null
   }
+  pendingTimeouts.value.forEach(t => clearTimeout(t))
+  pendingTimeouts.value = []
+  executionAbortController.value?.abort()
   stopBatchTimer()
   stopBatchPolling()
 })
@@ -1474,13 +1490,13 @@ const handleBatchRun = async () => {
 
 const startBatchPolling = (taskId) => {
   stopBatchPolling()
-  batchPollingTimer.value = setInterval(async () => {
+  const poll = async () => {
     try {
       const response = await api.get(`/workflows/batch-status/${taskId}/`)
       if (response) {
         batchStatus.value = response
         if (['completed', 'partial', 'failed', 'cancelled'].includes(response.status)) {
-          stopBatchPolling()
+          batchPollingTimer.value = null
           stopBatchTimer()
           batchExecuting.value = false
           const msg = response.status === 'completed'
@@ -1489,20 +1505,30 @@ const startBatchPolling = (taskId) => {
               ? `部分完成: ${response.completed} 成功, ${response.failed} 失败`
               : '批量执行失败'
           ElMessage[response.status === 'completed' ? 'success' : 'warning'](msg)
+          return
         }
       }
     } catch (error) {
       console.error('轮询批次状态失败:', error)
     }
-  }, 2000)
+    batchPollingTimer.value = setTimeout(poll, 2000)
+  }
+  batchPollingTimer.value = setTimeout(poll, 2000)
 }
 
 const stopBatchPolling = () => {
   if (batchPollingTimer.value) {
-    clearInterval(batchPollingTimer.value)
+    clearTimeout(batchPollingTimer.value)
     batchPollingTimer.value = null
   }
 }
+
+watch(showDialog, (visible) => {
+  if (!visible) {
+    uploadedFiles.value = {}
+    publicFiles.value = {}
+  }
+})
 
 watch(() => form.value.workflow_type, (newType, oldType) => {
   if (newType !== oldType && showDialog.value) {
@@ -1521,7 +1547,7 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
       }
     })
 
-    setTimeout(() => {
+    const t = setTimeout(() => {
       form.value.steps.forEach((step, index) => {
         if (['merge_excel', 'match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)) {
           fetchUploadedFiles(step, index)
@@ -1531,23 +1557,25 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
         }
       })
     }, 100)
+    pendingTimeouts.value.push(t)
   }
 })
 
-watch(() => form.value.steps, (steps) => {
-  const firstStepWithDate = steps.find(s => s.config?.date_str)
-  if (!firstStepWithDate) return
-  const lastStep = steps[steps.length - 1]
-  if (lastStep?.type === 'match_sector') {
-    const workflowType = form.value.workflow_type || ''
-    let prefix = '并购重组'
-    if (workflowType === '股权转让') {
-      prefix = '股权转让'
+watch(
+  () => ({
+    dateStr: form.value.steps.find(s => s.config?.date_str)?.config?.date_str,
+    lastType: form.value.steps[form.value.steps.length - 1]?.type,
+    workflowType: form.value.workflow_type
+  }),
+  ({ dateStr, lastType, workflowType }) => {
+    if (!dateStr) return
+    const lastStep = form.value.steps[form.value.steps.length - 1]
+    if (lastType === 'match_sector' && lastStep) {
+      const prefix = workflowType === '股权转让' ? '股权转让' : '并购重组'
+      lastStep.config.output_filename = `${prefix}${dateStr.replace(/-/g, '')}.xlsx`
     }
-    const dateStr = firstStepWithDate.config.date_str.replace(/-/g, '')
-    lastStep.config.output_filename = `${prefix}${dateStr}.xlsx`
   }
-}, { deep: true })
+)
 </script>
 
 <style scoped>

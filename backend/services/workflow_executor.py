@@ -37,7 +37,7 @@ def _get_dir_mtime(dir_path: str) -> float:
 
 
 def invalidate_public_cache(dir_path: str = None):
-    """清除公共文件缓存，上传新文件后调用"""
+    """清除公共文件缓存，上传/删除文件后调用"""
     if dir_path:
         keys_to_remove = [k for k in _public_file_cache if k.startswith(dir_path)]
         for k in keys_to_remove:
@@ -46,6 +46,18 @@ def invalidate_public_cache(dir_path: str = None):
     else:
         _public_file_cache.clear()
         logger.info("已清除所有公共文件缓存")
+
+
+def invalidate_match_source_cache(dir_path: str = None):
+    """清除匹配源缓存，上传/删除文件后调用"""
+    if dir_path:
+        keys_to_remove = [k for k in _match_source_cache if k.startswith(dir_path)]
+        for k in keys_to_remove:
+            del _match_source_cache[k]
+        logger.info(f"已清除匹配源缓存: {dir_path} ({len(keys_to_remove)}个)")
+    else:
+        _match_source_cache.clear()
+        logger.info("已清除所有匹配源缓存")
 
 
 def auto_adjust_excel_width(output_path: str, fixed_width: int = 20):

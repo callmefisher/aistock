@@ -78,8 +78,10 @@ api.download = async (url, filename) => {
   const link = document.createElement('a')
   link.href = downloadUrl
   link.download = filename
+  document.body.appendChild(link)
   link.click()
-  window.URL.revokeObjectURL(downloadUrl)
+  document.body.removeChild(link)
+  setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 100)
 }
 
 export default api

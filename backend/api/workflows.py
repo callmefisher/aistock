@@ -460,6 +460,10 @@ async def upload_step_file(
 
         file_size = os.path.getsize(file_path)
         logger.info(f"[Upload] success, size={file_size}")
+
+        from services.workflow_executor import invalidate_match_source_cache
+        invalidate_match_source_cache(target_dir)
+
         return {
             "success": True,
             "message": f"文件上传成功",
@@ -512,7 +516,12 @@ async def delete_step_file(
         if not os.path.exists(file_path):
             return {"success": False, "message": "文件不存在"}
 
+        dir_path = os.path.dirname(file_path)
         os.remove(file_path)
+
+        from services.workflow_executor import invalidate_match_source_cache
+        invalidate_match_source_cache(dir_path)
+
         return {"success": True, "message": "文件已删除"}
     except Exception as e:
         return {"success": False, "message": f"删除失败: {str(e)}"}
@@ -979,7 +988,13 @@ async def delete_public_file(
         if not os.path.exists(file_path):
             return {"success": False, "message": "文件不存在"}
 
+        dir_path = os.path.dirname(file_path)
         os.remove(file_path)
+
+        from services.workflow_executor import invalidate_public_cache, invalidate_match_source_cache
+        invalidate_public_cache(dir_path)
+        invalidate_match_source_cache(dir_path)
+
         return {"success": True, "message": "文件已删除"}
     except Exception as e:
         return {"success": False, "message": f"删除失败: {str(e)}"}
