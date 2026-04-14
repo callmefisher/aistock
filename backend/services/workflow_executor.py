@@ -174,6 +174,85 @@ class WorkflowExecutor:
         files.extend(glob.glob(pattern))
         return sorted(files)
 
+    def _detect_header_and_parse(self, df_all: pd.DataFrame, known_col_names: set, filepath: str) -> pd.DataFrame:
+        """统一处理单行表头、双行表头、分组头三种情况。
+
+        关键场景：部分列名在 Row1 就正确（如序号、证券代码），但另一部分列（如更新日期）
+        在 Row1 是分组头（如"申报进程日期"），Row2 才是实际列名。
+        策略：如果某个数据行包含列名中没有的已知列名，说明需要重映射。
+        """
+        # 收集当前列名中的已知列名
+        col_name_set = set()
+        for c in df_all.columns:
+            s = str(c).strip()
+            if s and not s.startswith('Unnamed'):
+                col_name_set.add(s)
+        cols_known = col_name_set & known_col_names
+
+        # 扫描前10行数据，找包含已知列名的行（可能是真实表头行）
+        best_row_idx = -1
+        best_new_names = set()  # 该行提供的、列头中没有的已知列名
+        best_total = 0
+        for idx in range(min(10, len(df_all))):
+            row_vals = set()
+            for val in df_all.iloc[idx]:
+                if pd.notna(val) and isinstance(val, str) and val.strip():
+                    row_vals.add(val.strip())
+            row_known = row_vals & known_col_names
+            new_names = row_known - cols_known  # 该行带来的新列名
+            total = len(row_known)
+            # 优先选提供新列名最多的行；相同时选总匹配最多的
+            if len(new_names) > len(best_new_names) or (len(new_names) == len(best_new_names) and total > best_total):
+                best_new_names = new_names
+                best_total = total
+                best_row_idx = idx
+
+        # 如果数据行提供了列头中没有的已知列名 → 需要重映射
+        if len(best_new_names) >= 1 and best_total >= 2:
+            header_row = df_all.iloc[best_row_idx]
+            new_columns = []
+            for orig_col, new_name in zip(df_all.columns, header_row):
+                if pd.notna(new_name) and isinstance(new_name, str) and new_name.strip():
+                    new_columns.append(new_name.strip())
+                else:
+                    new_columns.append(str(orig_col).strip())
+            # 去重列名
+            seen = {}
+            unique_columns = []
+            for col_name in new_columns:
+                if col_name in seen:
+                    seen[col_name] += 1
+                    unique_columns.append(f"{col_name}_{seen[col_name]}")
+                else:
+                    seen[col_name] = 0
+                    unique_columns.append(col_name)
+            df = df_all.iloc[best_row_idx + 1:].copy()
+            df.columns = unique_columns
+            logger.info(f"表头重映射: 第{best_row_idx+2}行为实际表头(新增列名{best_new_names}), 最终列: {unique_columns}: {filepath}")
+            return df
+
+        # 列名已经正确，找数据起始行（序号=1）
+        seq_col = None
+        for col in df_all.columns:
+            if '序号' in str(col):
+                seq_col = col
+                break
+        if seq_col:
+            for idx in range(min(20, len(df_all))):
+                val = df_all.iloc[idx][seq_col]
+                try:
+                    if pd.notna(val) and int(float(str(val).strip())) == 1:
+                        if idx > 0:
+                            df = df_all.iloc[idx:].copy()
+                            logger.info(f"跳过前{idx}行元数据: {filepath}")
+                            return df
+                        break
+                except (ValueError, TypeError):
+                    continue
+
+        logger.info(f"普通表头，直接读取: {filepath}")
+        return df_all.copy()
+
     async def execute_step(
         self,
         step_type: str,
@@ -306,65 +385,23 @@ class WorkflowExecutor:
                 try:
                     if is_public_file:
                         df = self._read_public_file_cached(filepath, skiprows=1)
+                    elif self.workflow_type == "申报并购重组":
+                        # 申报并购重组源文件第1行是分组头（如"申报进程日期"），直接跳过
+                        df = pd.read_excel(filepath, skiprows=1)
+                        if len(df) == 0:
+                            continue
                     else:
                         df_all = pd.read_excel(filepath)
                         if len(df_all) > 0:
-                            start_idx = 0
-                            seq_col = None
-                            for col in df_all.columns:
-                                if '序号' in str(col):
-                                    seq_col = col
-                                    break
-
-                            if seq_col:
-                                for idx in range(len(df_all)):
-                                    val = df_all.iloc[idx][seq_col]
-                                    try:
-                                        if pd.notna(val) and int(float(str(val).strip())) == 1:
-                                            start_idx = idx
-                                            break
-                                    except (ValueError, TypeError):
-                                        continue
-
-                            if start_idx > 0:
-                                header_row = df_all.iloc[start_idx - 1]
-                                known_col_names = {"证券代码", "证券简称", "最新公告日", "公告日期", "代码", "名称", "首次公告日", "交易概述"}
-                                header_values = set()
-                                for val in header_row:
-                                    if pd.notna(val) and isinstance(val, str) and val.strip():
-                                        header_values.add(val.strip())
-
-                                if header_values & known_col_names:
-                                    new_columns = []
-                                    for orig_col, new_name in zip(df_all.columns, header_row):
-                                        if pd.notna(new_name) and isinstance(new_name, str) and new_name.strip():
-                                            new_columns.append(new_name.strip())
-                                        else:
-                                            new_columns.append(orig_col)
-                                    # 去重列名：重复的追加后缀（如 名称→名称_1），仅保留首次出现的
-                                    seen = {}
-                                    unique_columns = []
-                                    for col in new_columns:
-                                        if col in seen:
-                                            seen[col] += 1
-                                            unique_columns.append(f"{col}_{seen[col]}")
-                                        else:
-                                            seen[col] = 0
-                                            unique_columns.append(col)
-                                    df = df_all.iloc[start_idx:].copy()
-                                    df.columns = unique_columns
-                                    logger.info(f"双行表头，列名重映射({len(unique_columns)}列): {filepath}")
-                                else:
-                                    df = df_all.iloc[start_idx:].copy()
-                                    logger.info(f"跳过前{start_idx}行元数据: {filepath}")
-                            else:
-                                df = df_all.copy()
+                            known_col_names = {"证券代码", "证券简称", "最新公告日", "公告日期", "代码", "名称",
+                                               "首次公告日", "交易概述", "上市公告日", "更新日期", "受理日期", "重组类型"}
+                            df = self._detect_header_and_parse(df_all, known_col_names, filepath)
                         else:
                             continue
 
                     df["_source_file"] = filename
                     # 提前过滤到需要的列，减少 concat 内存（55列→4列）
-                    target_cols = ["序号", "证券代码", "证券简称", "最新公告日", "代码", "名称", "公告日期", "_source_file"]
+                    target_cols = ["序号", "证券代码", "证券简称", "最新公告日", "代码", "名称", "公告日期", "上市公告日", "更新日期", "_source_file"]
                     available = [c for c in target_cols if c in df.columns]
                     if available:
                         df = df[available]
@@ -389,6 +426,21 @@ class WorkflowExecutor:
                 }
                 merged_df = merged_df.rename(columns=column_mapping)
                 logger.info(f"股权转让类型：列名映射完成 - {column_mapping}")
+
+            if self.workflow_type == "增发实现" and "上市公告日" in merged_df.columns:
+                if "最新公告日" in merged_df.columns:
+                    merged_df["最新公告日"] = merged_df["最新公告日"].fillna(merged_df["上市公告日"])
+                    merged_df = merged_df.drop(columns=["上市公告日"])
+                else:
+                    merged_df = merged_df.rename(columns={"上市公告日": "最新公告日"})
+                logger.info(f"增发实现类型：上市公告日→最新公告日 映射完成")
+
+            if self.workflow_type == "申报并购重组" and "更新日期" in merged_df.columns:
+                # 源文件的"最新公告日"列多为"-"无效值，直接用"更新日期"替代
+                if "最新公告日" in merged_df.columns:
+                    merged_df = merged_df.drop(columns=["最新公告日"])
+                merged_df = merged_df.rename(columns={"更新日期": "最新公告日"})
+                logger.info(f"申报并购重组类型：更新日期→最新公告日 映射完成")
 
             keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
             existing_columns = [col for col in keep_columns if col in merged_df.columns]
@@ -491,7 +543,7 @@ class WorkflowExecutor:
                     break
 
         if not date_col:
-            date_candidates = ["最新公告日", "公告日", "日期", "date", "announcement_date", "report_date"]
+            date_candidates = ["最新公告日", "公告日", "更新日期", "日期", "date", "announcement_date", "report_date"]
             for candidate in date_candidates:
                 for col in available_columns:
                     if candidate.lower() in col.lower():

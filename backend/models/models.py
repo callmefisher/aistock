@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, JSON, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, JSON, Float, LargeBinary, UniqueConstraint
+from sqlalchemy.dialects.mysql import LONGBLOB
 from sqlalchemy.sql import func
 from core.database import Base
 
@@ -123,4 +124,24 @@ class BatchExecution(Base):
     started_at = Column(DateTime, comment="开始时间")
     finished_at = Column(DateTime, comment="结束时间")
     created_by = Column(String(50), comment="创建者")
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class WorkflowResult(Base):
+    __tablename__ = "workflow_results"
+    __table_args__ = (
+        UniqueConstraint('workflow_id', 'date_str', 'step_type', name='uk_wf_date_step'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, nullable=False, index=True, comment="工作流ID")
+    workflow_type = Column(String(50), default="", index=True, comment="工作流类型")
+    workflow_name = Column(String(100), comment="工作流名称")
+    date_str = Column(String(20), nullable=False, index=True, comment="数据日期")
+    step_type = Column(String(50), default="final", comment="步骤类型")
+    row_count = Column(Integer, default=0, comment="数据行数")
+    columns_json = Column(JSON, comment="列名列表")
+    data_compressed = Column(LONGBLOB, comment="zlib压缩的完整JSON数据")
+    preview_json = Column(JSON, comment="前50行预览数据")
+    file_size = Column(Integer, default=0, comment="原始文件大小")
     created_at = Column(DateTime, server_default=func.now())

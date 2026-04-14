@@ -31,7 +31,7 @@
           <el-icon><Document /></el-icon>
           <span>选股池</span>
         </el-menu-item>
-        <el-menu-item index="/finance-data">
+        <el-menu-item index="/finance-data" v-show="false">
           <el-icon><Money /></el-icon>
           <span>金融数据</span>
         </el-menu-item>
@@ -42,6 +42,10 @@
         <el-menu-item index="/excel-compare">
           <el-icon><DocumentCopy /></el-icon>
           <span>Excel比对</span>
+        </el-menu-item>
+        <el-menu-item index="/statistics">
+          <el-icon><TrendCharts /></el-icon>
+          <span>统计分析</span>
         </el-menu-item>
       </el-menu>
     </el-aside>

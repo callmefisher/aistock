@@ -70,6 +70,20 @@
             :closable="false"
             style="margin-top: 8px"
           />
+          <el-alert
+            v-if="form.workflow_type === '增发实现'"
+            title="增发实现类型将使用独立的数据目录，上市公告日将映射为最新公告日"
+            type="info"
+            :closable="false"
+            style="margin-top: 8px"
+          />
+          <el-alert
+            v-if="form.workflow_type === '申报并购重组'"
+            title="申报并购重组类型将使用独立的数据目录，更新日期将映射为最新公告日"
+            type="info"
+            :closable="false"
+            style="margin-top: 8px"
+          />
         </el-form-item>
 
         <el-divider content-position="left">工作流步骤</el-divider>
@@ -1127,6 +1141,12 @@ const getTargetDirDisplay = (stepType, dateStr) => {
     if (workflowType === '股权转让') {
       return `股权转让/${dateStr || '当日数据'}/`
     }
+    if (workflowType === '增发实现') {
+      return `增发实现/${dateStr || '当日数据'}/`
+    }
+    if (workflowType === '申报并购重组') {
+      return `申报并购重组/${dateStr || '当日数据'}/`
+    }
     return `${dateStr || '当日数据'}/`
   }
   return `${getTargetDirName(stepType)}/`
@@ -1136,6 +1156,12 @@ const getPublicDirDisplay = () => {
   const workflowType = form.value.workflow_type || ''
   if (workflowType === '股权转让') {
     return '股权转让/public/'
+  }
+  if (workflowType === '增发实现') {
+    return '增发实现/public/'
+  }
+  if (workflowType === '申报并购重组') {
+    return '申报并购重组/public/'
   }
   return '2025public/'
 }
@@ -1571,7 +1597,8 @@ watch(
     if (!dateStr) return
     const lastStep = form.value.steps[form.value.steps.length - 1]
     if (lastType === 'match_sector' && lastStep) {
-      const prefix = workflowType === '股权转让' ? '股权转让' : '并购重组'
+      const typeMap = { '股权转让': '2股权转让', '增发实现': '3增发实现', '申报并购重组': '4申报并购重组' }
+      const prefix = typeMap[workflowType] || '1并购重组'
       lastStep.config.output_filename = `${prefix}${dateStr.replace(/-/g, '')}.xlsx`
     }
   }

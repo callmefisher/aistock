@@ -64,6 +64,12 @@ const routes = [
         name: 'ExcelCompare',
         component: () => import('@/views/ExcelCompare.vue'),
         meta: { title: 'Excel比对' }
+      },
+      {
+        path: 'statistics',
+        name: 'Statistics',
+        component: () => import('@/views/Statistics.vue'),
+        meta: { title: '统计分析' }
       }
     ]
   }

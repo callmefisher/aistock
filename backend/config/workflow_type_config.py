@@ -7,7 +7,7 @@ WORKFLOW_TYPE_CONFIG = {
             "public": "2025public",
         },
         "naming": {
-            "output_template": "{type_display}{date}.xlsx",
+            "output_template": "1并购重组{date}.xlsx",
             "merge_output": "total_1.xlsx",
             "dedup_output": "deduped.xlsx",
             "extract_output": "output_2.xlsx",
@@ -31,7 +31,7 @@ WORKFLOW_TYPE_CONFIG = {
             "public": "2025public",
         },
         "naming": {
-            "output_template": "{type_display}{date}.xlsx",
+            "output_template": "1并购重组{date}.xlsx",
             "merge_output": "total_1.xlsx",
             "dedup_output": "deduped.xlsx",
             "extract_output": "output_2.xlsx",
@@ -55,7 +55,55 @@ WORKFLOW_TYPE_CONFIG = {
             "public": "股权转让/public",
         },
         "naming": {
-            "output_template": "股权转让{date}.xlsx",
+            "output_template": "2股权转让{date}.xlsx",
+            "merge_output": "total_1.xlsx",
+            "dedup_output": "deduped.xlsx",
+            "extract_output": "output_2.xlsx",
+            "match_high_price_output": "output_3.xlsx",
+            "match_ma20_output": "output_4.xlsx",
+            "match_soe_output": "output_5.xlsx",
+        },
+        "match_sources": {
+            "match_high_price": "百日新高",
+            "match_ma20": "20日均线",
+            "match_soe": "国企",
+            "match_sector": "一级板块",
+        }
+    },
+
+    "增发实现": {
+        "display_name": "增发实现",
+        "base_subdir": "增发实现",
+        "directories": {
+            "upload_date": "增发实现/{date}",
+            "public": "增发实现/public",
+        },
+        "naming": {
+            "output_template": "3增发实现{date}.xlsx",
+            "merge_output": "total_1.xlsx",
+            "dedup_output": "deduped.xlsx",
+            "extract_output": "output_2.xlsx",
+            "match_high_price_output": "output_3.xlsx",
+            "match_ma20_output": "output_4.xlsx",
+            "match_soe_output": "output_5.xlsx",
+        },
+        "match_sources": {
+            "match_high_price": "百日新高",
+            "match_ma20": "20日均线",
+            "match_soe": "国企",
+            "match_sector": "一级板块",
+        }
+    },
+
+    "申报并购重组": {
+        "display_name": "申报并购重组",
+        "base_subdir": "申报并购重组",
+        "directories": {
+            "upload_date": "申报并购重组/{date}",
+            "public": "申报并购重组/public",
+        },
+        "naming": {
+            "output_template": "4申报并购重组{date}.xlsx",
             "merge_output": "total_1.xlsx",
             "dedup_output": "deduped.xlsx",
             "extract_output": "output_2.xlsx",

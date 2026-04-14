@@ -337,6 +337,12 @@ async def run_workflow(
     step_results = []
     last_output_file = None
 
+    # 强制用最新配置的文件名覆盖最后一步（match_sector）的 output_filename
+    if steps and steps[-1].get("type") == "match_sector":
+        final_name = executor.resolver.get_output_filename("match_sector", output_date_str)
+        if final_name:
+            steps[-1].setdefault("config", {})["output_filename"] = final_name
+
     for i, step in enumerate(steps):
         step_type = step.get("type", "")
         step_config = step.get("config", {})
@@ -370,13 +376,30 @@ async def run_workflow(
     await db.commit()
 
     failed = [s for s in step_results if s["status"] == "failed"]
+
+    # 执行成功后立刻写入数据库
+    db_saved = False
+    if last_output_file and not failed:
+        from services.workflow_result_service import save_workflow_result
+        try:
+            db_saved = await save_workflow_result(
+                workflow_id=workflow_id,
+                workflow_type=workflow_type,
+                workflow_name=workflow.name,
+                date_str=output_date_str,
+                file_path=last_output_file,
+                step_type="final"
+            )
+        except Exception as e:
+            logger.error(f"执行后DB写入失败: {e}")
+
     # 构建最后一步的预览数据
     preview_data = []
     if input_data is not None and hasattr(input_data, 'head'):
         preview_data = clean_df_for_json(input_data)
 
     return {
-        "message": f"工作流执行完成，耗时{duration}秒" + (f"，{len(failed)}个步骤失败" if failed else ""),
+        "message": f"工作流执行完成，耗时{duration}秒" + (f"，{len(failed)}个步骤失败" if failed else "") + (", 结果已保存到数据库" if db_saved else ""),
         "workflow_id": workflow_id,
         "duration": duration,
         "steps": step_results,
@@ -636,6 +659,12 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                         break
                 output_date_str = first_step_date or datetime.now().strftime("%Y-%m-%d")
 
+                # 强制用最新配置的文件名覆盖最后一步
+                if steps and steps[-1].get("type") == "match_sector":
+                    final_name = executor_with_type.resolver.get_output_filename("match_sector", output_date_str)
+                    if final_name:
+                        steps[-1].setdefault("config", {})["output_filename"] = final_name
+
                 for i, step in enumerate(steps):
                     step_type = step.get("type", "")
                     step_config = step.get("config", {})
@@ -695,6 +724,21 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                     result_entry["error"] = f"{len(failed_steps)}个步骤失败"
                 else:
                     result_entry["status"] = "completed"
+
+                # 执行成功后写入数据库
+                if result_entry["output_file"] and result_entry["status"] == "completed":
+                    from services.workflow_result_service import save_workflow_result
+                    try:
+                        await save_workflow_result(
+                            workflow_id=wf_id,
+                            workflow_type=workflow_type,
+                            workflow_name=workflow.name,
+                            date_str=output_date_str,
+                            file_path=result_entry["output_file"],
+                            step_type="final"
+                        )
+                    except Exception as e:
+                        logger.error(f"[批量] 工作流{wf_id} DB写入失败: {e}")
 
                 result_entry["duration"] = duration
                 result_entry["step_count"] = len(steps)
@@ -808,8 +852,8 @@ async def batch_download_results(
 @router.get("/download-result/{workflow_id}")
 async def download_workflow_result(
     workflow_id: int,
+    background_tasks: BackgroundTasks,
     step_index: int = Query(None),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -881,7 +925,7 @@ async def download_workflow_result(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"文件不存在: {file_path}")
 
-    # 收集所有步骤生成的文件路径，下载后清理
+    # 收集所有步骤生成的文件路径，下载后清理（排除当前下载文件，防止流式传输中断）
     generated_files = set()
     daily_dir = executor_with_type._get_daily_dir(output_date_str)
     for step in steps:
