@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import logging
 from core.config import settings
 from core.database import async_engine, Base
-from api import auth, data_sources, rules, tasks, stock_pools, workflows, statistics_api
+from api import auth, data_sources, rules, tasks, stock_pools, workflows, statistics_api, trend_api
 from services.task_scheduler import TaskScheduler
 
 logging.basicConfig(
@@ -89,6 +89,7 @@ app.include_router(tasks.router, prefix=f"{settings.API_PREFIX}/tasks", tags=["�
 app.include_router(stock_pools.router, prefix=f"{settings.API_PREFIX}/stock-pools", tags=["选股池"])
 app.include_router(workflows.router, prefix=f"{settings.API_PREFIX}/workflows", tags=["工作流"])
 app.include_router(statistics_api.router, prefix=f"{settings.API_PREFIX}/statistics", tags=["统计分析"])
+app.include_router(trend_api.router, prefix=f"{settings.API_PREFIX}/statistics/trend", tags=["趋势统计"])
 
 
 @app.get("/")

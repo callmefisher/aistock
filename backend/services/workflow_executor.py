@@ -384,7 +384,8 @@ class WorkflowExecutor:
 
                 try:
                     if is_public_file:
-                        df = self._read_public_file_cached(filepath, skiprows=1)
+                        public_skiprows = self.resolver.config.get("public_skiprows", 1)
+                        df = self._read_public_file_cached(filepath, skiprows=public_skiprows)
                     elif self.workflow_type == "申报并购重组":
                         # 申报并购重组源文件第1行是分组头（如"申报进程日期"），直接跳过
                         df = pd.read_excel(filepath, skiprows=1)
@@ -792,10 +793,13 @@ class WorkflowExecutor:
                 "message": "没有可匹配的数据"
             }
 
-        source_dir = config.get("source_dir") or self.resolver.get_match_source_directory("match_high_price")
+        source_path = config.get("source_dir") or self.resolver.get_match_source_directory("match_high_price", date_str)
         new_column_name = config.get("new_column_name", "百日新高")
 
-        source_path = os.path.join(self.base_dir, source_dir)
+        # 确保目录存在且有文件（自动从历史日期复制）
+        if date_str:
+            source_path = self.resolver.ensure_match_source_files("match_high_price", date_str)
+
         if not os.path.exists(source_path):
             return {
                 "success": False,
@@ -808,7 +812,7 @@ class WorkflowExecutor:
             name_col_candidates=['股票简称', '证券简称']
         )
 
-        logger.info(f"从{source_dir}目录共加载{len(all_high_stocks)}只新高股票")
+        logger.info(f"从{source_path}目录共加载{len(all_high_stocks)}只新高股票")
 
         df[new_column_name] = df['证券代码'].apply(
             lambda code: match_stock_code_flexible(code, all_high_stocks)
@@ -846,10 +850,12 @@ class WorkflowExecutor:
                 "message": "没有可匹配的数据"
             }
 
-        source_dir = config.get("source_dir") or self.resolver.get_match_source_directory("match_ma20")
+        source_path = config.get("source_dir") or self.resolver.get_match_source_directory("match_ma20", date_str)
         new_column_name = config.get("new_column_name", "20日均线")
 
-        source_path = os.path.join(self.base_dir, source_dir)
+        if date_str:
+            source_path = self.resolver.ensure_match_source_files("match_ma20", date_str)
+
         if not os.path.exists(source_path):
             return {
                 "success": False,
@@ -862,7 +868,7 @@ class WorkflowExecutor:
             name_col_candidates=['股票简称', '证券简称']
         )
 
-        logger.info(f"从{source_dir}目录共加载{len(all_ma20_stocks)}只股票")
+        logger.info(f"从{source_path}目录共加载{len(all_ma20_stocks)}只股票")
 
         try:
             if '证券代码' not in df.columns:
@@ -908,10 +914,12 @@ class WorkflowExecutor:
                 "message": "没有可匹配的数据"
             }
 
-        source_dir = config.get("source_dir") or self.resolver.get_match_source_directory("match_soe")
+        source_path = config.get("source_dir") or self.resolver.get_match_source_directory("match_soe", date_str)
         new_column_name = config.get("new_column_name", "国企")
 
-        source_path = os.path.join(self.base_dir, source_dir)
+        if date_str:
+            source_path = self.resolver.ensure_match_source_files("match_soe", date_str)
+
         if not os.path.exists(source_path):
             return {
                 "success": False,
@@ -924,7 +932,7 @@ class WorkflowExecutor:
             name_col_candidates=['股票简称', '证券简称']
         )
 
-        logger.info(f"从{source_dir}目录共加载{len(all_soe_stocks)}只国企股票")
+        logger.info(f"从{source_path}目录共加载{len(all_soe_stocks)}只国企股票")
 
         df[new_column_name] = df['证券代码'].apply(
             lambda code: match_stock_code_flexible(code, all_soe_stocks)
@@ -962,10 +970,12 @@ class WorkflowExecutor:
                 "message": "没有可匹配的数据"
             }
 
-        source_dir = config.get("source_dir") or self.resolver.get_match_source_directory("match_sector")
+        source_path = config.get("source_dir") or self.resolver.get_match_source_directory("match_sector", date_str)
         new_column_name = config.get("new_column_name", "一级板块")
 
-        source_path = os.path.join(self.base_dir, source_dir)
+        if date_str:
+            source_path = self.resolver.ensure_match_source_files("match_sector", date_str)
+
         if not os.path.exists(source_path):
             return {
                 "success": False,
@@ -978,7 +988,7 @@ class WorkflowExecutor:
             name_col_candidates=['所属一级板块', '所属板块', '一级板块', '板块']
         )
 
-        logger.info(f"从{source_dir}目录共加载{len(all_sector_stocks)}只股票")
+        logger.info(f"从{source_path}目录共加载{len(all_sector_stocks)}只股票")
 
         df[new_column_name] = df['证券代码'].apply(
             lambda code: match_stock_code_flexible(code, all_sector_stocks)
@@ -992,6 +1002,24 @@ class WorkflowExecutor:
         df.to_excel(output_path, index=False)
         auto_adjust_excel_width(output_path)
         logger.info(f"结果已保存到: {output_path}")
+
+        # 自动采集20日均线趋势数据
+        if '20日均线' in df.columns:
+            try:
+                ma20_count = int((df['20日均线'].fillna('').astype(str).str.strip() != '').sum())
+                ma20_total = len(df)
+                from services.trend_service import save_trend_data
+                await save_trend_data(
+                    metric_type='ma20',
+                    workflow_type=self.workflow_type or '并购重组',
+                    date_str=date_str or self.today,
+                    count=ma20_count,
+                    total=ma20_total,
+                    source='auto'
+                )
+                logger.info(f"自动采集MA20趋势: type={self.workflow_type}, count={ma20_count}, total={ma20_total}")
+            except Exception as e:
+                logger.warning(f"自动采集MA20趋势失败: {e}")
 
         df_clean = df.fillna('')
         records = df_clean.head(100).to_dict('records')

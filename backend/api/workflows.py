@@ -444,7 +444,7 @@ def get_target_directory(step_type: str, date_str: Optional[str] = None, workflo
     resolver = get_resolver(BASE_DIR, workflow_type)
 
     if step_type in ["match_high_price", "match_ma20", "match_soe", "match_sector"]:
-        return resolver.get_match_source_directory(step_type)
+        return resolver.get_match_source_directory(step_type, date_str)
     else:
         return resolver.get_upload_directory(date_str)
 
@@ -510,6 +510,12 @@ async def get_step_files(
     current_user: User = Depends(get_current_user)
 ):
     target_dir = get_target_directory(step_type, date_str, workflow_type)
+
+    # match 步骤：自动创建目录并从历史日期复制文件
+    if step_type in ["match_high_price", "match_ma20", "match_soe", "match_sector"] and date_str:
+        from services.path_resolver import get_resolver
+        resolver = get_resolver(BASE_DIR, workflow_type)
+        target_dir = resolver.ensure_match_source_files(step_type, date_str)
 
     if not os.path.exists(target_dir):
         return {"success": True, "files": [], "directory": target_dir}

@@ -146,6 +146,7 @@ WORKFLOW_TYPE_CONFIG = {
     "招投标": {
         "display_name": "招投标",
         "base_subdir": "招投标",
+        "public_skiprows": 0,
         "directories": {
             "upload_date": "招投标/{date}",
             "public": "招投标/public",

@@ -1,8 +1,13 @@
 import os
-from datetime import datetime
+import glob
+import shutil
+import logging
+from datetime import datetime, timedelta
 from typing import Optional
 
 from config.workflow_type_config import get_type_config
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowPathResolver:
@@ -66,13 +71,53 @@ class WorkflowPathResolver:
             date=date_str.replace("-", "")
         )
 
-    def get_match_source_directory(self, step_type: str) -> str:
+    def get_match_source_directory(self, step_type: str, date_str: str = None) -> str:
         match_sources = self.config.get("match_sources", {})
         source_dir = match_sources.get(step_type, step_type)
+        if date_str:
+            return os.path.join(self.base_dir, date_str, source_dir)
         return os.path.join(self.base_dir, source_dir)
 
     def get_daily_dir(self, date_str: str = None) -> str:
         return self.get_upload_directory(date_str)
+
+    def ensure_match_source_files(self, step_type: str, date_str: str) -> str:
+        """确保匹配源目录存在且有文件。目录不存在时自动创建并从历史复制；已存在则不动。"""
+        target_dir = self.get_match_source_directory(step_type, date_str)
+
+        # 目录已存在 → 不论是否有文件，都不自动复制（用户可能主动清空过）
+        if os.path.isdir(target_dir):
+            existing = glob.glob(os.path.join(target_dir, "*.xlsx")) + glob.glob(os.path.join(target_dir, "*.xls"))
+            if existing:
+                logger.info(f"匹配源目录已有文件: {target_dir} ({len(existing)}个)")
+            return target_dir
+
+        # 目录不存在 → 创建并从历史日期递减查找复制
+        os.makedirs(target_dir, exist_ok=True)
+
+        # 从历史日期递减查找
+        match_sources = self.config.get("match_sources", {})
+        source_name = match_sources.get(step_type, step_type)
+        try:
+            base_date = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            logger.warning(f"日期格式无效: {date_str}")
+            return target_dir
+
+        for i in range(1, 31):
+            prev_date = (base_date - timedelta(days=i)).strftime("%Y-%m-%d")
+            prev_dir = os.path.join(self.base_dir, prev_date, source_name)
+            if not os.path.isdir(prev_dir):
+                continue
+            prev_files = glob.glob(os.path.join(prev_dir, "*.xlsx")) + glob.glob(os.path.join(prev_dir, "*.xls"))
+            if prev_files:
+                for f in prev_files:
+                    shutil.copy2(f, target_dir)
+                logger.info(f"从 {prev_dir} 复制 {len(prev_files)} 个文件到 {target_dir}")
+                return target_dir
+
+        logger.warning(f"匹配源目录为空且30天内无历史数据可复制: {target_dir} (step={step_type}, date={date_str})")
+        return target_dir
 
 
 _resolvers = {}

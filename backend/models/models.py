@@ -145,3 +145,21 @@ class WorkflowResult(Base):
     preview_json = Column(JSON, comment="前50行预览数据")
     file_size = Column(Integer, default=0, comment="原始文件大小")
     created_at = Column(DateTime, server_default=func.now())
+
+
+class TrendStatistics(Base):
+    __tablename__ = "trend_statistics"
+    __table_args__ = (
+        UniqueConstraint('metric_type', 'workflow_type', 'date_str', name='uk_trend_metric_type_date'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    metric_type = Column(String(50), nullable=False, index=True, comment="指标类型: ma20, high_price等")
+    workflow_type = Column(String(50), nullable=False, index=True, comment="工作流类型")
+    date_str = Column(String(20), nullable=False, index=True, comment="数据日期 YYYY-MM-DD")
+    count = Column(Integer, nullable=False, default=0, comment="达标数量")
+    total = Column(Integer, nullable=False, default=0, comment="总量")
+    ratio = Column(Float, nullable=False, default=0.0, comment="占比")
+    source = Column(String(20), default="manual", comment="数据来源: manual/excel/auto")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

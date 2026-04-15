@@ -597,7 +597,7 @@
       </el-timeline>
     </el-dialog>
 
-    <el-dialog v-model="showExecuteDialog" title="工作流执行" width="700px">
+    <el-dialog v-model="showExecuteDialog" title="工作流执行" width="700px" @close="onExecuteDialogClose">
       <el-form label-width="120px">
         <el-form-item label="工作流名称">
           <span>{{ currentWorkflow?.name }}</span>
@@ -652,7 +652,7 @@
       </div>
     </el-dialog>
 
-    <el-drawer v-model="batchProgressDrawer" title="并行执行进度" direction="rtl" size="450px" :close-on-press-escape="true" @close="() => { stopBatchPolling(); stopBatchTimer() }">
+    <el-drawer v-model="batchProgressDrawer" title="并行执行进度" direction="rtl" size="450px" :close-on-press-escape="true" @close="onBatchDrawerClose">
       <div class="batch-progress-container">
         <div class="batch-overview">
           <el-descriptions :column="2" border size="small">
@@ -1132,6 +1132,12 @@ const downloadResult = async () => {
   }
 }
 
+const onExecuteDialogClose = () => {
+  if (executionComplete.value && executionResult.value?.file_path) {
+    downloadResult()
+  }
+}
+
 const downloadBatchResult = async (workflowId) => {
   try {
     await api.download(`/workflows/download-result/${workflowId}`)
@@ -1139,6 +1145,19 @@ const downloadBatchResult = async (workflowId) => {
   } catch (error) {
     console.error('下载失败', error)
     ElMessage.error('下载失败')
+  }
+}
+
+const onBatchDrawerClose = () => {
+  stopBatchPolling()
+  stopBatchTimer()
+  // 自动下载所有已完成的工作流结果
+  const completedResults = (batchStatus.value?.results || []).filter(r => r.status === 'completed')
+  if (completedResults.length) {
+    ElMessage.info(`正在下载 ${completedResults.length} 个结果...`)
+    completedResults.forEach(r => {
+      downloadBatchResult(r.workflow_id)
+    })
   }
 }
 
@@ -1173,7 +1192,9 @@ const getTargetDirDisplay = (stepType, dateStr) => {
     }
     return `${dateStr || '当日数据'}/`
   }
-  return `${getTargetDirName(stepType)}/`
+  // match 步骤: 日期联动路径
+  const firstDate = form.value.steps.find(s => s.config?.date_str)?.config?.date_str
+  return `${firstDate || '当日数据'}/${getTargetDirName(stepType)}/`
 }
 
 const getPublicDirDisplay = () => {
@@ -1198,11 +1219,16 @@ const getPublicDirDisplay = () => {
 
 const fetchUploadedFiles = async (step, index) => {
   const key = `step_${index}`
+  // match 步骤使用第一步的日期
+  const isMatchStep = ['match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)
+  const dateStr = isMatchStep
+    ? form.value.steps.find(s => s.config?.date_str)?.config?.date_str
+    : step.config?.date_str
   try {
     const response = await api.get('/workflows/step-files/', {
       params: {
         step_type: step.type,
-        date_str: step.config?.date_str,
+        date_str: dateStr,
         workflow_type: form.value.workflow_type || ''
       }
     })
@@ -1234,8 +1260,13 @@ const handleFileUpload = async (event, step, index) => {
   formData.append('step_index', String(index))
   formData.append('step_type', step.type)
   formData.append('workflow_type', form.value.workflow_type || '')
-  if (step.config?.date_str) {
-    formData.append('date_str', step.config.date_str)
+  // match 步骤使用第一步的日期
+  const isMatchStep = ['match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)
+  const dateStr = isMatchStep
+    ? form.value.steps.find(s => s.config?.date_str)?.config?.date_str
+    : step.config?.date_str
+  if (dateStr) {
+    formData.append('date_str', dateStr)
   }
 
   console.log('[Upload] Sending request to /workflows/upload-step-file/')
@@ -1629,6 +1660,12 @@ watch(
       const prefix = typeMap[workflowType] || '1并购重组'
       lastStep.config.output_filename = `${prefix}${dateStr.replace(/-/g, '')}.xlsx`
     }
+    // 日期变化时刷新 match 步骤文件列表
+    form.value.steps.forEach((step, index) => {
+      if (['match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)) {
+        fetchUploadedFiles(step, index)
+      }
+    })
   }
 )
 </script>
