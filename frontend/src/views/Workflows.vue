@@ -737,6 +737,7 @@ const showStepsDialog = ref(false)
 const showExecuteDialog = ref(false)
 const executing = ref(false)
 const executionComplete = ref(false)
+const hasDownloaded = ref(false)
 const executionStep = ref(0)
 const executionResult = ref(null)
 const resultData = ref([])
@@ -1048,6 +1049,7 @@ const handleRun = (workflow) => {
   executionStep.value = 0
   executionResult.value = null
   executionComplete.value = false
+  hasDownloaded.value = false
   resultData.value = []
   resultColumns.value = []
   executionStartTime.value = null
@@ -1125,6 +1127,7 @@ const downloadResult = async () => {
   }
   try {
     await api.download(`/workflows/download-result/${currentWorkflow.value.id}`)
+    hasDownloaded.value = true
     ElMessage.success('下载成功')
   } catch (error) {
     console.error('下载失败', error)
@@ -1133,7 +1136,7 @@ const downloadResult = async () => {
 }
 
 const onExecuteDialogClose = () => {
-  if (executionComplete.value && executionResult.value?.file_path) {
+  if (executionComplete.value && executionResult.value?.file_path && !hasDownloaded.value) {
     downloadResult()
   }
 }
@@ -1151,12 +1154,12 @@ const downloadBatchResult = async (workflowId) => {
 const onBatchDrawerClose = () => {
   stopBatchPolling()
   stopBatchTimer()
-  // 自动下载所有已完成的工作流结果
+  // 自动下载所有已完成的工作流结果（错开300ms避免浏览器限流）
   const completedResults = (batchStatus.value?.results || []).filter(r => r.status === 'completed')
   if (completedResults.length) {
     ElMessage.info(`正在下载 ${completedResults.length} 个结果...`)
-    completedResults.forEach(r => {
-      downloadBatchResult(r.workflow_id)
+    completedResults.forEach((r, i) => {
+      setTimeout(() => downloadBatchResult(r.workflow_id), i * 300)
     })
   }
 }
