@@ -39,13 +39,13 @@
           <el-icon><Operation /></el-icon>
           <span>工作流</span>
         </el-menu-item>
-        <el-menu-item index="/excel-compare">
-          <el-icon><DocumentCopy /></el-icon>
-          <span>Excel比对</span>
-        </el-menu-item>
         <el-menu-item index="/statistics">
           <el-icon><TrendCharts /></el-icon>
           <span>统计分析</span>
+        </el-menu-item>
+        <el-menu-item index="/excel-compare">
+          <el-icon><DocumentCopy /></el-icon>
+          <span>Excel比对</span>
         </el-menu-item>
       </el-menu>
     </el-aside>

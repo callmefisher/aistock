@@ -84,6 +84,20 @@
             :closable="false"
             style="margin-top: 8px"
           />
+          <el-alert
+            v-if="form.workflow_type === '减持叠加质押和大宗交易'"
+            title="减持叠加质押和大宗交易类型将使用独立的数据目录，证券名称映射为证券简称，最新大股东减持公告日期映射为最新公告日"
+            type="info"
+            :closable="false"
+            style="margin-top: 8px"
+          />
+          <el-alert
+            v-if="form.workflow_type === '招投标'"
+            title="招投标类型将使用独立的数据目录，证券名称映射为证券简称，发生日期映射为最新公告日"
+            type="info"
+            :closable="false"
+            style="margin-top: 8px"
+          />
         </el-form-item>
 
         <el-divider content-position="left">工作流步骤</el-divider>
@@ -102,7 +116,7 @@
               </template>
 
               <el-form-item label="步骤类型">
-                <el-select v-model="step.type" style="width: 100%" @change="onStepTypeChange(step)">
+                <el-select v-model="step.type" style="width: 100%" @change="onStepTypeChange(step, index)">
                   <el-option label="导入Excel" value="import_excel" />
                   <el-option label="合并当日数据源" value="merge_excel" />
                   <el-option label="智能去重" value="smart_dedup" />
@@ -910,7 +924,7 @@ const removeStep = (index) => {
   form.value.steps.splice(index, 1)
 }
 
-const onStepTypeChange = (step) => {
+const onStepTypeChange = (step, index) => {
   step.config = {
     date_str: new Date().toISOString().split('T')[0],
     data_source_id: null,
@@ -927,6 +941,10 @@ const onStepTypeChange = (step) => {
   if (step.type === 'match_sector') {
     const firstStepDate = form.value.steps[0]?.config?.date_str || new Date().toISOString().split('T')[0]
     step.config.output_filename = `并购重组${firstStepDate}.xlsx`
+  }
+  // 选择步骤类型后自动加载对应目录的已有文件
+  if (['merge_excel', 'match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)) {
+    fetchUploadedFiles(step, index)
   }
 }
 
@@ -1147,6 +1165,12 @@ const getTargetDirDisplay = (stepType, dateStr) => {
     if (workflowType === '申报并购重组') {
       return `申报并购重组/${dateStr || '当日数据'}/`
     }
+    if (workflowType === '减持叠加质押和大宗交易') {
+      return `减持叠加质押和大宗交易/${dateStr || '当日数据'}/`
+    }
+    if (workflowType === '招投标') {
+      return `招投标/${dateStr || '当日数据'}/`
+    }
     return `${dateStr || '当日数据'}/`
   }
   return `${getTargetDirName(stepType)}/`
@@ -1162,6 +1186,12 @@ const getPublicDirDisplay = () => {
   }
   if (workflowType === '申报并购重组') {
     return '申报并购重组/public/'
+  }
+  if (workflowType === '减持叠加质押和大宗交易') {
+    return '减持叠加质押和大宗交易/public/'
+  }
+  if (workflowType === '招投标') {
+    return '招投标/public/'
   }
   return '2025public/'
 }
@@ -1565,10 +1595,8 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
       if (step.type === 'match_sector') {
         const firstStepWithDate = form.value.steps.find(s => s.config?.date_str)
         const dateStr = firstStepWithDate?.config?.date_str?.replace(/-/g, '') || new Date().toISOString().split('T')[0].replace(/-/g, '')
-        let prefix = '并购重组'
-        if (newType === '股权转让') {
-          prefix = '股权转让'
-        }
+        const typeMap = { '股权转让': '2股权转让', '增发实现': '3增发实现', '申报并购重组': '4申报并购重组', '减持叠加质押和大宗交易': '6减持叠加质押和大宗交易', '招投标': '9招投标' }
+        const prefix = typeMap[newType] || '1并购重组'
         step.config.output_filename = `${prefix}${dateStr}.xlsx`
       }
     })
@@ -1597,7 +1625,7 @@ watch(
     if (!dateStr) return
     const lastStep = form.value.steps[form.value.steps.length - 1]
     if (lastType === 'match_sector' && lastStep) {
-      const typeMap = { '股权转让': '2股权转让', '增发实现': '3增发实现', '申报并购重组': '4申报并购重组' }
+      const typeMap = { '股权转让': '2股权转让', '增发实现': '3增发实现', '申报并购重组': '4申报并购重组', '减持叠加质押和大宗交易': '6减持叠加质押和大宗交易', '招投标': '9招投标' }
       const prefix = typeMap[workflowType] || '1并购重组'
       lastStep.config.output_filename = `${prefix}${dateStr.replace(/-/g, '')}.xlsx`
     }

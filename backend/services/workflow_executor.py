@@ -394,14 +394,20 @@ class WorkflowExecutor:
                         df_all = pd.read_excel(filepath)
                         if len(df_all) > 0:
                             known_col_names = {"证券代码", "证券简称", "最新公告日", "公告日期", "代码", "名称",
-                                               "首次公告日", "交易概述", "上市公告日", "更新日期", "受理日期", "重组类型"}
+                                               "首次公告日", "交易概述", "上市公告日", "更新日期", "受理日期", "重组类型",
+                                               "证券名称", "最新大股东减持公告日期", "发生日期"}
                             df = self._detect_header_and_parse(df_all, known_col_names, filepath)
                         else:
                             continue
 
+                    # 减持叠加质押和大宗交易：Wind 风格列名含 \n 后缀，剥离以匹配标准列名
+                    if self.workflow_type == "减持叠加质押和大宗交易":
+                        df.columns = [c.split('\n')[0] if isinstance(c, str) else c for c in df.columns]
+
                     df["_source_file"] = filename
                     # 提前过滤到需要的列，减少 concat 内存（55列→4列）
-                    target_cols = ["序号", "证券代码", "证券简称", "最新公告日", "代码", "名称", "公告日期", "上市公告日", "更新日期", "_source_file"]
+                    target_cols = ["序号", "证券代码", "证券简称", "最新公告日", "代码", "名称", "公告日期", "上市公告日", "更新日期",
+                                   "证券名称", "最新大股东减持公告日期", "发生日期", "_source_file"]
                     available = [c for c in target_cols if c in df.columns]
                     if available:
                         df = df[available]
@@ -442,6 +448,44 @@ class WorkflowExecutor:
                 merged_df = merged_df.rename(columns={"更新日期": "最新公告日"})
                 logger.info(f"申报并购重组类型：更新日期→最新公告日 映射完成")
 
+            if self.workflow_type == "减持叠加质押和大宗交易":
+                # 清洗不规范字符：全角空格、不可见字符、前后空白
+                for col in merged_df.columns:
+                    if merged_df[col].dtype == object:
+                        mask = merged_df[col].notna()
+                        merged_df.loc[mask, col] = (merged_df.loc[mask, col]
+                                                    .astype(str)
+                                                    .str.replace('\u3000', ' ', regex=False)
+                                                    .str.replace(r'[\x00-\x1f\x7f-\x9f]', '', regex=True)
+                                                    .str.strip())
+
+                # 列名映射：仅在目标列不存在时才做映射
+                if "证券简称" not in merged_df.columns and "证券名称" in merged_df.columns:
+                    merged_df = merged_df.rename(columns={"证券名称": "证券简称"})
+                    logger.info("减持叠加质押和大宗交易：证券名称→证券简称 映射完成")
+                if "最新公告日" not in merged_df.columns and "最新大股东减持公告日期" in merged_df.columns:
+                    merged_df = merged_df.rename(columns={"最新大股东减持公告日期": "最新公告日"})
+                    logger.info("减持叠加质押和大宗交易：最新大股东减持公告日期→最新公告日 映射完成")
+
+            if self.workflow_type == "招投标":
+                # 清洗不规范字符：全角空格、不可见字符、前后空白
+                for col in merged_df.columns:
+                    if merged_df[col].dtype == object:
+                        mask = merged_df[col].notna()
+                        merged_df.loc[mask, col] = (merged_df.loc[mask, col]
+                                                    .astype(str)
+                                                    .str.replace('\u3000', ' ', regex=False)
+                                                    .str.replace(r'[\x00-\x1f\x7f-\x9f]', '', regex=True)
+                                                    .str.strip())
+
+                # 列名映射：仅在目标列不存在时才做映射
+                if "证券简称" not in merged_df.columns and "证券名称" in merged_df.columns:
+                    merged_df = merged_df.rename(columns={"证券名称": "证券简称"})
+                    logger.info("招投标：证券名称→证券简称 映射完成")
+                if "最新公告日" not in merged_df.columns and "发生日期" in merged_df.columns:
+                    merged_df = merged_df.rename(columns={"发生日期": "最新公告日"})
+                    logger.info("招投标：发生日期→最新公告日 映射完成")
+
             keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
             existing_columns = [col for col in keep_columns if col in merged_df.columns]
             merged_df = merged_df[existing_columns]
@@ -480,6 +524,8 @@ class WorkflowExecutor:
                 merged_df["序号"] = pd.to_numeric(merged_df["序号"], errors='coerce')
                 merged_df = merged_df.dropna(subset=["序号"])
                 merged_df["序号"] = range(1, len(merged_df) + 1)
+            else:
+                merged_df.insert(0, "序号", range(1, len(merged_df) + 1))
 
             output_filename = config.get("output_filename") or self.resolver.get_output_filename("merge_excel", date_str)
             output_path = os.path.join(daily_dir, output_filename)
