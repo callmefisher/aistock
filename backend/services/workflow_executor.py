@@ -284,6 +284,8 @@ class WorkflowExecutor:
                 return await self._match_sector(step_config, input_data, date_str)
             elif step_type == "condition_intersection":
                 return await self._condition_intersection(step_config, date_str)
+            elif step_type == "export_ma20_trend":
+                return await self._export_ma20_trend(step_config, date_str)
             elif step_type == "pending":
                 return {
                     "success": True,
@@ -1135,40 +1137,35 @@ class WorkflowExecutor:
         # 重新编号序号
         combined_df["序号"] = range(1, len(combined_df) + 1)
 
-        # 4. 计算交集：在所有有数据的类型中都出现的证券代码（在 rename 前计算）
-        code_sets = []
-        for wtype, df in filtered_dfs.items():
-            if "证券代码" in df.columns:
-                codes = set(df["证券代码"].dropna().astype(str).str.strip())
-                codes.discard("")
-                code_sets.append(codes)
-            else:
-                logger.warning(f"[条件交集] {wtype} 缺少证券代码列，跳过交集计算")
-
-        intersection_codes = set()
-        if code_sets:
-            intersection_codes = code_sets[0]
-            for s in code_sets[1:]:
-                intersection_codes &= s
-
-        logger.info(f"[条件交集] 交集证券代码: {len(intersection_codes)}个")
-
-        # 从合并数据中提取交集行（去重，在 rename 前操作）
-        if intersection_codes and "证券代码" in combined_df.columns:
-            mask = combined_df["证券代码"].astype(str).str.strip().isin(intersection_codes)
-            pool_raw = combined_df[mask].drop_duplicates(subset=["证券代码"], keep="first").copy()
-            pool_raw["序号"] = range(1, len(pool_raw) + 1)
-        else:
-            pool_raw = pd.DataFrame(columns=INTERSECTION_SOURCE_COLUMNS + ["资本运作行为"])
+        # 4. 交集计算逻辑（暂保留，当前 Sheet2 直接复制 Sheet1）
+        # code_sets = []
+        # for wtype, df in filtered_dfs.items():
+        #     if "证券代码" in df.columns:
+        #         codes = set(df["证券代码"].dropna().astype(str).str.strip())
+        #         codes.discard("")
+        #         code_sets.append(codes)
+        #     else:
+        #         logger.warning(f"[条件交集] {wtype} 缺少证券代码列，跳过交集计算")
+        # intersection_codes = set()
+        # if code_sets:
+        #     intersection_codes = code_sets[0]
+        #     for s in code_sets[1:]:
+        #         intersection_codes &= s
+        # if intersection_codes and "证券代码" in combined_df.columns:
+        #     mask = combined_df["证券代码"].astype(str).str.strip().isin(intersection_codes)
+        #     pool_raw = combined_df[mask].drop_duplicates(subset=["证券代码"], keep="first").copy()
+        #     pool_raw["序号"] = range(1, len(pool_raw) + 1)
+        # else:
+        #     pool_raw = pd.DataFrame(columns=INTERSECTION_SOURCE_COLUMNS + ["资本运作行为"])
 
         # 列名重映射（原始数据不变，只改最终输出的列名）
         combined_display = combined_df.rename(columns=INTERSECTION_COLUMN_RENAME)
-        pool_df = pool_raw.rename(columns=INTERSECTION_COLUMN_RENAME)
         # 确保列顺序
         final_columns = [c for c in INTERSECTION_DISPLAY_COLUMNS if c in combined_display.columns]
         combined_display = combined_display[final_columns]
-        pool_columns = [c for c in INTERSECTION_DISPLAY_COLUMNS if c in pool_df.columns]
-        pool_df = pool_df[pool_columns]
+
+        # Sheet2（选股池）= Sheet1 数据的完整复制
+        pool_df = combined_display.copy()
 
         # 5. 输出 Excel（双 Sheet）
         daily_dir = self._get_daily_dir(date_str)
@@ -1209,13 +1206,52 @@ class WorkflowExecutor:
 
         return {
             "success": True,
-            "message": f"条件交集完成: 合并{len(combined_display)}行, 交集{len(pool_df)}条, 来源{len(filtered_dfs)}个类型",
+            "message": f"条件交集完成: 合并{len(combined_display)}行, 选股池{len(pool_df)}条, 来源{len(filtered_dfs)}个类型",
             "data": clean_df_for_json(combined_display),
             "columns": combined_display.columns.tolist(),
             "rows": len(combined_display),
             "file_path": output_path,
             "_df": combined_display,
             "pool_count": len(pool_df),
+        }
+
+    async def _export_ma20_trend(self, config: Dict, date_str: Optional[str] = None) -> Dict[str, Any]:
+        """导出20日均线趋势步骤：复用统计分析的趋势导出逻辑（含 Excel 折线图）"""
+        from services.trend_service import get_trend_data, export_trend_excel_with_chart
+
+        date_str = config.get("date_str") or date_str or self.today
+        output_filename = config.get("output_filename") or "10站上20日均线趋势.xlsx"
+        date_range_start = config.get("date_range_start")
+        date_range_end = config.get("date_range_end")
+
+        logger.info(f"[导出MA20趋势] date={date_str}, range={date_range_start}~{date_range_end}")
+
+        # 获取趋势数据（已自动排除条件交集和导出20日均线趋势类型）
+        data = await get_trend_data(
+            metric_type="ma20",
+            start_date=date_range_start,
+            end_date=date_range_end
+        )
+
+        if not data:
+            return {"success": False, "message": "指定时间范围内无趋势数据"}
+
+        # 生成带图表的 Excel
+        daily_dir = self._get_daily_dir(date_str)
+        os.makedirs(daily_dir, exist_ok=True)
+        output_path = os.path.join(daily_dir, output_filename)
+
+        export_trend_excel_with_chart(data, output_path)
+        # 注意：xlsxwriter 生成的文件不用 openpyxl 的 auto_adjust_excel_width，会破坏图表
+        logger.info(f"[导出MA20趋势] 输出文件: {output_path}, {len(data)}条数据")
+
+        return {
+            "success": True,
+            "message": f"20日均线趋势导出完成，{len(data)}条数据，含折线图",
+            "data": data[:100],
+            "columns": list(data[0].keys()) if data else [],
+            "rows": len(data),
+            "file_path": output_path,
         }
 
     def _apply_filters(self, df: pd.DataFrame, filter_conditions: list, filter_logic: str = "AND") -> pd.DataFrame:
@@ -1249,55 +1285,39 @@ class WorkflowExecutor:
                                 data: list, total_stocks: int,
                                 filter_conditions: list, source_types: list,
                                 workflow_id: int = None):
-        """保存选股池到数据库（upsert by name + date_str）"""
+        """保存选股池到数据库（atomic upsert by name + date_str）"""
         import json as json_mod
         from core.database import AsyncSessionLocal
         from sqlalchemy import text
 
-        async with AsyncSessionLocal() as session:
-            # 检查是否已存在同名同日期的选股池
-            result = await session.execute(text(
-                "SELECT id FROM stock_pools WHERE name = :name AND date_str = :date_str LIMIT 1"
-            ), {"name": name, "date_str": date_str})
-            existing = result.fetchone()
+        params = {
+            "name": name,
+            "workflow_id": workflow_id,
+            "date_str": date_str,
+            "file_path": file_path,
+            "total_stocks": total_stocks,
+            "data": json_mod.dumps(data, ensure_ascii=False, default=str),
+            "filter_conditions": json_mod.dumps(filter_conditions, ensure_ascii=False),
+            "source_types": json_mod.dumps(source_types, ensure_ascii=False),
+        }
 
-            if existing:
-                await session.execute(text("""
-                    UPDATE stock_pools SET
-                        workflow_id = :workflow_id,
-                        file_path = :file_path,
-                        total_stocks = :total_stocks,
-                        data = :data,
-                        filter_conditions = :filter_conditions,
-                        source_types = :source_types,
-                        is_active = 1,
-                        updated_at = NOW()
-                    WHERE id = :id
-                """), {
-                    "id": existing[0],
-                    "workflow_id": workflow_id,
-                    "file_path": file_path,
-                    "total_stocks": total_stocks,
-                    "data": json_mod.dumps(data, ensure_ascii=False, default=str),
-                    "filter_conditions": json_mod.dumps(filter_conditions, ensure_ascii=False),
-                    "source_types": json_mod.dumps(source_types, ensure_ascii=False),
-                })
-            else:
-                await session.execute(text("""
-                    INSERT INTO stock_pools (name, workflow_id, date_str, file_path, total_stocks, data,
-                        filter_conditions, source_types, is_active, created_at, updated_at)
-                    VALUES (:name, :workflow_id, :date_str, :file_path, :total_stocks, :data,
-                        :filter_conditions, :source_types, 1, NOW(), NOW())
-                """), {
-                    "name": name,
-                    "workflow_id": workflow_id,
-                    "date_str": date_str,
-                    "file_path": file_path,
-                    "total_stocks": total_stocks,
-                    "data": json_mod.dumps(data, ensure_ascii=False, default=str),
-                    "filter_conditions": json_mod.dumps(filter_conditions, ensure_ascii=False),
-                    "source_types": json_mod.dumps(source_types, ensure_ascii=False),
-                })
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("""
+                INSERT INTO stock_pools (name, workflow_id, date_str, file_path, total_stocks, data,
+                    filter_conditions, source_types, is_active, created_at, updated_at)
+                VALUES (:name, :workflow_id, :date_str, :file_path, :total_stocks, :data,
+                    :filter_conditions, :source_types, 1, NOW(), NOW())
+                AS new_row
+                ON DUPLICATE KEY UPDATE
+                    workflow_id = new_row.workflow_id,
+                    file_path = new_row.file_path,
+                    total_stocks = new_row.total_stocks,
+                    data = new_row.data,
+                    filter_conditions = new_row.filter_conditions,
+                    source_types = new_row.source_types,
+                    is_active = 1,
+                    updated_at = NOW()
+            """), params)
             await session.commit()
 
 

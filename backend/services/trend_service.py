@@ -3,6 +3,10 @@ import pandas as pd
 from typing import Optional, List, Dict, Any
 from sqlalchemy import text
 from core.database import AsyncSessionLocal
+from openpyxl import Workbook
+from openpyxl.chart import LineChart, Reference
+from openpyxl.utils import get_column_letter
+import xlsxwriter
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +56,7 @@ async def get_trend_data(
 ) -> List[Dict[str, Any]]:
     try:
         async with AsyncSessionLocal() as session:
-            query = "SELECT id, metric_type, workflow_type, date_str, count, total, ratio, source, created_at FROM trend_statistics WHERE metric_type = :metric_type AND workflow_type != '条件交集'"
+            query = "SELECT id, metric_type, workflow_type, date_str, count, total, ratio, source, created_at FROM trend_statistics WHERE metric_type = :metric_type AND workflow_type NOT IN ('条件交集', '导出20日均线趋势')"
             params: Dict[str, Any] = {"metric_type": metric_type}
 
             if workflow_type:
@@ -197,3 +201,120 @@ async def batch_save_trend_data(metric_type: str, records: List[Dict[str, Any]],
     except Exception as e:
         logger.error(f"批量保存趋势数据失败: {e}")
         return 0
+
+
+def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type: str = None):
+    """导出趋势数据到 Excel（xlsxwriter）：每个工作流类型的数据 + 双Y轴折线图，兼容 WPS 和 Excel"""
+    from config.workflow_type_config import WORKFLOW_TYPE_CONFIG
+
+    # 按工作流类型分组
+    type_groups = {}
+    for d in data:
+        wt = d["workflow_type"]
+        if wt not in type_groups:
+            type_groups[wt] = []
+        type_groups[wt].append(d)
+
+    # 从 config 提取排序前缀和显示名
+    def get_type_sort_key(wt):
+        cfg = WORKFLOW_TYPE_CONFIG.get(wt, WORKFLOW_TYPE_CONFIG.get("", {}))
+        tpl = cfg.get("naming", {}).get("output_template", "")
+        # 提取开头数字如 "1并购重组{date}.xlsx" → 1
+        import re
+        m = re.match(r'^(\d+)', tpl)
+        return int(m.group(1)) if m else 99
+
+    def get_type_prefix(wt):
+        cfg = WORKFLOW_TYPE_CONFIG.get(wt, WORKFLOW_TYPE_CONFIG.get("", {}))
+        tpl = cfg.get("naming", {}).get("output_template", "")
+        import re
+        m = re.match(r'^(\d+)', tpl)
+        return m.group(1) if m else ""
+
+    type_names = sorted(type_groups.keys(), key=get_type_sort_key)
+
+    wb = xlsxwriter.Workbook(file_path)
+    ws = wb.add_worksheet("站上20日均线趋势")
+
+    # 格式
+    title_fmt = wb.add_format({'bold': True, 'font_size': 13})
+    header_fmt = wb.add_format({'bold': True, 'bg_color': '#F2F2F2', 'border': 1})
+    data_fmt = wb.add_format({'border': 1})
+    pct_fmt = wb.add_format({'border': 1, 'num_format': '0.00'})
+
+    # 列宽
+    ws.set_column('A:A', 14)
+    ws.set_column('B:B', 16)
+    ws.set_column('C:C', 10)
+    ws.set_column('D:D', 12)
+
+    if not type_names:
+        ws.write(0, 0, "暂无数据")
+        wb.close()
+        return
+
+    current_row = 0
+
+    for wt in type_names:
+        items = sorted(type_groups[wt], key=lambda x: x["date_str"])
+        if not items:
+            continue
+
+        prefix = get_type_prefix(wt)
+        display_title = f"【{prefix}{wt}】站上20日均线趋势" if prefix else f"【{wt}】站上20日均线趋势"
+
+        # 标题
+        ws.write(current_row, 0, display_title, title_fmt)
+        current_row += 1
+
+        # 表头
+        for col_idx, h in enumerate(["日期", "站20均线数量", "总量", "占比(%)"]):
+            ws.write(current_row, col_idx, h, header_fmt)
+        header_row = current_row
+        current_row += 1
+
+        # 数据
+        data_start_row = current_row
+        for item in items:
+            ws.write(current_row, 0, item["date_str"], data_fmt)
+            ws.write(current_row, 1, item["count"], data_fmt)
+            ws.write(current_row, 2, item["total"], data_fmt)
+            ws.write(current_row, 3, round(item["ratio"] * 100, 2) if item.get("ratio") else 0, pct_fmt)
+            current_row += 1
+        data_end_row = current_row - 1
+
+        # 图表：仅占比(%)折线
+        chart = wb.add_chart({'type': 'line'})
+        chart.set_title({'name': f'{prefix}{wt} - 站上20日均线占比趋势'})
+        chart.set_size({'width': 620, 'height': 360})
+        chart.set_legend({'none': True})
+
+        chart.add_series({
+            'name': '占比(%)',
+            'categories': ['站上20日均线趋势', data_start_row, 0, data_end_row, 0],
+            'values': ['站上20日均线趋势', data_start_row, 3, data_end_row, 3],
+            'line': {'width': 2.5, 'color': '#409EFF'},
+            'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#409EFF'}},
+        })
+
+        chart.set_y_axis({'name': '占比(%)', 'num_format': '0.00'})
+
+        # X轴：日期过多时间隔显示标签，保证最多约15个可见标签
+        num_points = len(items)
+        x_axis_opts = {'name': '日期', 'label_position': 'low'}
+        if num_points > 15:
+            interval = max(1, num_points // 15)
+            x_axis_opts['interval_unit'] = interval
+            x_axis_opts['label_position'] = 'low'
+            x_axis_opts['num_font'] = {'rotation': -45, 'size': 9}
+        chart.set_x_axis(x_axis_opts)
+
+        ws.insert_chart(header_row - 1, 5, chart)
+
+        # 间距
+        chart_height_rows = 22
+        data_rows_used = len(items) + 2
+        current_row = header_row - 1 + max(chart_height_rows, data_rows_used) + 2
+
+    wb.close()
+    logger.info(f"趋势Excel已导出(xlsxwriter): {file_path}, {len(data)}条, {len(type_names)}个类型")

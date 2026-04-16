@@ -17,7 +17,7 @@
         </div>
       </template>
 
-      <el-table :data="workflows" stripe v-loading="loading" @selection-change="handleSelectionChange" ref="workflowTableRef">
+      <el-table :data="workflows" stripe v-loading="loading" @selection-change="handleSelectionChange" ref="workflowTableRef" :row-class-name="getRowClassName">
         <el-table-column type="selection" width="50" />
         <el-table-column prop="name" label="工作流名称" />
         <el-table-column label="类型" width="180">
@@ -48,7 +48,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="showDialog" :title="isEditing ? '编辑工作流' : '创建工作流'" width="800px">
+    <el-dialog v-model="showDialog" :title="isEditing ? '编辑工作流' : '创建工作流'" width="800px" @close="onEditDialogClose">
       <el-form :model="form" label-width="140px">
         <el-form-item label="工作流名称">
           <el-input v-model="form.name" placeholder="请输入工作流名称" />
@@ -110,6 +110,13 @@
             :closable="false"
             style="margin-top: 8px"
           />
+          <el-alert
+            v-if="form.workflow_type === '导出20日均线趋势'"
+            title="导出20日均线趋势：复用统计分析的趋势导出逻辑，生成含折线图的Excel，不写入数据库"
+            type="warning"
+            :closable="false"
+            style="margin-top: 8px"
+          />
         </el-form-item>
 
         <el-divider content-position="left">工作流步骤</el-divider>
@@ -128,9 +135,12 @@
               </template>
 
               <el-form-item label="步骤类型">
-                <el-select v-model="step.type" style="width: 100%" @change="onStepTypeChange(step, index)" :disabled="form.workflow_type === '条件交集'">
+                <el-select v-model="step.type" style="width: 100%" @change="onStepTypeChange(step, index)" :disabled="isAggregationType">
                   <template v-if="form.workflow_type === '条件交集'">
                     <el-option label="合并当日数据" value="condition_intersection" />
+                  </template>
+                  <template v-else-if="form.workflow_type === '导出20日均线趋势'">
+                    <el-option label="导出趋势Excel" value="export_ma20_trend" />
                   </template>
                   <template v-else>
                     <el-option label="导入Excel" value="import_excel" />
@@ -624,6 +634,51 @@
                 </el-form-item>
               </template>
 
+              <template v-if="step.type === 'export_ma20_trend'">
+                <el-form-item label="数据日期">
+                  <el-date-picker
+                    v-model="step.config.date_str"
+                    type="date"
+                    placeholder="选择数据日期"
+                    format="YYYY-MM-DD"
+                    value-format="YYYY-MM-DD"
+                    style="width: 100%"
+                  />
+                </el-form-item>
+
+                <el-form-item label="趋势时间范围">
+                  <div style="width: 100%">
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                      <el-radio-group v-model="step.config.date_preset" size="small" @change="onTrendPresetChange(step)">
+                        <el-radio-button label="1m">最近1个月</el-radio-button>
+                        <el-radio-button label="6m">最近半年</el-radio-button>
+                        <el-radio-button label="1y">最近1年</el-radio-button>
+                        <el-radio-button label="custom">自定义</el-radio-button>
+                      </el-radio-group>
+                    </div>
+                    <el-date-picker
+                      v-if="step.config.date_preset === 'custom'"
+                      v-model="step.config.date_range"
+                      type="daterange"
+                      range-separator="至"
+                      start-placeholder="开始日期"
+                      end-placeholder="结束日期"
+                      format="YYYY-MM-DD"
+                      value-format="YYYY-MM-DD"
+                      style="width: 100%"
+                      @change="onTrendRangeChange(step)"
+                    />
+                    <el-tag v-else type="info" style="margin-top: 4px;">
+                      {{ step.config.date_range_start || '?' }} 至 {{ step.config.date_range_end || '?' }}
+                    </el-tag>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="输出文件名">
+                  <el-input v-model="step.config.output_filename" placeholder="10站上20日均线趋势.xlsx" />
+                </el-form-item>
+              </template>
+
               <template v-if="step.type === 'pending'">
                 <el-alert title="此步骤暂未配置，待后续开发" type="info" :closable="false" />
               </template>
@@ -631,7 +686,7 @@
           </div>
         </div>
 
-        <el-form-item v-if="form.workflow_type !== '条件交集'">
+        <el-form-item v-if="!isAggregationType">>
           <el-button @click="addStep">
             <el-icon><Plus /></el-icon>
             添加步骤
@@ -798,7 +853,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus } from '@element-plus/icons-vue'
@@ -850,6 +905,33 @@ const batchTimerInterval = ref(null)
 const workflowTableRef = ref(null)
 const pendingTimeouts = ref([])
 const executionAbortController = ref(null)
+const highlightedWorkflowId = ref(null)
+const highlightTimer = ref(null)
+
+const highlightWorkflow = (id) => {
+  if (highlightTimer.value) clearTimeout(highlightTimer.value)
+  highlightedWorkflowId.value = id
+  // 滚动到目标行
+  nextTick(() => {
+    const tableEl = workflowTableRef.value?.$el
+    if (tableEl) {
+      const rows = tableEl.querySelectorAll('.el-table__body-wrapper tr')
+      const idx = workflows.value.findIndex(w => w.id === id)
+      if (idx >= 0 && rows[idx]) {
+        rows[idx].scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+  })
+  // 3秒后取消高亮
+  highlightTimer.value = setTimeout(() => {
+    highlightedWorkflowId.value = null
+    highlightTimer.value = null
+  }, 3000)
+}
+
+const getRowClassName = ({ row }) => {
+  return row.id === highlightedWorkflowId.value ? 'highlight-row' : ''
+}
 
 const openOutputDirectory = async () => {
   const basePath = '/app/data/excel'
@@ -936,6 +1018,7 @@ const getStepType = (type) => {
     extract_columns: 'warning',
     export_excel: 'info',
     condition_intersection: 'warning',
+    export_ma20_trend: 'warning',
     pending: 'danger'
   }
   return types[type] || 'info'
@@ -954,12 +1037,16 @@ const getStepTypeName = (type) => {
     match_soe: '匹配国企',
     match_sector: '匹配一级板块',
     condition_intersection: '合并当日数据',
+    export_ma20_trend: '导出趋势Excel',
     pending: '待定'
   }
   return names[type] || type
 }
 
-// 条件交集相关
+// 条件交集 & 导出20日均线趋势 相关
+const AGGREGATION_TYPES = ['条件交集', '导出20日均线趋势']
+const isAggregationType = computed(() => AGGREGATION_TYPES.includes(form.value.workflow_type))
+
 const FILTER_COLUMNS = ['百日新高', '20日均线', '国企', '一级板块']
 const DEFAULT_TYPE_ORDER = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '招投标']
 
@@ -974,6 +1061,54 @@ const defaultIntersectionStep = () => ({
   },
   status: 'pending'
 })
+
+const computeTrendDateRange = (preset) => {
+  const now = new Date()
+  let start
+  if (preset === '1m') {
+    start = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate())
+  } else if (preset === '6m') {
+    start = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate())
+  } else if (preset === '1y') {
+    start = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate())
+  } else {
+    return { start: '', end: '' }
+  }
+  const fmt = (d) => d.toISOString().split('T')[0]
+  return { start: fmt(start), end: fmt(now) }
+}
+
+const defaultMa20TrendStep = () => {
+  const range = computeTrendDateRange('6m')
+  return {
+    type: 'export_ma20_trend',
+    config: {
+      date_str: new Date().toISOString().split('T')[0],
+      date_preset: '6m',
+      date_range_start: range.start,
+      date_range_end: range.end,
+      date_range: null,
+      output_filename: '10站上20日均线趋势.xlsx'
+    },
+    status: 'pending'
+  }
+}
+
+const onTrendPresetChange = (step) => {
+  if (step.config.date_preset !== 'custom') {
+    const range = computeTrendDateRange(step.config.date_preset)
+    step.config.date_range_start = range.start
+    step.config.date_range_end = range.end
+    step.config.date_range = null
+  }
+}
+
+const onTrendRangeChange = (step) => {
+  if (step.config.date_range && step.config.date_range.length === 2) {
+    step.config.date_range_start = step.config.date_range[0]
+    step.config.date_range_end = step.config.date_range[1]
+  }
+}
 
 const getAvailableFilters = (step) => {
   const used = new Set((step.config.filter_conditions || []).map(f => f.column))
@@ -1005,11 +1140,19 @@ const onIntersectionDateChange = (step) => {
   step.config.output_filename = `7条件交集${date}.xlsx`
 }
 
-// 监听 workflow_type 变化，自动切换步骤
+// 标记是否正在加载编辑数据（跳过 watcher 副作用）
+const loadingEditData = ref(false)
+
+// 监听 workflow_type 变化，自动切换步骤（仅在用户手动切换类型时生效）
 watch(() => form.value.workflow_type, (newType, oldType) => {
+  if (loadingEditData.value) return
+  const wasAgg = AGGREGATION_TYPES.includes(oldType)
+  const isAgg = AGGREGATION_TYPES.includes(newType)
   if (newType === '条件交集') {
     form.value.steps = [defaultIntersectionStep()]
-  } else if (oldType === '条件交集') {
+  } else if (newType === '导出20日均线趋势') {
+    form.value.steps = [defaultMa20TrendStep()]
+  } else if (wasAgg && !isAgg) {
     form.value.steps = [defaultStep()]
   }
 })
@@ -1170,12 +1313,15 @@ const handleSave = async () => {
       await api.put(`/workflows/${editingId.value}`, payload)
       ElMessage.success('更新成功')
     } else {
-      await api.post('/workflows/', payload)
+      const created = await api.post('/workflows/', payload)
+      editingId.value = created?.id || null
       ElMessage.success('创建成功')
     }
 
+    const savedId = editingId.value
     showDialog.value = false
-    fetchWorkflows()
+    await fetchWorkflows()
+    if (savedId) highlightWorkflow(savedId)
   } catch (error) {
     // 400 等错误已被 axios 拦截器通过 ElMessage.error 显示
     // 仅对拦截器未覆盖的情况补充提示
@@ -1205,11 +1351,11 @@ const handleRun = (workflow) => {
 const startExecution = async () => {
   if (executing.value) return
 
-  // 条件交集：先检查数据可用性
-  if (currentWorkflow.value?.workflow_type === '条件交集') {
+  // 聚合类型（条件交集/导出20日均线趋势）：先检查数据可用性
+  if (['条件交集', '导出20日均线趋势'].includes(currentWorkflow.value?.workflow_type)) {
     const dateStr = currentWorkflow.value.steps?.[0]?.config?.date_str
     if (!dateStr) {
-      ElMessage.warning('条件交集工作流未设置数据日期')
+      ElMessage.warning('工作流未设置数据日期')
       return
     }
     try {
@@ -1218,7 +1364,7 @@ const startExecution = async () => {
         const missingList = availability.missing.map(t => `  - ${t}`).join('\n')
         try {
           await ElMessageBox.confirm(
-            `以下工作流缺少 ${dateStr} 数据：\n${missingList}\n\n缺失的类型将被跳过，交集计算仅基于有数据的类型。是否继续？`,
+            `以下工作流缺少 ${dateStr} 数据：\n${missingList}\n\n缺失的类型将被跳过。是否继续？`,
             '数据缺失提醒',
             { type: 'warning', confirmButtonText: '继续', cancelButtonText: '取消' }
           )
@@ -1307,6 +1453,16 @@ const downloadResult = async () => {
 const onExecuteDialogClose = () => {
   if (executionComplete.value && executionResult.value?.file_path && !hasDownloaded.value) {
     downloadResult()
+  }
+  if (currentWorkflow.value?.id) {
+    highlightWorkflow(currentWorkflow.value.id)
+  }
+}
+
+const onEditDialogClose = () => {
+  // 仅在编辑模式下、取消/点空白关闭时高亮（保存成功由 handleSave 管理）
+  if (isEditing.value && editingId.value) {
+    highlightWorkflow(editingId.value)
   }
 }
 
@@ -1404,10 +1560,8 @@ const fetchUploadedFiles = async (step, index) => {
         workflow_type: form.value.workflow_type || ''
       }
     })
-    console.log('[Debug] fetchUploadedFiles response:', response)
     if (response?.files !== undefined) {
       uploadedFiles.value[key] = response.files
-      console.log('[Debug] uploadedFiles updated:', key, uploadedFiles.value[key])
     }
   } catch (error) {
     console.error('获取上传文件失败', error)
@@ -1418,10 +1572,8 @@ const fetchUploadedFiles = async (step, index) => {
 const handleFileUpload = async (event, step, index) => {
   const file = event.target.files?.[0]
   if (!file) {
-    console.log('[Upload] No file selected')
     return
   }
-  console.log('[Upload] File selected:', file.name, 'step_type:', step.type, 'date_str:', step.config?.date_str)
 
   const key = `step_${index}`
   uploadingSteps.value.add(key)
@@ -1441,13 +1593,11 @@ const handleFileUpload = async (event, step, index) => {
     formData.append('date_str', dateStr)
   }
 
-  console.log('[Upload] Sending request to /workflows/upload-step-file/')
 
   try {
     const response = await api.post('/workflows/upload-step-file/', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
-    console.log('[Upload] Success:', response)
     ElMessage.success('上传成功')
     await fetchUploadedFiles(step, index)
   } catch (error) {
@@ -1500,10 +1650,8 @@ const fetchPublicFiles = async (step, index) => {
         workflow_type: form.value.workflow_type || ''
       }
     })
-    console.log('[Debug] fetchPublicFiles response:', response)
     if (response?.files !== undefined) {
       publicFiles.value[key] = response.files
-      console.log('[Debug] publicFiles updated:', key, publicFiles.value[key])
     }
   } catch (error) {
     console.error('获取公共文件列表失败', error)
@@ -1529,7 +1677,6 @@ const handlePublicFileUpload = async (event, step, index) => {
     const response = await api.post('/workflows/public-files/upload/', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
-    console.log('[Debug] upload response:', response)
     if (response?.success) {
       ElMessage.success('上传成功')
     } else {
@@ -1593,9 +1740,9 @@ const handleViewSteps = (workflow) => {
 }
 
 const handleEdit = (row) => {
-  console.log('[Debug] handleEdit called, row:', row)
   isEditing.value = true
   editingId.value = row.id
+  loadingEditData.value = true
   form.value = {
     name: row.name,
     description: row.description || '',
@@ -1610,6 +1757,7 @@ const handleEdit = (row) => {
   if (form.value.steps.length === 0) {
     form.value.steps = [defaultStep()]
   }
+  loadingEditData.value = false
   showDialog.value = true
 
   uploadedFiles.value = {}
@@ -1652,6 +1800,10 @@ onBeforeUnmount(() => {
   if (executionTimer.value) {
     clearInterval(executionTimer.value)
     executionTimer.value = null
+  }
+  if (highlightTimer.value) {
+    clearTimeout(highlightTimer.value)
+    highlightTimer.value = null
   }
   pendingTimeouts.value.forEach(t => clearTimeout(t))
   pendingTimeouts.value = []
@@ -2016,5 +2168,16 @@ watch(
   padding-top: 15px;
   border-top: 1px solid #e4e7ed;
   margin-top: 15px;
+}
+
+/* 高亮行渐变闪烁动画 - 用 !important 覆盖 stripe 斑马纹 */
+:deep(.highlight-row td.el-table__cell) {
+  animation: greenPulse 0.8s ease-in-out 3 !important;
+}
+
+@keyframes greenPulse {
+  0% { background-color: inherit; }
+  50% { background-color: rgba(103, 194, 58, 0.3) !important; }
+  100% { background-color: inherit; }
 }
 </style>

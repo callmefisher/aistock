@@ -3,7 +3,8 @@ import logging
 import tempfile
 import shutil
 from typing import Optional, List
-from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 import re
 
@@ -11,7 +12,8 @@ from models.models import User
 from api.auth import get_current_user
 from services.trend_service import (
     save_trend_data, get_trend_data, delete_trend_data,
-    parse_excel_for_trend, batch_save_trend_data
+    parse_excel_for_trend, batch_save_trend_data,
+    export_trend_excel_with_chart
 )
 
 logger = logging.getLogger(__name__)
@@ -107,6 +109,39 @@ async def upload_trend_excel(
         raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.get("/trend-data/export")
+async def export_trend_data(
+    metric_type: str = Query("ma20"),
+    workflow_type: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    background_tasks: BackgroundTasks = None,
+    current_user: User = Depends(get_current_user)
+):
+    """导出趋势数据为 Excel（含内嵌折线图）"""
+    data = await get_trend_data(metric_type, workflow_type, start_date, end_date)
+    if not data:
+        raise HTTPException(status_code=400, detail="暂无数据可导出")
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        date_range = f"{start_date or 'all'}_{end_date or 'all'}"
+        filename = f"20日均线趋势_{date_range}.xlsx"
+        file_path = os.path.join(tmp_dir, filename)
+        export_trend_excel_with_chart(data, file_path, workflow_type)
+        if background_tasks:
+            background_tasks.add_task(shutil.rmtree, tmp_dir, True)
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.error(f"导出趋势Excel失败: {e}")
+        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
 
 
 @router.delete("/trend-data/{record_id}")

@@ -471,9 +471,11 @@ async def run_workflow(
 
     failed = [s for s in step_results if s["status"] == "failed"]
 
-    # 执行成功后立刻写入数据库
+    # 执行成功后立刻写入数据库（is_export_only 类型跳过）
     db_saved = False
-    if last_output_file and not failed:
+    from config.workflow_type_config import get_type_config
+    type_config = get_type_config(workflow_type)
+    if last_output_file and not failed and not type_config.get("is_export_only"):
         from services.workflow_result_service import save_workflow_result
         try:
             db_saved = await save_workflow_result(
@@ -687,13 +689,14 @@ async def batch_run_workflows(
     task_id = f"batch_{uuid.uuid4().hex[:12]}"
     workflow_ids = request.workflow_ids
 
-    # 条件交集类型排到最后执行，确保其他工作流数据最完整
+    # 聚合类型（is_aggregation）排到最后执行，确保其他工作流数据最完整
     normal_ids = []
     aggregation_ids = []
     for wid in workflow_ids:
         result = await db.execute(select(Workflow).where(Workflow.id == wid))
         wf = result.scalar_one_or_none()
-        if wf and wf.workflow_type == "条件交集":
+        from config.workflow_type_config import get_type_config as _gtc
+        if wf and _gtc(wf.workflow_type or "").get("is_aggregation"):
             aggregation_ids.append(wid)
         else:
             normal_ids.append(wid)
@@ -777,6 +780,11 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                     if final_name:
                         steps[-1].setdefault("config", {})["output_filename"] = final_name
 
+                # 条件交集步骤：注入 workflow_id 到 config
+                for step in steps:
+                    if step.get("type") == "condition_intersection":
+                        step.setdefault("config", {})["_workflow_id"] = wf_id
+
                 for i, step in enumerate(steps):
                     # 每步前让出事件循环，让轮询请求得以处理
                     await asyncio.sleep(0)
@@ -836,8 +844,10 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                 else:
                     result_entry["status"] = "completed"
 
-                # 执行成功后写入 workflow_results
-                if result_entry["output_file"] and result_entry["status"] == "completed":
+                # 执行成功后写入 workflow_results（is_export_only 类型跳过）
+                from config.workflow_type_config import get_type_config as _get_tc
+                _tc = _get_tc(workflow_type)
+                if result_entry["output_file"] and result_entry["status"] == "completed" and not _tc.get("is_export_only"):
                     from services.workflow_result_service import save_workflow_result
                     try:
                         await save_workflow_result(

@@ -188,6 +188,22 @@ WORKFLOW_TYPE_CONFIG = {
             "申报并购重组", "减持叠加质押和大宗交易", "招投标"
         ],
     },
+
+    "导出20日均线趋势": {
+        "display_name": "导出20日均线趋势",
+        "base_subdir": "导出20日均线趋势",
+        "is_aggregation": True,
+        "is_export_only": True,
+        "directories": {
+            "upload_date": "导出20日均线趋势/{date}",
+            "public": "",
+        },
+        "naming": {
+            "output_template": "10站上20日均线趋势.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["export_ma20_trend"],
+    },
 }
 
 TYPE_ALIASES = {}

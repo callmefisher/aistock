@@ -553,21 +553,27 @@ const buildTrendSheet = (data) => {
   return ws
 }
 
-const exportAllTrend = () => {
+const exportAllTrend = async () => {
   if (!trendData.value.length) { ElMessage.warning('暂无数据可导出'); return }
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, buildTrendSheet(trendData.value), '全部趋势')
-  XLSX.writeFile(wb, `20日均线趋势_${trendDateRange.value?.[0] || ''}_${trendDateRange.value?.[1] || ''}.xlsx`)
-  ElMessage.success('已导出')
+  try {
+    const params = new URLSearchParams({ metric_type: 'ma20' })
+    if (trendDateRange.value?.[0]) params.append('start_date', trendDateRange.value[0])
+    if (trendDateRange.value?.[1]) params.append('end_date', trendDateRange.value[1])
+    await api.download(`/statistics/trend/trend-data/export?${params}`, `20日均线趋势_${trendDateRange.value?.[0] || ''}_${trendDateRange.value?.[1] || ''}.xlsx`)
+    ElMessage.success('已导出（含趋势图）')
+  } catch (e) { ElMessage.error('导出失败') }
 }
 
-const exportSingleTrend = (wt) => {
+const exportSingleTrend = async (wt) => {
   const data = trendByType.value[wt] || []
   if (!data.length) { ElMessage.warning('暂无数据'); return }
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, buildTrendSheet(data), wt)
-  XLSX.writeFile(wb, `20日均线趋势_${wt}.xlsx`)
-  ElMessage.success('已导出')
+  try {
+    const params = new URLSearchParams({ metric_type: 'ma20', workflow_type: wt })
+    if (trendDateRange.value?.[0]) params.append('start_date', trendDateRange.value[0])
+    if (trendDateRange.value?.[1]) params.append('end_date', trendDateRange.value[1])
+    await api.download(`/statistics/trend/trend-data/export?${params}`, `20日均线趋势_${wt}.xlsx`)
+    ElMessage.success('已导出（含趋势图）')
+  } catch (e) { ElMessage.error('导出失败') }
 }
 
 // ===== 工具函数 =====
