@@ -908,21 +908,52 @@ const executionAbortController = ref(null)
 const highlightedWorkflowId = ref(null)
 const highlightTimer = ref(null)
 
+const applyHighlightDOM = (id) => {
+  const tableEl = workflowTableRef.value?.$el
+  if (!tableEl) return
+  // 清除旧高亮
+  clearHighlightDOM()
+  const rows = tableEl.querySelectorAll('.el-table__body-wrapper tbody tr')
+  const idx = workflows.value.findIndex(w => w.id === id)
+  if (idx >= 0 && rows[idx]) {
+    const row = rows[idx]
+    const cells = row.querySelectorAll('td')
+    cells.forEach(td => {
+      td.style.transition = 'background-color 0.5s ease'
+      td.style.backgroundColor = 'rgba(103, 194, 58, 0.35)'
+    })
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    // 闪烁 3 次后淡出
+    let count = 0
+    const blink = () => {
+      count++
+      const on = count % 2 === 0
+      cells.forEach(td => {
+        td.style.backgroundColor = on ? 'rgba(103, 194, 58, 0.35)' : ''
+      })
+      if (count < 6) {
+        setTimeout(blink, 400)
+      } else {
+        cells.forEach(td => { td.style.transition = ''; td.style.backgroundColor = '' })
+      }
+    }
+    setTimeout(blink, 400)
+  }
+}
+
+const clearHighlightDOM = () => {
+  const tableEl = workflowTableRef.value?.$el
+  if (!tableEl) return
+  tableEl.querySelectorAll('.el-table__body-wrapper tbody tr td').forEach(td => {
+    td.style.transition = ''
+    td.style.backgroundColor = ''
+  })
+}
+
 const highlightWorkflow = (id) => {
   if (highlightTimer.value) clearTimeout(highlightTimer.value)
   highlightedWorkflowId.value = id
-  // 滚动到目标行
-  nextTick(() => {
-    const tableEl = workflowTableRef.value?.$el
-    if (tableEl) {
-      const rows = tableEl.querySelectorAll('.el-table__body-wrapper tr')
-      const idx = workflows.value.findIndex(w => w.id === id)
-      if (idx >= 0 && rows[idx]) {
-        rows[idx].scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }
-    }
-  })
-  // 3秒后取消高亮
+  nextTick(() => applyHighlightDOM(id))
   highlightTimer.value = setTimeout(() => {
     highlightedWorkflowId.value = null
     highlightTimer.value = null
@@ -1057,7 +1088,7 @@ const defaultIntersectionStep = () => ({
     filter_conditions: [{ column: '百日新高', enabled: true }],
     filter_logic: 'AND',
     type_order: [...DEFAULT_TYPE_ORDER],
-    output_filename: `7条件交集${new Date().toISOString().split('T')[0]}.xlsx`
+    output_filename: `7条件交集${new Date().toISOString().split('T')[0].replace(/-/g, '')}.xlsx`
   },
   status: 'pending'
 })
@@ -1137,7 +1168,7 @@ const moveTypeOrder = (step, idx, direction) => {
 
 const onIntersectionDateChange = (step) => {
   const date = step.config.date_str || new Date().toISOString().split('T')[0]
-  step.config.output_filename = `7条件交集${date}.xlsx`
+  step.config.output_filename = `7条件交集${date.replace(/-/g, '')}.xlsx`
 }
 
 // 标记是否正在加载编辑数据（跳过 watcher 副作用）
@@ -1321,7 +1352,6 @@ const handleSave = async () => {
     const savedId = editingId.value
     showDialog.value = false
     await fetchWorkflows()
-    if (savedId) highlightWorkflow(savedId)
   } catch (error) {
     // 400 等错误已被 axios 拦截器通过 ElMessage.error 显示
     // 仅对拦截器未覆盖的情况补充提示
@@ -1454,15 +1484,17 @@ const onExecuteDialogClose = () => {
   if (executionComplete.value && executionResult.value?.file_path && !hasDownloaded.value) {
     downloadResult()
   }
-  if (currentWorkflow.value?.id) {
-    highlightWorkflow(currentWorkflow.value.id)
+  const targetId = currentWorkflow.value?.id
+  if (targetId) {
+    setTimeout(() => highlightWorkflow(targetId), 300)
   }
 }
 
 const onEditDialogClose = () => {
-  // 仅在编辑模式下、取消/点空白关闭时高亮（保存成功由 handleSave 管理）
-  if (isEditing.value && editingId.value) {
-    highlightWorkflow(editingId.value)
+  const targetId = editingId.value
+  if (targetId) {
+    // 延迟执行，确保 fetchWorkflows 完成 + DOM 更新后再高亮
+    setTimeout(() => highlightWorkflow(targetId), 300)
   }
 }
 
@@ -1757,8 +1789,12 @@ const handleEdit = (row) => {
   if (form.value.steps.length === 0) {
     form.value.steps = [defaultStep()]
   }
-  loadingEditData.value = false
   showDialog.value = true
+  // loadingEditData 必须在 nextTick 后关闭，否则 workflow_type watcher
+  // 在微任务中触发时 loadingEditData 已为 false，会用默认步骤覆盖已保存的数据
+  nextTick(() => {
+    loadingEditData.value = false
+  })
 
   uploadedFiles.value = {}
   publicFiles.value = {}
@@ -1939,6 +1975,13 @@ watch(showDialog, (visible) => {
   if (!visible) {
     uploadedFiles.value = {}
     publicFiles.value = {}
+  }
+})
+
+// 数据刷新后重新应用高亮（fetchWorkflows 会替换 DOM 元素）
+watch(workflows, () => {
+  if (highlightedWorkflowId.value) {
+    nextTick(() => applyHighlightDOM(highlightedWorkflowId.value))
   }
 })
 
@@ -2170,14 +2213,4 @@ watch(
   margin-top: 15px;
 }
 
-/* 高亮行渐变闪烁动画 - 用 !important 覆盖 stripe 斑马纹 */
-:deep(.highlight-row td.el-table__cell) {
-  animation: greenPulse 0.8s ease-in-out 3 !important;
-}
-
-@keyframes greenPulse {
-  0% { background-color: inherit; }
-  50% { background-color: rgba(103, 194, 58, 0.3) !important; }
-  100% { background-color: inherit; }
-}
 </style>

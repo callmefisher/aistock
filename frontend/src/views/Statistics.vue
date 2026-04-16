@@ -10,7 +10,7 @@
       <el-tab-pane label="执行结果" name="results">
         <el-card v-loading="loading" shadow="never">
           <el-tabs v-model="activeType" v-if="typeList.length">
-            <el-tab-pane v-for="t in typeList" :key="t" :label="t" :name="t">
+            <el-tab-pane v-for="t in typeList" :key="t" :label="getTypeDisplay(t)" :name="t">
               <el-table :data="grouped[t] || []" stripe border style="width: 100%">
                 <el-table-column prop="date_str" label="数据日期" width="130" sortable />
                 <el-table-column prop="workflow_name" label="工作流名称" min-width="160" show-overflow-tooltip />
@@ -65,7 +65,7 @@
         <!-- 汇总条 -->
         <div class="trend-summary" v-if="trendData.length">
           <div v-for="wt in allWorkflowTypes" :key="wt" class="summary-item">
-            <span class="summary-type">{{ wt }}</span>
+            <span class="summary-type">{{ getTypeDisplay(wt) }}</span>
             <template v-if="latestByType[wt]">
               <span class="summary-ratio" :class="latestByType[wt].trend">
                 {{ (latestByType[wt].ratio * 100).toFixed(2) }}%
@@ -82,7 +82,7 @@
           <el-card v-for="wt in allWorkflowTypes" :key="wt" class="chart-card" shadow="hover">
             <template #header>
               <div class="chart-header">
-                <span class="chart-title">{{ wt }}</span>
+                <span class="chart-title">{{ getTypeDisplay(wt) }}</span>
                 <span v-if="latestByType[wt]" class="chart-latest">
                   最新: {{ (latestByType[wt].ratio * 100).toFixed(2) }}%
                 </span>
@@ -106,7 +106,7 @@
             <el-form :model="manualForm" inline size="small">
               <el-form-item label="工作流类型">
                 <el-select v-model="manualForm.workflow_type" placeholder="选择类型" style="width: 160px">
-                  <el-option v-for="t in allWorkflowTypes" :key="t" :label="t" :value="t" />
+                  <el-option v-for="t in allWorkflowTypes" :key="t" :label="getTypeDisplay(t)" :value="t" />
                 </el-select>
               </el-form-item>
               <el-form-item label="日期">
@@ -133,7 +133,7 @@
             <el-form inline size="small">
               <el-form-item label="工作流类型">
                 <el-select v-model="uploadType" placeholder="先选择类型" style="width: 160px">
-                  <el-option v-for="t in allWorkflowTypes" :key="t" :label="t" :value="t" />
+                  <el-option v-for="t in allWorkflowTypes" :key="t" :label="getTypeDisplay(t)" :value="t" />
                 </el-select>
               </el-form-item>
               <el-form-item>
@@ -233,6 +233,21 @@ echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendCompone
 // ===== 公共 =====
 const mainTab = ref('results')
 
+// 工作流类型排序 & 显示前缀
+const TYPE_ORDER = [
+  { key: '并购重组', display: '1并购重组' },
+  { key: '股权转让', display: '2股权转让' },
+  { key: '增发实现', display: '3增发实现' },
+  { key: '申报并购重组', display: '4申报并购重组' },
+  { key: '减持叠加质押和大宗交易', display: '6减持叠加质押和大宗交易' },
+  { key: '条件交集', display: '7条件交集' },
+  { key: '招投标', display: '9招投标' },
+]
+const typeDisplayMap = Object.fromEntries(TYPE_ORDER.map(t => [t.key, t.display]))
+const typeSortIndex = Object.fromEntries(TYPE_ORDER.map((t, i) => [t.key, i]))
+const getTypeDisplay = (key) => typeDisplayMap[key] || key
+const getTypeSortIdx = (key) => typeSortIndex[key] ?? 999
+
 // ===== 执行结果 tab =====
 const FILTERABLE_COLUMNS = ['百日新高', '20日均线', '站上20日线', '国企', '国央企', '一级板块', '所属板块', '所属一级板块']
 const loading = ref(false)
@@ -245,7 +260,7 @@ const previewData = ref(null)
 const currentResultId = ref(null)
 const notEmptyFilters = reactive({})
 
-const typeList = computed(() => Object.keys(grouped.value))
+const typeList = computed(() => Object.keys(grouped.value).sort((a, b) => getTypeSortIdx(a) - getTypeSortIdx(b)))
 const isPreviewMode = computed(() => {
   if (!previewData.value) return false
   return (previewData.value.data?.length || 0) < (previewData.value.row_count || 0)
@@ -336,7 +351,7 @@ const handleDelete = async (row) => {
 }
 
 // ===== 20日均线趋势 tab =====
-const ALL_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '招投标']
+const ALL_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '条件交集', '招投标']
 const allWorkflowTypes = ref(ALL_WORKFLOW_TYPES)
 
 const trendLoading = ref(false)

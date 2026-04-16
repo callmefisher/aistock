@@ -1058,7 +1058,7 @@ class WorkflowExecutor:
         filter_conditions = config.get("filter_conditions", [{"column": "百日新高", "enabled": True}])
         filter_logic = config.get("filter_logic", "AND")
         type_order = config.get("type_order", WORKFLOW_TYPE_CONFIG.get("条件交集", {}).get("default_type_order", []))
-        output_filename = config.get("output_filename") or f"7条件交集{date_str}.xlsx"
+        output_filename = config.get("output_filename") or f"7条件交集{date_str.replace('-', '')}.xlsx"
         workflow_id = config.get("_workflow_id")
 
         logger.info(f"[条件交集] 开始执行: date={date_str}, filters={filter_conditions}, logic={filter_logic}")

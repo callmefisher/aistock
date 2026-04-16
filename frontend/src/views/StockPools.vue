@@ -81,10 +81,14 @@ const dataLoading = ref(false)
 const dataDialogTitle = ref('')
 const poolData = ref({})
 
+const POOL_DISPLAY_COLUMNS = ['序号', '证券代码', '证券简称', '最新公告日', '百日新高', '站上20日线', '国央企', '所属板块', '资本运作行为']
+
 const poolDataColumns = computed(() => {
   const data = poolData.value.data || []
   if (data.length === 0) return []
-  return Object.keys(data[0])
+  // 固定列顺序，仅展示数据中实际存在的列
+  const dataKeys = new Set(Object.keys(data[0]))
+  return POOL_DISPLAY_COLUMNS.filter(c => dataKeys.has(c))
 })
 
 const formatBeijingTime = (dateStr) => {
@@ -125,18 +129,7 @@ const handleViewData = async (row) => {
 
 const handleDownload = async (id) => {
   try {
-    const response = await api.get(`/stock-pools/${id}/download/`, {
-      responseType: 'blob'
-    })
-
-    const url = window.URL.createObjectURL(new Blob([response]))
-    const link = document.createElement('a')
-    link.href = url
-    link.setAttribute('download', `stock_pool_${id}.xlsx`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-
+    await api.download(`/stock-pools/${id}/download`)
     ElMessage.success('下载成功')
   } catch (error) {
     ElMessage.error('下载失败')

@@ -24,6 +24,10 @@ api.interceptors.request.use(
 
 api.interceptors.response.use(
   (response) => {
+    // blob 响应不解包，保留原始 response
+    if (response.config.responseType === 'blob') {
+      return response
+    }
     return response.data
   },
   (error) => {
@@ -55,12 +59,10 @@ api.interceptors.response.use(
 )
 
 api.download = async (url, filename) => {
-  const token = localStorage.getItem('token')
   const cacheBuster = `${url.includes('?') ? '&' : '?'}_t=${Date.now()}`
-  const response = await axios.get(`/api/v1${url}${cacheBuster}`, {
+  const response = await api.get(`${url}${cacheBuster}`, {
     responseType: 'blob',
-    headers: token ? { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' } : { 'Cache-Control': 'no-cache' },
-    timeout: 300000
+    headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
   })
   if (!filename) {
     const contentDisposition = response.headers['content-disposition'] || ''

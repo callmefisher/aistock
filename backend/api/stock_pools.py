@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 from datetime import datetime
 import json
 import os
+import tempfile
+import pandas as pd
 from core.database import get_async_db
 from models.models import StockPool
 from api.auth import get_current_user
@@ -108,13 +111,40 @@ async def download_stock_pool(
     if not stock_pool:
         raise HTTPException(status_code=404, detail="选股池不存在")
 
-    if not stock_pool.file_path or not os.path.exists(stock_pool.file_path):
-        raise HTTPException(status_code=404, detail="文件不存在")
+    # 原始文件存在，直接返回
+    if stock_pool.file_path and os.path.exists(stock_pool.file_path):
+        return FileResponse(
+            path=stock_pool.file_path,
+            filename=os.path.basename(stock_pool.file_path),
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+
+    # 文件不存在，从 DB 中的 data 字段重新生成 Excel
+    data = stock_pool.data or []
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            data = []
+
+    if not data:
+        raise HTTPException(status_code=404, detail="文件不存在且无数据可导出")
+
+    df = pd.DataFrame(data)
+    date_part = (stock_pool.date_str or "").replace("-", "")
+    filename = f"7条件交集{date_part}.xlsx"
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    try:
+        df.to_excel(tmp.name, index=False, engine="openpyxl")
+    except Exception:
+        os.unlink(tmp.name)
+        raise HTTPException(status_code=500, detail="生成Excel失败")
 
     return FileResponse(
-        path=stock_pool.file_path,
-        filename=os.path.basename(stock_pool.file_path),
-        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        path=tmp.name,
+        filename=filename,
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        background=BackgroundTask(os.unlink, tmp.name),
     )
 
 
