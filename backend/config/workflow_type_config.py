@@ -167,9 +167,39 @@ WORKFLOW_TYPE_CONFIG = {
             "match_sector": "一级板块",
         }
     },
+
+    "条件交集": {
+        "display_name": "条件交集",
+        "base_subdir": "条件交集",
+        "is_aggregation": True,
+        "directories": {
+            "upload_date": "条件交集/{date}",
+            "public": "",
+        },
+        "naming": {
+            "output_template": "7条件交集{date}.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["condition_intersection"],
+        "filter_columns": ["百日新高", "20日均线", "国企", "一级板块"],
+        "default_filters": [{"column": "百日新高", "enabled": True}],
+        "default_type_order": [
+            "并购重组", "股权转让", "增发实现",
+            "申报并购重组", "减持叠加质押和大宗交易", "招投标"
+        ],
+    },
 }
 
 TYPE_ALIASES = {}
+
+# 条件交集输出列配置
+INTERSECTION_SOURCE_COLUMNS = ["序号", "证券代码", "证券简称", "最新公告日", "百日新高", "20日均线", "国企", "一级板块"]
+INTERSECTION_COLUMN_RENAME = {
+    "20日均线": "站上20日线",
+    "国企": "国央企",
+    "一级板块": "所属板块",
+}
+INTERSECTION_DISPLAY_COLUMNS = ["序号", "证券代码", "证券简称", "最新公告日", "百日新高", "站上20日线", "国央企", "所属板块", "资本运作行为"]
 
 
 def get_type_config(workflow_type: str) -> dict:

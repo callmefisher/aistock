@@ -47,10 +47,10 @@ backend/
   core/config.py, database.py    # 配置(.env) + SQLAlchemy
   api/                           # 7 路由: auth, workflows, tasks, rules, data_sources, stock_pools, data_api
   models/models.py               # 8 ORM: User, Workflow, Rule, Task, ExecutionLog, StockPool, BatchExecution, DataSource
-  services/workflow_executor.py  # 核心: 10 步骤类型 (merge/dedup/match_*)
+  services/workflow_executor.py  # 核心: 11 步骤类型 (merge/dedup/match_*/condition_intersection)
   services/path_resolver.py      # 按 workflow_type 动态路径
   services/rule_engine.py        # NL→Excel公式 (OpenAI+fallback)
-  config/workflow_type_config.py # 工作流类型定义
+  config/workflow_type_config.py # 工作流类型定义(7类型+条件交集)
   utils/stock_code_normalizer.py # 证券代码标准化
 frontend/src/
   views/Workflows.vue            # 核心页面(~900行): 步骤构建/执行/批量/下载
@@ -66,6 +66,18 @@ frontend/src/
 | 股权转让 | `data/excel/股权转让/{date}/` | `data/excel/股权转让/public/` |
 
 步骤链: `merge_excel → smart_dedup → extract_columns → match_high_price → match_ma20 → match_soe → match_sector`
+
+## 条件交集工作流
+
+- **类型**: 条件交集，聚合类工作流，不处理自己的数据，从其他工作流的 DB 结果中读取
+- **步骤**: 仅 `condition_intersection` 一个步骤
+- **过滤条件**: 百日新高(默认)/20日均线/国企/一级板块，全局 AND/OR
+- **输出**: 双 Sheet Excel (`7条件交集{date}.xlsx`)
+  - Sheet1: 所有类型过滤后合并，列: 序号/证券代码/证券简称/最新公告日/百日新高/站上20日线/国央企/所属板块/资本运作行为
+  - Sheet2: 交集选股池(xx年xx月选股池)，保存到 stock_pools 表
+- **工作流顺序**: 默认 并购重组→股权转让→增发实现→申报并购重组→减持叠加质押和大宗交易→招投标，UI 可调
+- **唯一性约束**: 同 workflow_type + 同 date_str 只允许一个工作流（全局生效）
+- **列名映射**: 20日均线→站上20日线, 国企→国央企, 一级板块→所属板块（仅输出重命名，原始数据不动）
 
 ## 关键逻辑
 

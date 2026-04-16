@@ -1016,4 +1016,11 @@ const getDiffStyle = (prop, row) => {
   border-left: 2px solid #fa8c16 !important;
   border-right: 2px solid #fa8c16 !important;
 }
+
+.card-header :deep(.el-tag) {
+  font-size: 24px;
+  height: auto;
+  padding: 4px 12px;
+  line-height: 1.4;
+}
 </style>

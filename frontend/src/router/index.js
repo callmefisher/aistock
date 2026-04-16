@@ -15,7 +15,7 @@ const routes = [
     children: [
       {
         path: '',
-        redirect: '/dashboard'
+        redirect: '/stock-pools'
       },
       {
         path: 'dashboard',
@@ -86,7 +86,7 @@ router.beforeEach((to, from, next) => {
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next('/login')
   } else if (to.path === '/login' && authStore.isAuthenticated) {
-    next('/dashboard')
+    next('/stock-pools')
   } else {
     next()
   }

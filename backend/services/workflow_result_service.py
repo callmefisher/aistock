@@ -167,3 +167,15 @@ async def delete_result(result_id: int) -> bool:
     except Exception as e:
         logger.error(f"删除结果失败: {e}")
         return False
+
+
+async def get_available_types_for_date(date_str: str) -> dict:
+    """查询指定日期哪些工作流类型有 final 结果"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(text("""
+            SELECT DISTINCT
+                CASE WHEN workflow_type = '' THEN '并购重组' ELSE workflow_type END as wtype
+            FROM workflow_results
+            WHERE date_str = :date_str AND step_type = 'final'
+        """), {'date_str': date_str})
+        return {row[0] for row in result.fetchall()}

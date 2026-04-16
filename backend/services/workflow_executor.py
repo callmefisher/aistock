@@ -60,14 +60,15 @@ def invalidate_match_source_cache(dir_path: str = None):
         logger.info("已清除所有匹配源缓存")
 
 
-def auto_adjust_excel_width(output_path: str, fixed_width: int = 20):
+def auto_adjust_excel_width(output_path: str, fixed_width: int = 20, all_sheets: bool = False):
     """设置固定列宽（不遍历单元格，极快）"""
     try:
         wb = load_workbook(output_path)
-        ws = wb.active
-        ws.auto_filter.ref = ws.dimensions
-        for col_idx in range(1, ws.max_column + 1):
-            ws.column_dimensions[get_column_letter(col_idx)].width = fixed_width
+        sheets = wb.worksheets if all_sheets else [wb.active]
+        for ws in sheets:
+            ws.auto_filter.ref = ws.dimensions
+            for col_idx in range(1, ws.max_column + 1):
+                ws.column_dimensions[get_column_letter(col_idx)].width = fixed_width
         wb.save(output_path)
     except Exception as e:
         logger.warning(f"设置列宽失败: {output_path}, {e}")
@@ -281,6 +282,8 @@ class WorkflowExecutor:
                 return await self._match_soe(step_config, input_data, date_str)
             elif step_type == "match_sector":
                 return await self._match_sector(step_config, input_data, date_str)
+            elif step_type == "condition_intersection":
+                return await self._condition_intersection(step_config, date_str)
             elif step_type == "pending":
                 return {
                     "success": True,
@@ -1037,6 +1040,265 @@ class WorkflowExecutor:
             "file_path": output_path,
             "_df": df
         }
+
+    async def _condition_intersection(self, config: Dict, date_str: Optional[str] = None) -> Dict[str, Any]:
+        """条件交集步骤：聚合所有工作流类型的最终数据，过滤后合并输出+交集选股池"""
+        import zlib
+        import json as json_mod
+        from config.workflow_type_config import (
+            WORKFLOW_TYPE_CONFIG, INTERSECTION_SOURCE_COLUMNS,
+            INTERSECTION_COLUMN_RENAME, INTERSECTION_DISPLAY_COLUMNS
+        )
+        from core.database import AsyncSessionLocal
+        from sqlalchemy import text
+
+        date_str = config.get("date_str") or date_str or self.today
+        filter_conditions = config.get("filter_conditions", [{"column": "百日新高", "enabled": True}])
+        filter_logic = config.get("filter_logic", "AND")
+        type_order = config.get("type_order", WORKFLOW_TYPE_CONFIG.get("条件交集", {}).get("default_type_order", []))
+        output_filename = config.get("output_filename") or f"7条件交集{date_str}.xlsx"
+        workflow_id = config.get("_workflow_id")
+
+        logger.info(f"[条件交集] 开始执行: date={date_str}, filters={filter_conditions}, logic={filter_logic}")
+
+        # 1. 从 DB 获取各类型 final 数据
+        type_dataframes = {}
+        async with AsyncSessionLocal() as session:
+            for wtype in type_order:
+                # 并购重组 type 可能为空字符串，用 IN 参数化查询
+                if wtype == "并购重组":
+                    query = text("""
+                        SELECT data_compressed FROM workflow_results
+                        WHERE workflow_type IN (:wtype_empty, :wtype_cn)
+                          AND date_str = :date_str AND step_type = 'final'
+                        ORDER BY created_at DESC LIMIT 1
+                    """)
+                    params = {"date_str": date_str, "wtype_empty": "", "wtype_cn": "并购重组"}
+                else:
+                    query = text("""
+                        SELECT data_compressed FROM workflow_results
+                        WHERE workflow_type = :wtype
+                          AND date_str = :date_str AND step_type = 'final'
+                        ORDER BY created_at DESC LIMIT 1
+                    """)
+                    params = {"date_str": date_str, "wtype": wtype}
+
+                result = await session.execute(query, params)
+                row = result.fetchone()
+                if row and row[0]:
+                    try:
+                        decompressed = zlib.decompress(row[0])
+                        records = json_mod.loads(decompressed.decode("utf-8"))
+                        df = pd.DataFrame(records)
+                        type_dataframes[wtype] = df
+                        logger.info(f"[条件交集] 读取 {wtype}: {len(df)}行")
+                    except Exception as e:
+                        logger.warning(f"[条件交集] 解压 {wtype} 数据失败: {e}")
+                else:
+                    logger.info(f"[条件交集] {wtype} 无数据，跳过")
+
+        if not type_dataframes:
+            return {"success": False, "message": "所有工作流类型均无数据，无法执行条件交集"}
+
+        # 2. 对每个类型应用过滤条件
+        filtered_dfs = {}
+        for wtype, df in type_dataframes.items():
+            filtered = self._apply_filters(df, filter_conditions, filter_logic)
+            if len(filtered) > 0:
+                filtered_dfs[wtype] = filtered
+                logger.info(f"[条件交集] {wtype} 过滤后: {len(filtered)}行 (原{len(df)}行)")
+            else:
+                logger.info(f"[条件交集] {wtype} 过滤后无数据")
+
+        if not filtered_dfs:
+            return {"success": False, "message": "所有工作流类型过滤后均无数据"}
+
+        # 3. 合并数据，按 type_order 顺序
+        combined_rows = []
+        for wtype in type_order:
+            if wtype not in filtered_dfs:
+                continue
+            df = filtered_dfs[wtype]
+            # 提取标准列
+            extracted = pd.DataFrame()
+            for col in INTERSECTION_SOURCE_COLUMNS:
+                if col in df.columns:
+                    extracted[col] = df[col]
+                else:
+                    extracted[col] = ""
+            # 添加资本运作行为列
+            display_name = WORKFLOW_TYPE_CONFIG.get(wtype, {}).get("display_name", wtype)
+            extracted["资本运作行为"] = display_name
+            combined_rows.append(extracted)
+
+        combined_df = pd.concat(combined_rows, ignore_index=True)
+        # 重新编号序号
+        combined_df["序号"] = range(1, len(combined_df) + 1)
+
+        # 4. 计算交集：在所有有数据的类型中都出现的证券代码（在 rename 前计算）
+        code_sets = []
+        for wtype, df in filtered_dfs.items():
+            if "证券代码" in df.columns:
+                codes = set(df["证券代码"].dropna().astype(str).str.strip())
+                codes.discard("")
+                code_sets.append(codes)
+            else:
+                logger.warning(f"[条件交集] {wtype} 缺少证券代码列，跳过交集计算")
+
+        intersection_codes = set()
+        if code_sets:
+            intersection_codes = code_sets[0]
+            for s in code_sets[1:]:
+                intersection_codes &= s
+
+        logger.info(f"[条件交集] 交集证券代码: {len(intersection_codes)}个")
+
+        # 从合并数据中提取交集行（去重，在 rename 前操作）
+        if intersection_codes and "证券代码" in combined_df.columns:
+            mask = combined_df["证券代码"].astype(str).str.strip().isin(intersection_codes)
+            pool_raw = combined_df[mask].drop_duplicates(subset=["证券代码"], keep="first").copy()
+            pool_raw["序号"] = range(1, len(pool_raw) + 1)
+        else:
+            pool_raw = pd.DataFrame(columns=INTERSECTION_SOURCE_COLUMNS + ["资本运作行为"])
+
+        # 列名重映射（原始数据不变，只改最终输出的列名）
+        combined_display = combined_df.rename(columns=INTERSECTION_COLUMN_RENAME)
+        pool_df = pool_raw.rename(columns=INTERSECTION_COLUMN_RENAME)
+        # 确保列顺序
+        final_columns = [c for c in INTERSECTION_DISPLAY_COLUMNS if c in combined_display.columns]
+        combined_display = combined_display[final_columns]
+        pool_columns = [c for c in INTERSECTION_DISPLAY_COLUMNS if c in pool_df.columns]
+        pool_df = pool_df[pool_columns]
+
+        # 5. 输出 Excel（双 Sheet）
+        daily_dir = self._get_daily_dir(date_str)
+        os.makedirs(daily_dir, exist_ok=True)
+        output_path = os.path.join(daily_dir, output_filename)
+
+        # 生成选股池名称
+        try:
+            from datetime import datetime as dt
+            d = dt.strptime(date_str, "%Y-%m-%d")
+            pool_name = f"{d.year}年{d.month:02d}月选股池"
+        except Exception:
+            pool_name = f"选股池_{date_str}"
+
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            combined_display.to_excel(writer, sheet_name="条件交集", index=False)
+            pool_df.to_excel(writer, sheet_name=pool_name, index=False)
+
+        auto_adjust_excel_width(output_path, all_sheets=True)
+        logger.info(f"[条件交集] 输出文件: {output_path}")
+
+        # 6. 保存选股池到 DB
+        try:
+            pool_records = pool_df.fillna("").to_dict("records")
+            await self._save_stock_pool(
+                name=pool_name,
+                date_str=date_str,
+                file_path=output_path,
+                data=pool_records,
+                total_stocks=len(pool_df),
+                filter_conditions=filter_conditions,
+                source_types=list(filtered_dfs.keys()),
+                workflow_id=workflow_id
+            )
+            logger.info(f"[条件交集] 选股池已保存: {pool_name}, {len(pool_df)}条")
+        except Exception as e:
+            logger.error(f"[条件交集] 保存选股池失败: {e}")
+
+        return {
+            "success": True,
+            "message": f"条件交集完成: 合并{len(combined_display)}行, 交集{len(pool_df)}条, 来源{len(filtered_dfs)}个类型",
+            "data": clean_df_for_json(combined_display),
+            "columns": combined_display.columns.tolist(),
+            "rows": len(combined_display),
+            "file_path": output_path,
+            "_df": combined_display,
+            "pool_count": len(pool_df),
+        }
+
+    def _apply_filters(self, df: pd.DataFrame, filter_conditions: list, filter_logic: str = "AND") -> pd.DataFrame:
+        """应用过滤条件：非空即保留"""
+        enabled = [f for f in filter_conditions if f.get("enabled")]
+        if not enabled:
+            return df
+
+        masks = []
+        for f in enabled:
+            col = f["column"]
+            if col in df.columns:
+                mask = df[col].fillna("").astype(str).str.strip() != ""
+                masks.append(mask)
+
+        if not masks:
+            return df
+
+        if filter_logic == "OR":
+            combined = masks[0]
+            for m in masks[1:]:
+                combined = combined | m
+        else:  # AND
+            combined = masks[0]
+            for m in masks[1:]:
+                combined = combined & m
+
+        return df[combined].copy()
+
+    async def _save_stock_pool(self, name: str, date_str: str, file_path: str,
+                                data: list, total_stocks: int,
+                                filter_conditions: list, source_types: list,
+                                workflow_id: int = None):
+        """保存选股池到数据库（upsert by name + date_str）"""
+        import json as json_mod
+        from core.database import AsyncSessionLocal
+        from sqlalchemy import text
+
+        async with AsyncSessionLocal() as session:
+            # 检查是否已存在同名同日期的选股池
+            result = await session.execute(text(
+                "SELECT id FROM stock_pools WHERE name = :name AND date_str = :date_str LIMIT 1"
+            ), {"name": name, "date_str": date_str})
+            existing = result.fetchone()
+
+            if existing:
+                await session.execute(text("""
+                    UPDATE stock_pools SET
+                        workflow_id = :workflow_id,
+                        file_path = :file_path,
+                        total_stocks = :total_stocks,
+                        data = :data,
+                        filter_conditions = :filter_conditions,
+                        source_types = :source_types,
+                        is_active = 1,
+                        updated_at = NOW()
+                    WHERE id = :id
+                """), {
+                    "id": existing[0],
+                    "workflow_id": workflow_id,
+                    "file_path": file_path,
+                    "total_stocks": total_stocks,
+                    "data": json_mod.dumps(data, ensure_ascii=False, default=str),
+                    "filter_conditions": json_mod.dumps(filter_conditions, ensure_ascii=False),
+                    "source_types": json_mod.dumps(source_types, ensure_ascii=False),
+                })
+            else:
+                await session.execute(text("""
+                    INSERT INTO stock_pools (name, workflow_id, date_str, file_path, total_stocks, data,
+                        filter_conditions, source_types, is_active, created_at, updated_at)
+                    VALUES (:name, :workflow_id, :date_str, :file_path, :total_stocks, :data,
+                        :filter_conditions, :source_types, 1, NOW(), NOW())
+                """), {
+                    "name": name,
+                    "workflow_id": workflow_id,
+                    "date_str": date_str,
+                    "file_path": file_path,
+                    "total_stocks": total_stocks,
+                    "data": json_mod.dumps(data, ensure_ascii=False, default=str),
+                    "filter_conditions": json_mod.dumps(filter_conditions, ensure_ascii=False),
+                    "source_types": json_mod.dumps(source_types, ensure_ascii=False),
+                })
+            await session.commit()
 
 
 workflow_executor = WorkflowExecutor()

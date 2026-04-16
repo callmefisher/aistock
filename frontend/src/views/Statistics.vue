@@ -234,7 +234,7 @@ echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendCompone
 const mainTab = ref('results')
 
 // ===== 执行结果 tab =====
-const FILTERABLE_COLUMNS = ['百日新高', '20日均线', '国企', '国央企', '一级板块', '所属板块', '所属一级板块']
+const FILTERABLE_COLUMNS = ['百日新高', '20日均线', '站上20日线', '国企', '国央企', '一级板块', '所属板块', '所属一级板块']
 const loading = ref(false)
 const loadingFull = ref(false)
 const exporting = ref(false)

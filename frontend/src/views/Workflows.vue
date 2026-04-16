@@ -20,15 +20,17 @@
       <el-table :data="workflows" stripe v-loading="loading" @selection-change="handleSelectionChange" ref="workflowTableRef">
         <el-table-column type="selection" width="50" />
         <el-table-column prop="name" label="工作流名称" />
-        <el-table-column prop="description" label="描述" />
-        <el-table-column prop="status" label="状态">
+        <el-table-column label="类型" width="180">
           <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)">
-              {{ row.status }}
-            </el-tag>
+            {{ row.workflow_type || '并购重组' }}
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" />
+        <el-table-column label="数据日期" width="110">
+          <template #default="{ row }">
+            {{ row.date_str || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="description" label="描述" />
         <el-table-column label="操作" width="300">
           <template #default="{ row }">
             <el-button size="small" type="success" @click="handleRun(row)">
@@ -50,6 +52,9 @@
       <el-form :model="form" label-width="140px">
         <el-form-item label="工作流名称">
           <el-input v-model="form.name" placeholder="请输入工作流名称" />
+        </el-form-item>
+        <el-form-item v-if="isEditing" label="创建时间">
+          <el-input :model-value="formatBeijingTime(form.created_at)" disabled />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" rows="2" placeholder="请输入描述" />
@@ -98,6 +103,13 @@
             :closable="false"
             style="margin-top: 8px"
           />
+          <el-alert
+            v-if="form.workflow_type === '条件交集'"
+            title="条件交集类型：聚合所有其他工作流的最终输出，按过滤条件筛选后合并输出，并计算交集生成选股池"
+            type="warning"
+            :closable="false"
+            style="margin-top: 8px"
+          />
         </el-form-item>
 
         <el-divider content-position="left">工作流步骤</el-divider>
@@ -116,17 +128,22 @@
               </template>
 
               <el-form-item label="步骤类型">
-                <el-select v-model="step.type" style="width: 100%" @change="onStepTypeChange(step, index)">
-                  <el-option label="导入Excel" value="import_excel" />
-                  <el-option label="合并当日数据源" value="merge_excel" />
-                  <el-option label="智能去重" value="smart_dedup" />
-                  <el-option label="提取列" value="extract_columns" />
-                  <el-option label="导出Excel" value="export_excel" />
-                  <el-option label="匹配百日新高" value="match_high_price" />
-                  <el-option label="匹配20日均线" value="match_ma20" />
-                  <el-option label="匹配国企" value="match_soe" />
-                  <el-option label="匹配一级板块" value="match_sector" />
-                  <el-option label="待定" value="pending" />
+                <el-select v-model="step.type" style="width: 100%" @change="onStepTypeChange(step, index)" :disabled="form.workflow_type === '条件交集'">
+                  <template v-if="form.workflow_type === '条件交集'">
+                    <el-option label="合并当日数据" value="condition_intersection" />
+                  </template>
+                  <template v-else>
+                    <el-option label="导入Excel" value="import_excel" />
+                    <el-option label="合并当日数据源" value="merge_excel" />
+                    <el-option label="智能去重" value="smart_dedup" />
+                    <el-option label="提取列" value="extract_columns" />
+                    <el-option label="导出Excel" value="export_excel" />
+                    <el-option label="匹配百日新高" value="match_high_price" />
+                    <el-option label="匹配20日均线" value="match_ma20" />
+                    <el-option label="匹配国企" value="match_soe" />
+                    <el-option label="匹配一级板块" value="match_sector" />
+                    <el-option label="待定" value="pending" />
+                  </template>
                 </el-select>
               </el-form-item>
 
@@ -552,6 +569,61 @@
                 </el-form-item>
               </template>
 
+              <template v-if="step.type === 'condition_intersection'">
+                <el-form-item label="数据日期">
+                  <el-date-picker
+                    v-model="step.config.date_str"
+                    type="date"
+                    placeholder="选择数据日期"
+                    format="YYYY-MM-DD"
+                    value-format="YYYY-MM-DD"
+                    style="width: 100%"
+                    @change="onIntersectionDateChange(step)"
+                  />
+                </el-form-item>
+
+                <el-form-item label="过滤条件">
+                  <div style="width: 100%">
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                      <span style="margin-right: 12px; font-size: 13px; color: #606266;">条件逻辑:</span>
+                      <el-radio-group v-model="step.config.filter_logic" size="small">
+                        <el-radio-button label="AND">AND（全部满足）</el-radio-button>
+                        <el-radio-button label="OR">OR（满足任一）</el-radio-button>
+                      </el-radio-group>
+                    </div>
+                    <div v-for="(filter, fIdx) in step.config.filter_conditions" :key="fIdx" style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                      <el-checkbox v-model="filter.enabled">{{ filter.column }}</el-checkbox>
+                      <el-button link type="danger" size="small" @click="removeFilter(step, fIdx)" :disabled="step.config.filter_conditions.length <= 1">
+                        <el-icon><Delete /></el-icon>
+                      </el-button>
+                    </div>
+                    <el-button size="small" @click="addFilter(step)" :disabled="getAvailableFilters(step).length === 0">
+                      <el-icon><Plus /></el-icon>
+                      添加过滤条件
+                    </el-button>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="工作流顺序">
+                  <div style="width: 100%">
+                    <div
+                      v-for="(wtype, tIdx) in step.config.type_order"
+                      :key="wtype"
+                      style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; margin-bottom: 4px; background: #f5f7fa; border-radius: 4px;"
+                    >
+                      <span style="color: #909399; cursor: grab;">≡</span>
+                      <span style="flex: 1;">{{ tIdx + 1 }}. {{ wtype }}</span>
+                      <el-button link size="small" :disabled="tIdx === 0" @click="moveTypeOrder(step, tIdx, -1)">↑</el-button>
+                      <el-button link size="small" :disabled="tIdx === step.config.type_order.length - 1" @click="moveTypeOrder(step, tIdx, 1)">↓</el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="输出文件名">
+                  <el-input v-model="step.config.output_filename" placeholder="7条件交集{date}.xlsx" />
+                </el-form-item>
+              </template>
+
               <template v-if="step.type === 'pending'">
                 <el-alert title="此步骤暂未配置，待后续开发" type="info" :closable="false" />
               </template>
@@ -559,7 +631,7 @@
           </div>
         </div>
 
-        <el-form-item>
+        <el-form-item v-if="form.workflow_type !== '条件交集'">
           <el-button @click="addStep">
             <el-icon><Plus /></el-icon>
             添加步骤
@@ -731,6 +803,14 @@ import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus } from '@element-plus/icons-vue'
 
+const formatBeijingTime = (dateStr) => {
+  if (!dateStr) return '-'
+  const d = new Date(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z')
+  const bj = new Date(d.getTime() + 8 * 3600000)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())} ${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}:${pad(bj.getUTCSeconds())}`
+}
+
 const loading = ref(false)
 const showDialog = ref(false)
 const showStepsDialog = ref(false)
@@ -855,6 +935,7 @@ const getStepType = (type) => {
     smart_dedup: 'success',
     extract_columns: 'warning',
     export_excel: 'info',
+    condition_intersection: 'warning',
     pending: 'danger'
   }
   return types[type] || 'info'
@@ -872,10 +953,66 @@ const getStepTypeName = (type) => {
     match_ma20: '匹配20日均线',
     match_soe: '匹配国企',
     match_sector: '匹配一级板块',
+    condition_intersection: '合并当日数据',
     pending: '待定'
   }
   return names[type] || type
 }
+
+// 条件交集相关
+const FILTER_COLUMNS = ['百日新高', '20日均线', '国企', '一级板块']
+const DEFAULT_TYPE_ORDER = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '招投标']
+
+const defaultIntersectionStep = () => ({
+  type: 'condition_intersection',
+  config: {
+    date_str: new Date().toISOString().split('T')[0],
+    filter_conditions: [{ column: '百日新高', enabled: true }],
+    filter_logic: 'AND',
+    type_order: [...DEFAULT_TYPE_ORDER],
+    output_filename: `7条件交集${new Date().toISOString().split('T')[0]}.xlsx`
+  },
+  status: 'pending'
+})
+
+const getAvailableFilters = (step) => {
+  const used = new Set((step.config.filter_conditions || []).map(f => f.column))
+  return FILTER_COLUMNS.filter(c => !used.has(c))
+}
+
+const addFilter = (step) => {
+  const available = getAvailableFilters(step)
+  if (available.length > 0) {
+    step.config.filter_conditions.push({ column: available[0], enabled: true })
+  }
+}
+
+const removeFilter = (step, idx) => {
+  step.config.filter_conditions.splice(idx, 1)
+}
+
+const moveTypeOrder = (step, idx, direction) => {
+  const arr = step.config.type_order
+  const newIdx = idx + direction
+  if (newIdx < 0 || newIdx >= arr.length) return
+  const temp = arr[idx]
+  arr[idx] = arr[newIdx]
+  arr[newIdx] = temp
+}
+
+const onIntersectionDateChange = (step) => {
+  const date = step.config.date_str || new Date().toISOString().split('T')[0]
+  step.config.output_filename = `7条件交集${date}.xlsx`
+}
+
+// 监听 workflow_type 变化，自动切换步骤
+watch(() => form.value.workflow_type, (newType, oldType) => {
+  if (newType === '条件交集') {
+    form.value.steps = [defaultIntersectionStep()]
+  } else if (oldType === '条件交集') {
+    form.value.steps = [defaultStep()]
+  }
+})
 
 const getTimelineType = (status) => {
   if (status === 'completed') return 'success'
@@ -1040,7 +1177,11 @@ const handleSave = async () => {
     showDialog.value = false
     fetchWorkflows()
   } catch (error) {
-    ElMessage.error(isEditing.value ? '更新失败' : '创建失败')
+    // 400 等错误已被 axios 拦截器通过 ElMessage.error 显示
+    // 仅对拦截器未覆盖的情况补充提示
+    if (!error?.response?.data?.detail) {
+      ElMessage.error(isEditing.value ? '更新失败' : '创建失败')
+    }
   }
 }
 
@@ -1063,6 +1204,34 @@ const handleRun = (workflow) => {
 
 const startExecution = async () => {
   if (executing.value) return
+
+  // 条件交集：先检查数据可用性
+  if (currentWorkflow.value?.workflow_type === '条件交集') {
+    const dateStr = currentWorkflow.value.steps?.[0]?.config?.date_str
+    if (!dateStr) {
+      ElMessage.warning('条件交集工作流未设置数据日期')
+      return
+    }
+    try {
+      const availability = await api.get(`/workflows/check-data-availability/?date_str=${dateStr}`)
+      if (availability.missing && availability.missing.length > 0) {
+        const missingList = availability.missing.map(t => `  - ${t}`).join('\n')
+        try {
+          await ElMessageBox.confirm(
+            `以下工作流缺少 ${dateStr} 数据：\n${missingList}\n\n缺失的类型将被跳过，交集计算仅基于有数据的类型。是否继续？`,
+            '数据缺失提醒',
+            { type: 'warning', confirmButtonText: '继续', cancelButtonText: '取消' }
+          )
+        } catch {
+          return // 用户取消
+        }
+      }
+    } catch (error) {
+      ElMessage.error('检查数据可用性失败')
+      return
+    }
+  }
+
   executing.value = true
   executionResult.value = null
   resultData.value = []
@@ -1431,6 +1600,7 @@ const handleEdit = (row) => {
     name: row.name,
     description: row.description || '',
     workflow_type: row.workflow_type || '',
+    created_at: row.created_at || '',
     steps: (row.steps || []).map(step => ({
       type: step.type,
       config: { ...step.config },

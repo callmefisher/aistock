@@ -27,6 +27,37 @@ router = APIRouter()
 BASE_DIR = "/Users/xiayanji/qbox/aistock/data/excel" if os.path.exists("/Users/xiayanji") else "/app/data/excel"
 
 
+def _extract_date_str(steps):
+    """从步骤配置中提取 date_str"""
+    if not steps:
+        return ""
+    for s in steps:
+        config = s.get("config", {}) if isinstance(s, dict) else (s.config or {})
+        date_str = config.get("date_str", "") if isinstance(config, dict) else getattr(config, "date_str", "")
+        if date_str:
+            return date_str
+    return ""
+
+
+async def _check_type_date_unique(db, workflow_type: str, date_str: str, exclude_id: int = None):
+    """校验 workflow_type + date_str 唯一性（仅 date_str 非空时）"""
+    if not date_str:
+        return
+    query = select(Workflow).where(
+        Workflow.workflow_type == workflow_type,
+        Workflow.date_str == date_str
+    )
+    if exclude_id is not None:
+        query = query.where(Workflow.id != exclude_id)
+    result = await db.execute(query)
+    existing = result.scalar_one_or_none()
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"工作流类型「{workflow_type or '并购重组'}」在 {date_str} 已存在工作流「{existing.name}」，不允许重复"
+        )
+
+
 class WorkflowStepConfig(BaseModel):
     data_source_id: Optional[int] = None
     file_path: Optional[str] = None
@@ -68,6 +99,7 @@ class WorkflowResponse(BaseModel):
     name: str
     description: Optional[str] = None
     workflow_type: str = ""
+    date_str: str = ""
     steps: Union[List[dict], None] = None
     status: str
     last_run_time: Optional[datetime] = None
@@ -82,11 +114,18 @@ async def create_workflow(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user)
 ):
+    steps_dicts = [step.dict() for step in workflow.steps]
+    date_str = _extract_date_str(steps_dicts)
+    workflow_type = workflow.workflow_type or ""
+
+    await _check_type_date_unique(db, workflow_type, date_str)
+
     db_workflow = Workflow(
         name=workflow.name,
         description=workflow.description,
-        workflow_type=workflow.workflow_type or "",
-        steps=[step.dict() for step in workflow.steps]
+        workflow_type=workflow_type,
+        date_str=date_str,
+        steps=steps_dicts
     )
     db.add(db_workflow)
     await db.commit()
@@ -103,6 +142,41 @@ async def get_workflow_types(
     return {
         "success": True,
         "types": [{"value": "", "display_name": "默认（并购重组）"}] + types
+    }
+
+
+@router.get("/check-data-availability/")
+async def check_data_availability(
+    date_str: str = Query(...),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user)
+):
+    """检查指定日期各工作流类型是否有最终输出数据"""
+    from config.workflow_type_config import WORKFLOW_TYPE_CONFIG
+    from sqlalchemy import text
+
+    # 获取所有非聚合类型
+    all_types = []
+    for key, config in WORKFLOW_TYPE_CONFIG.items():
+        if key and not config.get("is_aggregation"):
+            all_types.append(key)
+
+    # 查询数据库中已有的 final 结果
+    result = await db.execute(text("""
+        SELECT DISTINCT
+            CASE WHEN workflow_type = '' THEN '并购重组' ELSE workflow_type END as wtype
+        FROM workflow_results
+        WHERE date_str = :date_str AND step_type = 'final'
+    """), {"date_str": date_str})
+    available_types = {row[0] for row in result.fetchall()}
+
+    available = [t for t in all_types if t in available_types]
+    missing = [t for t in all_types if t not in available_types]
+
+    return {
+        "date_str": date_str,
+        "available": available,
+        "missing": missing
     }
 
 
@@ -146,6 +220,18 @@ async def update_workflow(
         raise HTTPException(status_code=404, detail="工作流不存在")
 
     update_data = workflow_update.dict(exclude_unset=True)
+
+    # 确定更新后的 workflow_type 和 date_str，用于唯一性校验
+    new_type = update_data.get("workflow_type", db_workflow.workflow_type) or ""
+    new_steps = update_data.get("steps")
+    if new_steps is not None:
+        steps_dicts = [step.dict() if hasattr(step, 'dict') else step for step in new_steps]
+        new_date_str = _extract_date_str(steps_dicts)
+    else:
+        new_date_str = db_workflow.date_str or ""
+
+    await _check_type_date_unique(db, new_type, new_date_str, exclude_id=workflow_id)
+
     for field, value in update_data.items():
         if field == "steps" and value is not None:
             setattr(db_workflow, field, [step.dict() if hasattr(step, 'dict') else step for step in value])
@@ -156,6 +242,9 @@ async def update_workflow(
             setattr(db_workflow, field, value or "")
         else:
             setattr(db_workflow, field, value)
+
+    # 同步 date_str
+    db_workflow.date_str = new_date_str
 
     await db.commit()
     await db.refresh(db_workflow)
@@ -342,6 +431,11 @@ async def run_workflow(
         final_name = executor.resolver.get_output_filename("match_sector", output_date_str)
         if final_name:
             steps[-1].setdefault("config", {})["output_filename"] = final_name
+
+    # 条件交集步骤：注入 workflow_id 到 config
+    for step in steps:
+        if step.get("type") == "condition_intersection":
+            step.setdefault("config", {})["_workflow_id"] = workflow_id
 
     for i, step in enumerate(steps):
         step_type = step.get("type", "")
@@ -593,11 +687,23 @@ async def batch_run_workflows(
     task_id = f"batch_{uuid.uuid4().hex[:12]}"
     workflow_ids = request.workflow_ids
 
+    # 条件交集类型排到最后执行，确保其他工作流数据最完整
+    normal_ids = []
+    aggregation_ids = []
+    for wid in workflow_ids:
+        result = await db.execute(select(Workflow).where(Workflow.id == wid))
+        wf = result.scalar_one_or_none()
+        if wf and wf.workflow_type == "条件交集":
+            aggregation_ids.append(wid)
+        else:
+            normal_ids.append(wid)
+    sorted_ids = normal_ids + aggregation_ids
+
     batch = BatchExecution(
         id=task_id,
-        workflow_ids=workflow_ids,
+        workflow_ids=sorted_ids,
         status="pending",
-        total=len(workflow_ids),
+        total=len(sorted_ids),
         completed=0,
         failed=0,
         results=[],
@@ -606,7 +712,7 @@ async def batch_run_workflows(
     db.add(batch)
     await db.commit()
 
-    asyncio.create_task(_run_batch_workflows(task_id, workflow_ids, current_user.username))
+    asyncio.create_task(_run_batch_workflows(task_id, sorted_ids, current_user.username))
 
     return {
         "success": True,

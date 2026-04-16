@@ -86,20 +86,28 @@ CREATE TABLE IF NOT EXISTS `stock_pools` (
   `id` int NOT NULL AUTO_INCREMENT,
   `name` varchar(100) NOT NULL COMMENT '选股池名称',
   `task_id` int COMMENT '生成任务ID',
+  `workflow_id` int COMMENT '生成工作流ID',
+  `date_str` varchar(20) DEFAULT '' COMMENT '数据日期',
   `file_path` varchar(500) COMMENT 'Excel文件路径',
   `total_stocks` int COMMENT '股票总数',
   `data` json COMMENT '股票数据',
+  `filter_conditions` json COMMENT '过滤条件',
+  `source_types` json COMMENT '来源工作流类型列表',
   `is_active` tinyint(1) DEFAULT '1' COMMENT '是否启用',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `idx_task_id` (`task_id`)
+  KEY `idx_task_id` (`task_id`),
+  KEY `idx_workflow_id` (`workflow_id`),
+  KEY `idx_date_str` (`date_str`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `workflows` (
   `id` int NOT NULL AUTO_INCREMENT,
   `name` varchar(100) NOT NULL COMMENT '工作流名称',
   `description` text COMMENT '工作流描述',
+  `workflow_type` varchar(50) DEFAULT '' COMMENT '工作流类型',
+  `date_str` varchar(20) DEFAULT '' COMMENT '数据日期',
   `steps` json COMMENT '工作流步骤配置',
   `status` varchar(50) DEFAULT 'active' COMMENT '状态',
   `last_run_time` datetime COMMENT '最后运行时间',

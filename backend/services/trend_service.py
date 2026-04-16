@@ -52,7 +52,7 @@ async def get_trend_data(
 ) -> List[Dict[str, Any]]:
     try:
         async with AsyncSessionLocal() as session:
-            query = "SELECT id, metric_type, workflow_type, date_str, count, total, ratio, source, created_at FROM trend_statistics WHERE metric_type = :metric_type"
+            query = "SELECT id, metric_type, workflow_type, date_str, count, total, ratio, source, created_at FROM trend_statistics WHERE metric_type = :metric_type AND workflow_type != '条件交集'"
             params: Dict[str, Any] = {"metric_type": metric_type}
 
             if workflow_type:
