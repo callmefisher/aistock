@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from datetime import datetime
 import json
 import os
+import logging
 import tempfile
 import pandas as pd
 from core.database import get_async_db
@@ -130,21 +131,26 @@ async def download_stock_pool(
     if not data:
         raise HTTPException(status_code=404, detail="文件不存在且无数据可导出")
 
-    df = pd.DataFrame(data)
     date_part = (stock_pool.date_str or "").replace("-", "")
     filename = f"7条件交集{date_part}.xlsx"
+
     tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
     try:
-        df.to_excel(tmp.name, index=False, engine="openpyxl")
-    except Exception:
-        os.unlink(tmp.name)
+        df = pd.DataFrame(data)
+        df.to_excel(tmp_path, index=False, engine="openpyxl")
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"生成Excel失败: stock_pool_id={stock_pool_id}, error={e}")
+        os.unlink(tmp_path)
         raise HTTPException(status_code=500, detail="生成Excel失败")
 
     return FileResponse(
-        path=tmp.name,
+        path=tmp_path,
         filename=filename,
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        background=BackgroundTask(os.unlink, tmp.name),
+        background=BackgroundTask(os.unlink, tmp_path),
     )
 
 
