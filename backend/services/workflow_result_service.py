@@ -21,6 +21,15 @@ async def save_workflow_result(
     """读取最终 Excel，压缩为 JSON 写入 DB。"""
     try:
         df = pd.read_excel(file_path)
+        # 列名可能含 datetime 对象（如涨幅排名的日期表头），转为 "X月X日" 格式
+        from datetime import datetime as dt_datetime
+        def _normalize_col(c):
+            if isinstance(c, (pd.Timestamp, dt_datetime)):
+                return f"{c.month}月{c.day}日"
+            if hasattr(c, 'month') and hasattr(c, 'day'):
+                return f"{c.month}月{c.day}日"
+            return str(c) if not isinstance(c, str) else c
+        df.columns = [_normalize_col(c) for c in df.columns]
         df = df.fillna('')
         records = df.to_dict('records')
 

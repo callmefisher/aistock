@@ -490,8 +490,12 @@ async def run_workflow(
                 file_path=last_output_file,
                 step_type="final"
             )
+            if not db_saved:
+                logger.warning(f"[单工作流] {workflow_id} save_workflow_result 返回 False")
         except Exception as e:
             logger.error(f"执行后DB写入失败: {e}")
+    else:
+        logger.warning(f"[单工作流] {workflow_id} 跳过DB保存: output={last_output_file}, failed={len(failed)}, export_only={type_config.get('is_export_only')}")
 
     # 构建最后一步的预览数据
     preview_data = []

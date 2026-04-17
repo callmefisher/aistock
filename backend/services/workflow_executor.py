@@ -1362,17 +1362,31 @@ class WorkflowExecutor:
         sort_col_display = str(sort_col_raw).split('\n')[0].strip()
         logger.info(f"[涨幅排名] 板块列={sector_col}, 排序列={sort_col_display}")
 
-        # 2. 提取板块名称和排序列，转数值排序
+        # 2. 提取板块名称和排序列，过滤空行，转数值排序
         work_df = df[[sector_col, sort_col_raw]].copy()
         work_df = work_df.rename(columns={sort_col_raw: sort_col_display})
         sort_col = sort_col_display
+        # 过滤板块名称为空/NaN/含"妙想Choice"的行
+        sector_str = work_df[sector_col].astype(str).str.strip()
+        work_df = work_df[
+            work_df[sector_col].notna()
+            & (sector_str != '')
+            & (~sector_str.str.contains('妙想Choice', na=False, regex=False))
+        ]
         work_df[sort_col] = pd.to_numeric(work_df[sort_col], errors='coerce')
-        work_df = work_df.dropna(subset=[sort_col])
-        work_df[sort_col] = work_df[sort_col].round(2)
-        work_df = work_df.sort_values(by=sort_col, ascending=False).reset_index(drop=True)
+
+        # 有效数字行：降序排列；非数字行（--等）：排到末尾
+        valid_df = work_df.dropna(subset=[sort_col]).copy()
+        valid_df[sort_col] = valid_df[sort_col].round(2)
+        valid_df = valid_df.sort_values(by=sort_col, ascending=False).reset_index(drop=True)
+
+        invalid_df = work_df[work_df[sort_col].isna()].copy()
+        invalid_df[sort_col] = df.loc[invalid_df.index, sort_col_raw]  # 索引与 df 对齐（未 reset）
+
+        work_df = pd.concat([valid_df, invalid_df], ignore_index=True)
 
         if work_df.empty:
-            return {"success": False, "message": "排序列无有效数值数据"}
+            return {"success": False, "message": "过滤后无有效数据（所有行为空/妙想Choice或排序列无数值）"}
 
         # 3. 列名规范化函数 + 当日日期列名
         import re as re_mod
