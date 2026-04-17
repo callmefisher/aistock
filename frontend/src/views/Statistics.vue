@@ -487,7 +487,7 @@ const renderChart = (wt) => {
         interval: dates.length > 60 ? Math.floor(dates.length / 20) - 1 : dates.length > 30 ? Math.floor(dates.length / 15) - 1 : 'auto'
       }
     },
-    dataZoom: dates.length > 30 ? [{ type: 'slider', start: Math.max(0, 100 - 3000 / dates.length), end: 100, height: 20, bottom: 5 }] : [],
+    dataZoom: dates.length > 30 ? [{ type: 'slider', start: 0, end: 100, height: 20, bottom: 5 }] : [],
     yAxis: dualYAxis.value
       ? [
           { type: 'value', name: '数量', position: 'left', min: 0, splitNumber: 5, axisLabel: { fontSize: 11 } },
