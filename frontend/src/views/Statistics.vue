@@ -188,6 +188,156 @@
           </el-table>
         </el-card>
       </el-tab-pane>
+
+      <!-- ===== Tab 3: 板块涨幅分析 ===== -->
+      <el-tab-pane label="板块涨幅分析" name="ranking">
+        <div v-loading="rankingLoading">
+          <!-- 数据选择器 -->
+          <div class="ranking-toolbar">
+            <el-select v-model="rankingResultId" placeholder="选择数据" @change="loadRankingById" size="small" style="width: 340px">
+              <el-option v-for="item in rankingAvailable" :key="item.id"
+                :label="`${item.date_str} - ${item.workflow_name}`" :value="item.id" />
+            </el-select>
+            <span v-if="rankingParsed" class="ranking-hint">{{ rankingParsed.sectors.length }} 个板块 / {{ rankingParsed.dateCols.length }} 个交易日</span>
+          </div>
+
+          <template v-if="rankingParsed">
+            <!-- 概览卡片 -->
+            <div class="ranking-overview">
+              <div class="ov-card">
+                <div class="ov-title">当前 Top5 ({{ rankingParsed.dateCols[0] || '' }})</div>
+                <div class="ov-items">
+                  <span v-for="(s, i) in rankingTop5Now" :key="s" class="ov-tag ov-up">#{{ i + 1 }} {{ s }}</span>
+                </div>
+              </div>
+              <div class="ov-card">
+                <div class="ov-title">Top5 变动 (vs {{ rankingParsed.dateCols.length > 1 ? rankingParsed.dateCols[1] : '--' }})</div>
+                <div class="ov-items">
+                  <span v-for="s in rankingNewIn" :key="'in-'+s" class="ov-tag ov-new-in">+ {{ s }} &#8593;</span>
+                  <span v-for="s in rankingNewOut" :key="'out-'+s" class="ov-tag ov-new-out">- {{ s }} &#8595;</span>
+                  <span v-if="!rankingNewIn.length && !rankingNewOut.length" style="color:#909399;font-size:13px">无变动</span>
+                </div>
+              </div>
+              <div class="ov-card">
+                <div class="ov-title">今日排名变化最大</div>
+                <div class="ov-items">
+                  <span v-for="c in rankingBigMovers.up" :key="'bu-'+c.name" class="ov-tag ov-new-in">{{ c.name }} &#8593;{{ c.change }}</span>
+                  <span v-for="c in rankingBigMovers.down" :key="'bd-'+c.name" class="ov-tag ov-new-out">{{ c.name }} &#8595;{{ Math.abs(c.change) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Top5频率统计 -->
+            <el-card shadow="hover" class="ranking-section">
+              <template #header>
+                <div class="chart-header">
+                  <span class="chart-title">Top5 进入频率统计</span>
+                  <span style="font-size:13px;color:#909399">按"迄今为止排进前5(次数)"降序</span>
+                </div>
+              </template>
+              <div ref="rkTop5ChartRef" class="ranking-chart" style="height:420px"></div>
+            </el-card>
+
+            <!-- 板块排名趋势 -->
+            <el-card shadow="hover" class="ranking-section">
+              <template #header>
+                <div class="chart-header">
+                  <span class="chart-title">板块排名趋势</span>
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <el-select v-model="rkSelectedSectors" multiple filterable collapse-tags collapse-tags-tooltip
+                      placeholder="搜索添加板块" size="small" style="width:360px" @change="renderRkTrendChart">
+                      <el-option v-for="s in rankingParsed.sectors" :key="s" :label="s" :value="s" />
+                    </el-select>
+                  </div>
+                </div>
+              </template>
+              <div ref="rkTrendChartRef" class="ranking-chart" style="height:400px"></div>
+            </el-card>
+
+            <!-- 板块动量排行 -->
+            <el-card shadow="hover" class="ranking-section">
+              <template #header>
+                <div class="chart-header">
+                  <span class="chart-title">板块动量排行</span>
+                  <span style="font-size:13px;color:#909399">近5日排名变化加权平均 | 正值=排名上升(变好)</span>
+                </div>
+              </template>
+              <div class="momentum-grid">
+                <div>
+                  <div style="font-size:13px;color:#67c23a;font-weight:600;margin-bottom:8px">排名上升最快 Top10</div>
+                  <div v-for="m in rankingMomentum.up" :key="'mu-'+m.name" class="momentum-item">
+                    <div>
+                      <div class="momentum-name">{{ m.name }}</div>
+                      <div class="momentum-bar" :style="{ width: (m.score / rankingMomentum.maxUp * 120) + 'px', background: '#67c23a' }"></div>
+                    </div>
+                    <div class="momentum-detail">
+                      <span class="momentum-change positive">+{{ m.score }} &#8593;</span>
+                      <span class="momentum-rank">#{{ m.currentRank }} (前日 #{{ m.prevRank }})</span>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <div style="font-size:13px;color:#f56c6c;font-weight:600;margin-bottom:8px">排名下降最快 Top10</div>
+                  <div v-for="m in rankingMomentum.down" :key="'md-'+m.name" class="momentum-item">
+                    <div>
+                      <div class="momentum-name">{{ m.name }}</div>
+                      <div class="momentum-bar" :style="{ width: (Math.abs(m.score) / rankingMomentum.maxDown * 120) + 'px', background: '#f56c6c' }"></div>
+                    </div>
+                    <div class="momentum-detail">
+                      <span class="momentum-change negative">{{ m.score }} &#8595;</span>
+                      <span class="momentum-rank">#{{ m.currentRank }} (前日 #{{ m.prevRank }})</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </el-card>
+
+            <!-- 排名热力矩阵 -->
+            <el-card shadow="hover" class="ranking-section">
+              <template #header>
+                <div class="chart-header">
+                  <span class="chart-title">板块排名矩阵</span>
+                  <el-radio-group v-model="rkHeatmapTopN" size="small">
+                    <el-radio-button :value="10">Top 10</el-radio-button>
+                    <el-radio-button :value="20">Top 20</el-radio-button>
+                    <el-radio-button :value="50">Top 50</el-radio-button>
+                    <el-radio-button :value="0">全部</el-radio-button>
+                  </el-radio-group>
+                </div>
+              </template>
+              <div class="heatmap-legend">
+                <span class="hl-item"><span class="hl-dot" style="background:#c00000"></span> 排名 1-5</span>
+                <span class="hl-item"><span class="hl-dot" style="background:#ff9800"></span> 排名 6-10</span>
+                <span class="hl-item"><span class="hl-dot" style="background:#fff3e0;border:1px solid #e65100"></span> 排名 11-20</span>
+                <span class="hl-item"><span class="hl-dot" style="background:#ff0000"></span> 排名提升(最新日)</span>
+                <span class="hl-item"><span class="hl-dot" style="background:#fafafa;border:1px solid #ddd"></span> 其他</span>
+              </div>
+              <div class="heatmap-scroll">
+                <table class="heatmap-table">
+                  <thead>
+                    <tr>
+                      <th style="min-width:100px">板块名称</th>
+                      <th>Top5次数</th>
+                      <th v-for="d in rankingParsed.dateCols" :key="d">{{ d }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in rkHeatmapRows" :key="row.name">
+                      <td class="hm-name">{{ row.name }}</td>
+                      <td style="font-weight:600">{{ row.top5 }}</td>
+                      <td v-for="(rank, di) in row.ranks" :key="di" :class="getHeatmapClass(rank, di, row.ranks)">
+                        {{ rank || '' }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </el-card>
+          </template>
+
+          <el-empty v-else-if="!rankingLoading" description="暂无涨幅排名数据，请先执行涨幅排名工作流" />
+        </div>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 数据查看弹窗 (执行结果 tab) -->
@@ -519,10 +669,14 @@ watch(mainTab, (val) => {
     if (!trendDateRange.value?.length) setDatePreset('year')
     else fetchTrendData()
   }
+  if (val === 'ranking' && !rankingData.value) fetchRankingAnalysis()
 })
 
 // resize
-const handleResize = () => { Object.values(chartInstances).forEach(c => c?.resize()) }
+const handleResize = () => {
+  Object.values(chartInstances).forEach(c => c?.resize())
+  Object.values(rkChartInstances).forEach(c => c?.resize())
+}
 onMounted(() => {
   fetchData()
   window.addEventListener('resize', handleResize)
@@ -530,6 +684,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
   Object.values(chartInstances).forEach(c => c?.dispose())
+  Object.values(rkChartInstances).forEach(c => c?.dispose())
 })
 
 // ===== 手动录入 =====
@@ -614,6 +769,270 @@ const exportSingleTrend = async (wt) => {
   } catch (e) { ElMessage.error('导出失败') }
 }
 
+// ===== 板块涨幅分析 tab =====
+const rankingLoading = ref(false)
+const rankingData = ref(null)
+const rankingAvailable = ref([])
+const rankingResultId = ref(null)
+const rkSelectedSectors = ref([])
+const rkHeatmapTopN = ref(20)
+const rkTop5ChartRef = ref(null)
+const rkTrendChartRef = ref(null)
+const rkChartInstances = {}
+
+const RANK_COLORS = ['#c00000', '#409eff', '#67c23a', '#e6a23c', '#9c27b0', '#00bcd4', '#ff5722', '#795548', '#607d8b', '#e91e63']
+
+// 解析排名数据
+const rankingParsed = computed(() => {
+  if (!rankingData.value) return null
+  const cols = rankingData.value.columns || []
+  const data = rankingData.value.data || []
+  if (cols.length < 4) return null
+  // cols[0]=板块名称, cols[1]=排序列, cols[2]=Top5次数, cols[3+]=日期列
+  // 数据中日期列已是降序（最新在前：4月15日, 4月14日, ...）
+  const dateCols = cols.slice(3)
+  const sectorCol = cols[0]
+  const top5Col = cols[2]
+  const sectors = data.map(r => r[sectorCol]).filter(Boolean)
+  return { cols, dateCols, sectors, sectorCol, top5Col, data }
+})
+
+// 获取某板块在某日期列的排名
+const getRank = (row, dateCol) => {
+  const v = row[dateCol]
+  if (v === '' || v === null || v === undefined) return null
+  const n = parseInt(v)
+  return isNaN(n) ? null : n
+}
+
+// 当前Top5
+const rankingTop5Now = computed(() => {
+  if (!rankingParsed.value) return []
+  const { data, sectorCol, dateCols } = rankingParsed.value
+  if (!dateCols.length) return []
+  const latestCol = dateCols[0]
+  return [...data]
+    .filter(r => getRank(r, latestCol) !== null)
+    .sort((a, b) => getRank(a, latestCol) - getRank(b, latestCol))
+    .slice(0, 5)
+    .map(r => r[sectorCol])
+})
+
+// Top5变动
+const rankingNewIn = computed(() => {
+  if (!rankingParsed.value || rankingParsed.value.dateCols.length < 2) return []
+  const { data, sectorCol, dateCols } = rankingParsed.value
+  const col0 = dateCols[0], col1 = dateCols[1]
+  const top5Now = new Set([...data].filter(r => { const rk = getRank(r, col0); return rk !== null && rk <= 5 }).map(r => r[sectorCol]))
+  const top5Prev = new Set([...data].filter(r => { const rk = getRank(r, col1); return rk !== null && rk <= 5 }).map(r => r[sectorCol]))
+  return [...top5Now].filter(s => !top5Prev.has(s))
+})
+const rankingNewOut = computed(() => {
+  if (!rankingParsed.value || rankingParsed.value.dateCols.length < 2) return []
+  const { data, sectorCol, dateCols } = rankingParsed.value
+  const col0 = dateCols[0], col1 = dateCols[1]
+  const top5Now = new Set([...data].filter(r => { const rk = getRank(r, col0); return rk !== null && rk <= 5 }).map(r => r[sectorCol]))
+  const top5Prev = new Set([...data].filter(r => { const rk = getRank(r, col1); return rk !== null && rk <= 5 }).map(r => r[sectorCol]))
+  return [...top5Prev].filter(s => !top5Now.has(s))
+})
+
+// 今日排名变化最大
+const rankingBigMovers = computed(() => {
+  if (!rankingParsed.value || rankingParsed.value.dateCols.length < 2) return { up: [], down: [] }
+  const { data, sectorCol, dateCols } = rankingParsed.value
+  const col0 = dateCols[0], col1 = dateCols[1]
+  const changes = data.map(r => {
+    const now = getRank(r, col0), prev = getRank(r, col1)
+    if (now === null || prev === null) return null
+    return { name: r[sectorCol], change: prev - now }
+  }).filter(Boolean)
+  const up = changes.filter(c => c.change > 0).sort((a, b) => b.change - a.change).slice(0, 5)
+  const down = changes.filter(c => c.change < 0).sort((a, b) => a.change - b.change).slice(0, 5)
+  return { up, down }
+})
+
+// 动量排行
+const rankingMomentum = computed(() => {
+  if (!rankingParsed.value) return { up: [], down: [], maxUp: 1, maxDown: 1 }
+  const { data, sectorCol, dateCols } = rankingParsed.value
+  const weights = [5, 4, 3, 2, 1]
+  const momentums = data.map(r => {
+    let score = 0, totalW = 0
+    for (let i = 0; i < Math.min(5, dateCols.length - 1); i++) {
+      const now = getRank(r, dateCols[i]), prev = getRank(r, dateCols[i + 1])
+      if (now !== null && prev !== null) {
+        score += (prev - now) * weights[i]
+        totalW += weights[i]
+      }
+    }
+    const currentRank = getRank(r, dateCols[0]) ?? '?'
+    const prevRank = dateCols.length > 1 ? (getRank(r, dateCols[1]) ?? '?') : '?'
+    return { name: r[sectorCol], score: totalW > 0 ? +(score / totalW).toFixed(1) : 0, currentRank, prevRank }
+  })
+  const up = momentums.filter(m => m.score > 0).sort((a, b) => b.score - a.score).slice(0, 10)
+  const down = momentums.filter(m => m.score < 0).sort((a, b) => a.score - b.score).slice(0, 10)
+  return { up, down, maxUp: up[0]?.score || 1, maxDown: Math.abs(down[0]?.score || -1) }
+})
+
+// 热力矩阵行
+const rkHeatmapRows = computed(() => {
+  if (!rankingParsed.value) return []
+  const { data, sectorCol, top5Col, dateCols } = rankingParsed.value
+  const sorted = [...data].sort((a, b) => {
+    const ra = getRank(a, dateCols[0]) ?? 9999
+    const rb = getRank(b, dateCols[0]) ?? 9999
+    return ra - rb
+  })
+  const display = rkHeatmapTopN.value > 0 ? sorted.slice(0, rkHeatmapTopN.value) : sorted
+  return display.map(r => ({
+    name: r[sectorCol],
+    top5: r[top5Col] ?? 0,
+    ranks: dateCols.map(d => getRank(r, d))
+  }))
+})
+
+const getHeatmapClass = (rank, di, ranks) => {
+  if (rank === null) return 'hm-other'
+  if (rank <= 5) return 'hm-top5'
+  // 最新日(di=0) 排名提升
+  if (di === 0 && ranks.length > 1 && ranks[1] !== null && rank < ranks[1]) return 'hm-improve'
+  if (rank <= 10) return 'hm-top10'
+  if (rank <= 20) return 'hm-top20'
+  return 'hm-other'
+}
+
+// 数据加载
+const fetchRankingAnalysis = async (resultId) => {
+  rankingLoading.value = true
+  try {
+    const params = resultId ? { result_id: resultId } : {}
+    const res = await api.get('/statistics/results/ranking-analysis', { params })
+    if (res?.success) {
+      rankingAvailable.value = res.available || []
+      if (res.data) {
+        rankingData.value = res.data
+        if (!rankingResultId.value && rankingAvailable.value.length) {
+          rankingResultId.value = rankingAvailable.value[0].id
+        }
+        await nextTick()
+        rkSelectedSectors.value = [...rankingTop5Now.value]
+        await nextTick()
+        renderRkTop5Chart()
+        renderRkTrendChart()
+      }
+    }
+  } catch { ElMessage.error('获取涨幅排名数据失败') }
+  finally { rankingLoading.value = false }
+}
+
+const loadRankingById = () => fetchRankingAnalysis(rankingResultId.value)
+
+// Top5 频率横向柱状图
+const renderRkTop5Chart = () => {
+  const el = rkTop5ChartRef.value
+  if (!el || !rankingParsed.value) return
+  if (rkChartInstances.top5) rkChartInstances.top5.dispose()
+  const chart = echarts.init(el)
+  rkChartInstances.top5 = chart
+
+  const { data, sectorCol, top5Col } = rankingParsed.value
+  const items = data
+    .map(r => ({ name: r[sectorCol], count: parseInt(r[top5Col]) || 0 }))
+    .filter(i => i.count > 0)
+    .sort((a, b) => a.count - b.count)
+  const threshold = items.length >= 5 ? items[items.length - 5].count : 0
+
+  // 相同次数只在最后一个柱子显示标签
+  const lastIndexByCount = {}
+  items.forEach((item, idx) => { lastIndexByCount[item.count] = idx })
+
+  chart.setOption({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    grid: { left: 120, right: 50, top: 10, bottom: 30 },
+    xAxis: { type: 'value', name: '次数', minInterval: 1, axisLabel: { fontSize: 12 } },
+    yAxis: { type: 'category', data: items.map(i => i.name), axisLabel: { fontSize: 12 } },
+    series: [{
+      type: 'bar',
+      data: items.map((item, idx) => ({
+        value: item.count,
+        itemStyle: { color: item.count >= threshold ? '#c00000' : '#409eff', borderRadius: [0, 4, 4, 0] }
+      })),
+      barMaxWidth: 24,
+      label: {
+        show: true, position: 'right', fontSize: 12, color: '#606266',
+        formatter: (params) => lastIndexByCount[params.value] === params.dataIndex ? params.value : ''
+      }
+    }]
+  })
+}
+
+// 排名趋势折线图
+const renderRkTrendChart = () => {
+  const el = rkTrendChartRef.value
+  if (!el || !rankingParsed.value) return
+  if (rkChartInstances.trend) rkChartInstances.trend.dispose()
+  const chart = echarts.init(el)
+  rkChartInstances.trend = chart
+
+  const { data, sectorCol, dateCols } = rankingParsed.value
+  // X轴时间正序（旧→新，左→右）
+  const xDates = [...dateCols].reverse()
+  const dataMap = {}
+  data.forEach(r => { dataMap[r[sectorCol]] = r })
+
+  // 动态计算Y轴上限：基于选中板块的实际最大排名
+  let maxRank = 10
+  rkSelectedSectors.value.forEach(s => {
+    const row = dataMap[s]
+    if (!row) return
+    xDates.forEach(d => {
+      const r = getRank(row, d)
+      if (r !== null && r > maxRank) maxRank = r
+    })
+  })
+  maxRank = Math.min(maxRank + 5, data.length)
+
+  chart.setOption({
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        let html = `<b>${params[0].axisValue}</b><br/>`
+        params.sort((a, b) => (a.value ?? 999) - (b.value ?? 999))
+        params.forEach(p => {
+          if (p.value != null) html += `${p.marker} ${p.seriesName}: 第${p.value}名<br/>`
+        })
+        return html
+      }
+    },
+    legend: { data: rkSelectedSectors.value, top: 0 },
+    grid: { left: 50, right: 30, top: 40, bottom: 80 },
+    xAxis: {
+      type: 'category', data: xDates, boundaryGap: false,
+      axisLabel: {
+        fontSize: 11, rotate: 45,
+        interval: xDates.length > 30 ? Math.floor(xDates.length / 20) - 1 : 'auto'
+      }
+    },
+    yAxis: {
+      type: 'value', name: '排名', inverse: true, min: 1, max: maxRank,
+      axisLabel: { fontSize: 12, formatter: '第{value}' },
+      splitLine: { lineStyle: { type: 'dashed' } }
+    },
+    dataZoom: [{ type: 'slider', start: 0, end: 100, height: 20, bottom: 5 }],
+    series: rkSelectedSectors.value.map((s, i) => {
+      const row = dataMap[s]
+      const values = xDates.map(d => row ? getRank(row, d) : null)
+      return {
+        name: s, type: 'line', data: values, smooth: true, symbol: 'circle', symbolSize: 8,
+        connectNulls: true,
+        lineStyle: { width: 2.5, color: RANK_COLORS[i % RANK_COLORS.length] },
+        itemStyle: { color: RANK_COLORS[i % RANK_COLORS.length] },
+        emphasis: { lineStyle: { width: 4 } }
+      }
+    })
+  })
+}
+
 // ===== 工具函数 =====
 const getColumnWidth = (col) => {
   if (previewData.value?.workflow_type === '涨幅排名') {
@@ -668,4 +1087,45 @@ const formatTime = (iso) => { if (!iso) return '-'; return iso.replace('T', ' ')
 
 .trend-data-mgmt { display: flex; gap: 16px; flex-wrap: wrap; }
 .mgmt-card { flex: 1; min-width: 400px; }
+
+/* 板块涨幅分析 tab */
+.ranking-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.ranking-hint { font-size: 13px; color: #909399; }
+.ranking-section { margin-bottom: 16px; }
+.ranking-chart { width: 100%; }
+
+.ranking-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.ov-card { background: #fff; border-radius: 8px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+.ov-title { font-size: 13px; color: #909399; margin-bottom: 10px; font-weight: 500; }
+.ov-items { display: flex; flex-wrap: wrap; gap: 6px; }
+.ov-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 4px; font-size: 13px; font-weight: 500; }
+.ov-up { background: #fef0f0; color: #c00000; }
+.ov-new-in { background: #f0f9eb; color: #67c23a; border: 1px solid #e1f3d8; }
+.ov-new-out { background: #fef0f0; color: #f56c6c; border: 1px solid #fde2e2; }
+
+.momentum-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .momentum-grid { grid-template-columns: 1fr; } }
+.momentum-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #f2f3f5; }
+.momentum-item:last-child { border-bottom: none; }
+.momentum-name { font-size: 13px; font-weight: 500; }
+.momentum-bar { height: 6px; border-radius: 3px; margin-top: 2px; }
+.momentum-detail { display: flex; flex-direction: column; align-items: flex-end; }
+.momentum-change { font-size: 13px; font-weight: 600; }
+.momentum-change.positive { color: #67c23a; }
+.momentum-change.negative { color: #f56c6c; }
+.momentum-rank { font-size: 11px; color: #909399; }
+
+.heatmap-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: #606266; margin-bottom: 12px; }
+.hl-item { display: flex; align-items: center; gap: 4px; }
+.hl-dot { width: 14px; height: 14px; border-radius: 2px; display: inline-block; }
+.heatmap-scroll { max-height: 520px; overflow: auto; }
+.heatmap-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.heatmap-table th, .heatmap-table td { padding: 6px 4px; text-align: center; border: 1px solid #ebeef5; white-space: nowrap; }
+.heatmap-table th { background: #f5f7fa; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+.hm-name { position: sticky; left: 0; background: #fff; font-weight: 500; z-index: 1; text-align: left !important; padding-left: 8px !important; min-width: 100px; }
+.hm-top5 { background: #c00000; color: #fff; font-weight: 700; }
+.hm-top10 { background: #ff9800; color: #fff; font-weight: 600; }
+.hm-top20 { background: #fff3e0; color: #e65100; }
+.hm-improve { background: #ff0000; color: #fff; font-weight: 600; }
+.hm-other { background: #fafafa; color: #c0c4cc; }
 </style>

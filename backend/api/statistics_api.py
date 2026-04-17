@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
+from typing import Optional
 from api.auth import get_current_user
 from models.models import User
 from services import workflow_result_service as svc
@@ -16,6 +17,31 @@ async def get_results_grouped(
 ):
     grouped = await svc.get_results_grouped()
     return {"success": True, "data": grouped}
+
+
+@router.get("/results/ranking-analysis")
+async def get_ranking_analysis(
+    result_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """返回涨幅排名完整数据供板块涨幅分析Tab使用"""
+    grouped = await svc.get_results_grouped()
+    ranking_list = grouped.get("涨幅排名", [])
+    if not ranking_list:
+        return {"success": True, "data": None, "available": []}
+
+    available = [
+        {"id": r["id"], "date_str": r["date_str"], "workflow_name": r["workflow_name"]}
+        for r in ranking_list
+    ]
+
+    valid_ids = {r["id"] for r in ranking_list}
+    target_id = result_id if result_id and result_id in valid_ids else ranking_list[0]["id"]
+    full = await svc.get_result_full(target_id)
+    if not full:
+        return {"success": True, "data": None, "available": available}
+
+    return {"success": True, "data": full, "available": available}
 
 
 @router.get("/results/{result_id}/preview")
