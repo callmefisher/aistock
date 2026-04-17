@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 # 模块级缓存：只读匹配源数据 + 公共文件
 # key: (dir_path, max_mtime) → value: cached data
 _match_source_cache: Dict[str, tuple] = {}  # dir_path → (max_mtime, stock_dict)
-_public_file_cache: Dict[str, tuple] = {}   # file_path → (mtime, DataFrame)
+_public_file_cache: Dict[str, tuple] = {}   # file_path → (mtime, DataFrame/dict)
+_PUBLIC_FILE_CACHE_MAX = 50  # 最大缓存条目数，超出时淘汰最早的条目
 
 
 def _get_dir_mtime(dir_path: str) -> float:
@@ -286,6 +287,8 @@ class WorkflowExecutor:
                 return await self._condition_intersection(step_config, date_str)
             elif step_type == "export_ma20_trend":
                 return await self._export_ma20_trend(step_config, date_str)
+            elif step_type == "ranking_sort":
+                return await self._ranking_sort(step_config, input_data, date_str)
             elif step_type == "pending":
                 return {
                     "success": True,
@@ -342,9 +345,9 @@ class WorkflowExecutor:
         daily_dir = self.resolver.get_upload_directory(date_str)
         files = self._get_excel_files_in_dir(daily_dir)
 
-        public_dir = self.resolver.get_public_directory()
+        public_dir = self.resolver.get_public_directory(date_str)
         public_files = []
-        if os.path.exists(public_dir):
+        if not self.resolver.config.get("skip_public_in_merge") and os.path.exists(public_dir):
             public_files = self._get_excel_files_in_dir(public_dir)
 
         all_files = files + public_files
@@ -399,10 +402,14 @@ class WorkflowExecutor:
                     else:
                         df_all = pd.read_excel(filepath)
                         if len(df_all) > 0:
-                            known_col_names = {"证券代码", "证券简称", "最新公告日", "公告日期", "代码", "名称",
-                                               "首次公告日", "交易概述", "上市公告日", "更新日期", "受理日期", "重组类型",
-                                               "证券名称", "最新大股东减持公告日期", "发生日期"}
-                            df = self._detect_header_and_parse(df_all, known_col_names, filepath)
+                            if self.resolver.config.get("skip_public_in_merge"):
+                                # 涨幅排名等类型：直接使用第一行作为列头，不做表头检测
+                                df = df_all
+                            else:
+                                known_col_names = {"证券代码", "证券简称", "最新公告日", "公告日期", "代码", "名称",
+                                                   "首次公告日", "交易概述", "上市公告日", "更新日期", "受理日期", "重组类型",
+                                                   "证券名称", "最新大股东减持公告日期", "发生日期"}
+                                df = self._detect_header_and_parse(df_all, known_col_names, filepath)
                         else:
                             continue
 
@@ -412,11 +419,13 @@ class WorkflowExecutor:
 
                     df["_source_file"] = filename
                     # 提前过滤到需要的列，减少 concat 内存（55列→4列）
-                    target_cols = ["序号", "证券代码", "证券简称", "最新公告日", "代码", "名称", "公告日期", "上市公告日", "更新日期",
-                                   "证券名称", "最新大股东减持公告日期", "发生日期", "_source_file"]
-                    available = [c for c in target_cols if c in df.columns]
-                    if available:
-                        df = df[available]
+                    # 涨幅排名等类型保留所有列
+                    if not self.resolver.config.get("skip_public_in_merge"):
+                        target_cols = ["序号", "证券代码", "证券简称", "最新公告日", "代码", "名称", "公告日期", "上市公告日", "更新日期",
+                                       "证券名称", "最新大股东减持公告日期", "发生日期", "_source_file"]
+                        available = [c for c in target_cols if c in df.columns]
+                        if available:
+                            df = df[available]
                     dfs.append(df)
                     logger.info(f"读取文件: {filepath}, 行数: {len(df)}")
                 except Exception as e:
@@ -492,46 +501,53 @@ class WorkflowExecutor:
                     merged_df = merged_df.rename(columns={"发生日期": "最新公告日"})
                     logger.info("招投标：发生日期→最新公告日 映射完成")
 
-            keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
-            existing_columns = [col for col in keep_columns if col in merged_df.columns]
-            merged_df = merged_df[existing_columns]
-            # 去除重复列名（concat 不同格式文件 + rename 可能产生重复列）
-            merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
+            # 删除内部辅助列
+            if "_source_file" in merged_df.columns:
+                merged_df = merged_df.drop(columns=["_source_file"])
 
-            date_col = None
-            for col in ["最新公告日", "公告日", "日期", "date"]:
-                if col in merged_df.columns:
-                    date_col = col
-                    break
+            # skip_public_in_merge (涨幅排名): 跳过标准列提取、日期排序、序号处理，
+            # 保留原始列结构供后续 ranking_sort 步骤使用
+            if not self.resolver.config.get("skip_public_in_merge"):
+                keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
+                existing_columns = [col for col in keep_columns if col in merged_df.columns]
+                merged_df = merged_df[existing_columns]
+                # 去除重复列名（concat 不同格式文件 + rename 可能产生重复列）
+                merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
 
-            if date_col:
-                def parse_date(val):
-                    if pd.isna(val):
-                        return None
-                    if isinstance(val, str):
-                        val = val.strip()
-                        for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%Y%m%d", "%d/%m/%Y", "%m/%d/%Y"]:
-                            try:
-                                return pd.to_datetime(val, format=fmt)
-                            except:
-                                continue
-                    try:
-                        return pd.to_datetime(val)
-                    except:
-                        return None
+                date_col = None
+                for col in ["最新公告日", "公告日", "日期", "date"]:
+                    if col in merged_df.columns:
+                        date_col = col
+                        break
 
-                merged_df["_sort_date"] = merged_df[date_col].apply(parse_date)
-                merged_df = merged_df.sort_values("_sort_date", ascending=False)
-                merged_df = merged_df.drop(columns=["_sort_date"])
-                merged_df[date_col] = pd.to_datetime(merged_df[date_col], errors="coerce")
-                merged_df[date_col] = merged_df[date_col].dt.strftime("%Y-%m-%d")
+                if date_col:
+                    def parse_date(val):
+                        if pd.isna(val):
+                            return None
+                        if isinstance(val, str):
+                            val = val.strip()
+                            for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%Y%m%d", "%d/%m/%Y", "%m/%d/%Y"]:
+                                try:
+                                    return pd.to_datetime(val, format=fmt)
+                                except:
+                                    continue
+                        try:
+                            return pd.to_datetime(val)
+                        except:
+                            return None
 
-            if "序号" in merged_df.columns:
-                merged_df["序号"] = pd.to_numeric(merged_df["序号"], errors='coerce')
-                merged_df = merged_df.dropna(subset=["序号"])
-                merged_df["序号"] = range(1, len(merged_df) + 1)
-            else:
-                merged_df.insert(0, "序号", range(1, len(merged_df) + 1))
+                    merged_df["_sort_date"] = merged_df[date_col].apply(parse_date)
+                    merged_df = merged_df.sort_values("_sort_date", ascending=False)
+                    merged_df = merged_df.drop(columns=["_sort_date"])
+                    merged_df[date_col] = pd.to_datetime(merged_df[date_col], errors="coerce")
+                    merged_df[date_col] = merged_df[date_col].dt.strftime("%Y-%m-%d")
+
+                if "序号" in merged_df.columns:
+                    merged_df["序号"] = pd.to_numeric(merged_df["序号"], errors='coerce')
+                    merged_df = merged_df.dropna(subset=["序号"])
+                    merged_df["序号"] = range(1, len(merged_df) + 1)
+                else:
+                    merged_df.insert(0, "序号", range(1, len(merged_df) + 1))
 
             output_filename = config.get("output_filename") or self.resolver.get_output_filename("merge_excel", date_str)
             output_path = os.path.join(daily_dir, output_filename)
@@ -1319,6 +1335,227 @@ class WorkflowExecutor:
                     updated_at = NOW()
             """), params)
             await session.commit()
+
+    async def _ranking_sort(self, config: Dict, input_data: Optional[pd.DataFrame] = None,
+                            date_str: Optional[str] = None) -> Dict[str, Any]:
+        """涨幅排名排序步骤：排序→排名→历史对比→格式化输出→自动复制到public"""
+        import shutil
+        import re as re_mod
+        from collections import OrderedDict
+        from openpyxl.styles import PatternFill, Font
+
+        date_str = config.get("date_str") or date_str or self.today
+        logger.info(f"[涨幅排名] 开始执行: date={date_str}")
+
+        # 1. 获取输入数据
+        df = input_data
+        if df is None or df.empty:
+            return {"success": False, "message": "无输入数据，请先执行合并步骤"}
+
+        cols = df.columns.tolist()
+        if len(cols) < 2:
+            return {"success": False, "message": f"输入数据至少需要2列，当前只有{len(cols)}列"}
+
+        sector_col = cols[0]  # 板块名称（第1列）
+        sort_col = cols[1]    # 排序列（第2列，固定位置）
+        logger.info(f"[涨幅排名] 板块列={sector_col}, 排序列={sort_col}")
+
+        # 2. 提取板块名称和排序列，转数值排序
+        work_df = df[[sector_col, sort_col]].copy()
+        work_df[sort_col] = pd.to_numeric(work_df[sort_col], errors='coerce')
+        work_df = work_df.dropna(subset=[sort_col])
+        work_df = work_df.sort_values(by=sort_col, ascending=False).reset_index(drop=True)
+
+        if work_df.empty:
+            return {"success": False, "message": "排序列无有效数值数据"}
+
+        # 3. 当日日期列名
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        today_col = f"{d.month}月{d.day}日"
+
+        # 4. 查找上一个工作日的 public 文件（带 mtime 缓存）
+        prev_file, prev_date = self.resolver.find_previous_public_file(date_str)
+        prev_data = {}  # {板块名称: {top5_count, prev_rank, history}}
+        prev_history_cols = []
+        prev_all_sheets = None  # {sheet_name: DataFrame} 用于多 Sheet 输出
+
+        if prev_file and os.path.exists(prev_file):
+            try:
+                # mtime 缓存: key=完整文件路径, 文件更新/覆盖后 mtime 变化自动失效
+                # 缓存存储 (mtime, {sheet_name: DataFrame}) 格式，涨幅排名专用
+                cache_key = f"{prev_file}::all_sheets"
+                current_mtime = os.path.getmtime(prev_file)
+                cached = _public_file_cache.get(cache_key)
+                if cached and cached[0] == current_mtime:
+                    prev_all_sheets = {k: v.copy() for k, v in cached[1].items()}
+                    logger.info(f"[涨幅排名] 缓存命中: {os.path.basename(prev_file)} ({len(prev_all_sheets)} sheets)")
+                else:
+                    prev_all_sheets = pd.read_excel(prev_file, sheet_name=None, engine="openpyxl")
+                    # 缓存淘汰：超过上限时移除最早的条目
+                    if len(_public_file_cache) >= _PUBLIC_FILE_CACHE_MAX:
+                        oldest_key = next(iter(_public_file_cache))
+                        del _public_file_cache[oldest_key]
+                    _public_file_cache[cache_key] = (current_mtime, prev_all_sheets)
+                    logger.info(f"[涨幅排名] 加载并缓存: {os.path.basename(prev_file)} ({len(prev_all_sheets)} sheets)")
+
+                # 用第一个 sheet 提取排名数据
+                first_sheet_name = list(prev_all_sheets.keys())[0]
+                prev_raw_df = prev_all_sheets[first_sheet_name]
+                prev_cols = prev_raw_df.columns.tolist()
+                # 列结构: [板块名称, 排序列, 迄今为止排进前5(次数), 上一日期列, ...]
+                if len(prev_cols) >= 4:
+                    prev_history_cols = prev_cols[3:]  # 从第4列开始都是历史日期列
+                    for _, row in prev_raw_df.iterrows():
+                        name = str(row[prev_cols[0]]).strip()
+                        top5_count = int(row[prev_cols[2]]) if pd.notna(row[prev_cols[2]]) else 0
+                        prev_rank = int(row[prev_cols[3]]) if pd.notna(row[prev_cols[3]]) else None
+                        history = {c: row[c] for c in prev_history_cols}
+                        prev_data[name] = {
+                            "top5_count": top5_count,
+                            "prev_rank": prev_rank,
+                            "history": history,
+                        }
+                logger.info(f"[涨幅排名] 历史数据: {prev_file}, {len(prev_data)}个板块")
+            except Exception as e:
+                logger.warning(f"[涨幅排名] 读取上一工作日文件失败: {e}")
+
+        # 5. 构建输出
+        records = []
+        for idx, row in work_df.iterrows():
+            rank = idx + 1
+            sector = str(row[sector_col]).strip()
+            sort_val = row[sort_col]
+
+            prev = prev_data.get(sector, {"top5_count": 0, "prev_rank": None, "history": {}})
+
+            # 迄今为止排进前5(次数)
+            if rank <= 5:
+                new_top5 = prev["top5_count"] + 1
+            else:
+                new_top5 = prev["top5_count"]
+
+            record = OrderedDict()
+            record[sector_col] = sector
+            record[sort_col] = sort_val
+            record["迄今为止排进前5(次数)"] = new_top5
+            record[today_col] = rank
+
+            # 附加历史列
+            for hcol in prev_history_cols:
+                record[hcol] = prev["history"].get(hcol, "")
+
+            records.append(record)
+
+        result_df = pd.DataFrame(records)
+
+        # 6. 生成文件名
+        # 从上一工作日文件最后一列提取起始日期
+        start_date_str = ""
+        all_cols = result_df.columns.tolist()
+        if len(all_cols) > 4:
+            last_col = all_cols[-1]  # 最后一列 = 最早的日期列
+            m = re_mod.search(r'(\d+)月(\d+)日', last_col)
+            if m:
+                start_date_str = f"{int(m.group(1)):02d}{int(m.group(2)):02d}"
+        if not start_date_str:
+            start_date_str = f"{d.month:02d}{d.day:02d}"
+
+        date_no_hyphens = date_str.replace("-", "")
+        default_filename = f"8涨幅排名{start_date_str}-{date_no_hyphens}.xlsx"
+        output_filename = config.get("output_filename") or default_filename
+        if not output_filename.endswith(".xlsx"):
+            output_filename += ".xlsx"
+
+        daily_dir = self.resolver.get_upload_directory(date_str)
+        os.makedirs(daily_dir, exist_ok=True)
+        output_path = os.path.join(daily_dir, output_filename)
+
+        # 7. 保存 Excel（多 Sheet: 当日结果 + 上一工作日文件的所有 sheet）并格式化
+        today_sheet = f"{d.month:02d}{d.day:02d}"
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            result_df.to_excel(writer, sheet_name=today_sheet, index=False)
+            # 复制上一工作日 public 文件的所有 sheet（跳过同名 sheet）
+            if prev_all_sheets:
+                for sheet_name, sheet_df in prev_all_sheets.items():
+                    if sheet_name == today_sheet:
+                        logger.warning(f"[涨幅排名] 跳过重复 sheet: {sheet_name}")
+                        continue
+                    sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        wb = load_workbook(output_path)
+
+        DEEP_RED = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
+        DEEP_RED_FONT = Font(color="FFFFFF", bold=True)
+        LIGHT_RED = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+        LIGHT_RED_FONT = Font(color="FFFFFF")
+
+        # --- 辅助函数: 对 sheet 的所有日期列(col_start 起)标注 Top5 深红 ---
+        def apply_top5_formatting(ws, col_start, max_row):
+            for col_idx in range(col_start, ws.max_column + 1):
+                for row_idx in range(2, max_row + 1):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    try:
+                        val = int(cell.value) if cell.value is not None else None
+                    except (ValueError, TypeError):
+                        val = None
+                    if val is not None and val <= 5:
+                        cell.fill = DEEP_RED
+                        cell.font = DEEP_RED_FONT
+
+        # --- 当日 sheet: Top5 深红(所有日期列) + 排名提升 浅红(仅当日列) ---
+        ws_today = wb[today_sheet]
+        today_col_idx = result_df.columns.tolist().index(today_col) + 1  # 1-based
+        data_row_count = len(result_df) + 1  # +1 for header
+
+        # 先对所有日期列(col4+)标注 Top5
+        apply_top5_formatting(ws_today, 4, data_row_count)
+
+        # 再对当日列追加排名提升浅红(仅非 Top5 行)
+        for row_idx in range(2, data_row_count + 1):
+            rank_cell = ws_today.cell(row=row_idx, column=today_col_idx)
+            try:
+                rank_val = int(rank_cell.value) if rank_cell.value is not None else None
+            except (ValueError, TypeError):
+                rank_val = None
+            if rank_val is not None and rank_val > 5:
+                sector_name = str(ws_today.cell(row=row_idx, column=1).value).strip()
+                prev = prev_data.get(sector_name, {})
+                prev_rank = prev.get("prev_rank")
+                if prev_rank is not None and rank_val < prev_rank:
+                    rank_cell.fill = LIGHT_RED
+                    rank_cell.font = LIGHT_RED_FONT
+
+        # --- 复制的历史 sheet: 仅 Top5 深红，无浅红 ---
+        for sn in wb.sheetnames:
+            if sn == today_sheet:
+                continue
+            ws_prev = wb[sn]
+            apply_top5_formatting(ws_prev, 4, ws_prev.max_row)
+
+        wb.save(output_path)
+        auto_adjust_excel_width(output_path, all_sheets=True)
+
+        logger.info(f"[涨幅排名] 输出文件: {output_path}")
+
+        # 8. 复制到当日 public 目录（不清空旧文件，同名覆盖）
+        public_dir = self.resolver.get_public_directory(date_str)
+        os.makedirs(public_dir, exist_ok=True)
+        shutil.copy2(output_path, public_dir)
+        logger.info(f"[涨幅排名] 已复制到 public: {public_dir}")
+
+        # 9. 返回结果
+        clean_df = result_df.fillna("").copy()
+        preview = clean_df.head(100).to_dict("records")
+
+        return {
+            "success": True,
+            "message": f"涨幅排名完成，{len(result_df)}个板块，前5名已标红",
+            "data": preview,
+            "columns": result_df.columns.tolist(),
+            "rows": len(result_df),
+            "file_path": output_path,
+            "_df": result_df,
+        }
 
 
 workflow_executor = WorkflowExecutor()

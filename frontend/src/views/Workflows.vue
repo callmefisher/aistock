@@ -117,6 +117,13 @@
             :closable="false"
             style="margin-top: 8px"
           />
+          <el-alert
+            v-if="form.workflow_type === '涨幅排名'"
+            title="涨幅排名：按第2列降序排名，自动对比上一工作日数据，Top5深红标注，排名提升浅红标注"
+            type="info"
+            :closable="false"
+            style="margin-top: 8px"
+          />
         </el-form-item>
 
         <el-divider content-position="left">工作流步骤</el-divider>
@@ -135,12 +142,16 @@
               </template>
 
               <el-form-item label="步骤类型">
-                <el-select v-model="step.type" style="width: 100%" @change="onStepTypeChange(step, index)" :disabled="isAggregationType">
+                <el-select v-model="step.type" style="width: 100%" @change="onStepTypeChange(step, index)" :disabled="isAggregationType || form.workflow_type === '涨幅排名'">
                   <template v-if="form.workflow_type === '条件交集'">
                     <el-option label="合并当日数据" value="condition_intersection" />
                   </template>
                   <template v-else-if="form.workflow_type === '导出20日均线趋势'">
                     <el-option label="导出趋势Excel" value="export_ma20_trend" />
+                  </template>
+                  <template v-else-if="form.workflow_type === '涨幅排名'">
+                    <el-option label="合并当日数据源" value="merge_excel" />
+                    <el-option label="涨幅排名排序" value="ranking_sort" />
                   </template>
                   <template v-else>
                     <el-option label="导入Excel" value="import_excel" />
@@ -234,7 +245,7 @@
                 <el-form-item label="上传公共数据">
                   <div class="upload-section">
                     <div class="target-dir-info">
-                      <el-tag type="warning">公共目录: {{ getPublicDirDisplay() }} (与当日数据一起合并)</el-tag>
+                      <el-tag type="warning">公共目录: {{ getPublicDirDisplay() }} {{ form.workflow_type === '涨幅排名' ? '(存放历史文件，不参与合并)' : '(与当日数据一起合并)' }}</el-tag>
                     </div>
                     <div class="upload-actions">
                       <input
@@ -679,6 +690,28 @@
                 </el-form-item>
               </template>
 
+              <template v-if="step.type === 'ranking_sort'">
+                <el-form-item label="数据日期">
+                  <el-date-picker
+                    v-model="step.config.date_str"
+                    type="date"
+                    placeholder="选择数据日期"
+                    format="YYYY-MM-DD"
+                    value-format="YYYY-MM-DD"
+                    style="width: 200px"
+                  />
+                </el-form-item>
+                <el-alert
+                  title="自动使用第2列降序排列，Top5深红标注，排名提升浅红标注"
+                  type="info"
+                  :closable="false"
+                  style="margin-bottom: 12px"
+                />
+                <el-form-item label="输出文件名">
+                  <el-input v-model="step.config.output_filename" placeholder="8涨幅排名0201-{date}.xlsx (留空自动生成)" />
+                </el-form-item>
+              </template>
+
               <template v-if="step.type === 'pending'">
                 <el-alert title="此步骤暂未配置，待后续开发" type="info" :closable="false" />
               </template>
@@ -686,7 +719,7 @@
           </div>
         </div>
 
-        <el-form-item v-if="!isAggregationType">>
+        <el-form-item v-if="!isAggregationType && form.workflow_type !== '涨幅排名'">>
           <el-button @click="addStep">
             <el-icon><Plus /></el-icon>
             添加步骤
@@ -1050,6 +1083,7 @@ const getStepType = (type) => {
     export_excel: 'info',
     condition_intersection: 'warning',
     export_ma20_trend: 'warning',
+    ranking_sort: 'success',
     pending: 'danger'
   }
   return types[type] || 'info'
@@ -1069,6 +1103,7 @@ const getStepTypeName = (type) => {
     match_sector: '匹配一级板块',
     condition_intersection: '合并当日数据',
     export_ma20_trend: '导出趋势Excel',
+    ranking_sort: '涨幅排名排序',
     pending: '待定'
   }
   return names[type] || type
@@ -1092,6 +1127,31 @@ const defaultIntersectionStep = () => ({
   },
   status: 'pending'
 })
+
+const defaultRankingSteps = () => {
+  const today = new Date().toISOString().split('T')[0]
+  return [
+    {
+      type: 'merge_excel',
+      config: {
+        date_str: today,
+        output_filename: 'total_1.xlsx',
+        exclude_patterns_text: 'total_,output_,8涨幅排名',
+        exclude_patterns: ['total_', 'output_', '8涨幅排名'],
+        apply_formatting: true,
+      },
+      status: 'pending'
+    },
+    {
+      type: 'ranking_sort',
+      config: {
+        date_str: today,
+        output_filename: '',
+      },
+      status: 'pending'
+    }
+  ]
+}
 
 const computeTrendDateRange = (preset) => {
   const now = new Date()
@@ -1183,7 +1243,9 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
     form.value.steps = [defaultIntersectionStep()]
   } else if (newType === '导出20日均线趋势') {
     form.value.steps = [defaultMa20TrendStep()]
-  } else if (wasAgg && !isAgg) {
+  } else if (newType === '涨幅排名') {
+    form.value.steps = defaultRankingSteps()
+  } else if ((wasAgg || oldType === '涨幅排名') && !isAgg && newType !== '涨幅排名') {
     form.value.steps = [defaultStep()]
   }
 })
@@ -1550,6 +1612,9 @@ const getTargetDirDisplay = (stepType, dateStr) => {
     if (workflowType === '招投标') {
       return `招投标/${dateStr || '当日数据'}/`
     }
+    if (workflowType === '涨幅排名') {
+      return `涨幅排名/${dateStr || '当日数据'}/`
+    }
     return `${dateStr || '当日数据'}/`
   }
   // match 步骤: 日期联动路径
@@ -1573,6 +1638,10 @@ const getPublicDirDisplay = () => {
   }
   if (workflowType === '招投标') {
     return '招投标/public/'
+  }
+  if (workflowType === '涨幅排名') {
+    const dateStr = form.value.steps.find(s => s.config?.date_str)?.config?.date_str || '当日数据'
+    return `涨幅排名/${dateStr}/public/`
   }
   return '2025public/'
 }
@@ -1677,11 +1746,11 @@ const previewFile = async (filePath) => {
 const fetchPublicFiles = async (step, index) => {
   const key = `step_${index}`
   try {
-    const response = await api.get('/workflows/public-files/', {
-      params: {
-        workflow_type: form.value.workflow_type || ''
-      }
-    })
+    const params = { workflow_type: form.value.workflow_type || '' }
+    if (form.value.workflow_type === '涨幅排名') {
+      params.date_str = step.config?.date_str || ''
+    }
+    const response = await api.get('/workflows/public-files/', { params })
     if (response?.files !== undefined) {
       publicFiles.value[key] = response.files
     }
@@ -1704,6 +1773,9 @@ const handlePublicFileUpload = async (event, step, index) => {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('workflow_type', form.value.workflow_type || '')
+  if (form.value.workflow_type === '涨幅排名') {
+    formData.append('date_str', step.config?.date_str || '')
+  }
 
   try {
     const response = await api.post('/workflows/public-files/upload/', formData, {

@@ -241,6 +241,7 @@ const TYPE_ORDER = [
   { key: '申报并购重组', display: '4申报并购重组' },
   { key: '减持叠加质押和大宗交易', display: '6减持叠加质押和大宗交易' },
   { key: '条件交集', display: '7条件交集' },
+  { key: '涨幅排名', display: '8涨幅排名' },
   { key: '招投标', display: '9招投标' },
 ]
 const typeDisplayMap = Object.fromEntries(TYPE_ORDER.map(t => [t.key, t.display]))
@@ -333,10 +334,11 @@ const exportExcel = async () => {
     ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: columns.length - 1 } }) }
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Sheet1')
-    const name = previewData.value?.workflow_name || '导出'
-    const date = previewData.value?.date_str || ''
+    const name = previewData.value?.source_filename
+      || `${previewData.value?.workflow_name || '导出'}_${previewData.value?.date_str || ''}`
     const suffix = hasActiveFilters.value ? '_filtered' : ''
-    XLSX.writeFile(wb, `${name}_${date}${suffix}.xlsx`)
+    const exportName = name.endsWith('.xlsx') ? name.replace('.xlsx', `${suffix}.xlsx`) : `${name}${suffix}.xlsx`
+    XLSX.writeFile(wb, exportName)
     ElMessage.success(`已导出 ${rows.length} 行数据`)
   } catch (e) { ElMessage.error('导出失败: ' + e.message) }
   finally { exporting.value = false }

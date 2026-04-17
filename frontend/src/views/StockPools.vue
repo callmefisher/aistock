@@ -17,18 +17,6 @@
             <span v-if="!row.source_types || row.source_types.length === 0" style="color: #999;">-</span>
           </template>
         </el-table-column>
-        <el-table-column prop="is_active" label="状态" width="80">
-          <template #default="{ row }">
-            <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">
-              {{ row.is_active ? '启用' : '禁用' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" width="180">
-          <template #default="{ row }">
-            {{ formatBeijingTime(row.created_at) }}
-          </template>
-        </el-table-column>
         <el-table-column label="操作" width="240">
           <template #default="{ row }">
             <el-button size="small" @click="handleViewData(row)">
@@ -49,10 +37,11 @@
     <el-dialog v-model="showDataDialog" :title="dataDialogTitle" width="90%" top="5vh">
       <div v-if="dataLoading" v-loading="true" style="height: 200px;"></div>
       <template v-else>
-        <div style="margin-bottom: 12px; display: flex; gap: 16px; align-items: center;">
+        <div style="margin-bottom: 12px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
           <el-tag>共 {{ poolData.total_stocks || 0 }} 条</el-tag>
           <el-tag type="info" v-if="poolData.date_str">日期: {{ poolData.date_str }}</el-tag>
           <el-tag type="warning" v-for="t in (poolData.source_types || [])" :key="t" size="small">{{ t }}</el-tag>
+          <el-tag type="info" v-if="currentRow?.created_at">创建时间: {{ formatBeijingTime(currentRow.created_at) }}</el-tag>
         </div>
         <el-table :data="poolData.data || []" stripe border max-height="500" style="width: 100%">
           <el-table-column
@@ -111,7 +100,10 @@ const fetchStockPools = async () => {
   }
 }
 
+const currentRow = ref(null)
+
 const handleViewData = async (row) => {
+  currentRow.value = row
   dataDialogTitle.value = row.name
   showDataDialog.value = true
   dataLoading.value = true

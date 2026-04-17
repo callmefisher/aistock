@@ -8,6 +8,7 @@ import os
 import glob
 import shutil
 import copy
+import re
 import pandas as pd
 import asyncio
 import uuid
@@ -456,6 +457,8 @@ async def run_workflow(
             output_file = exec_result.get("file_path")
             if output_file:
                 last_output_file = output_file
+                # 保存实际输出文件名到步骤配置，供下载端点查找
+                step_config["_actual_output"] = os.path.basename(output_file)
             step_results.append({"step": i, "type": step_type, "status": "completed",
                                  "message": exec_result.get("message", "")})
         else:
@@ -467,6 +470,7 @@ async def run_workflow(
 
     workflow.status = "active"
     workflow.last_run_time = datetime.now()
+    workflow.steps = steps  # 保存实际输出文件名等运行时信息
     await db.commit()
 
     failed = [s for s in step_results if s["status"] == "failed"]
@@ -822,6 +826,7 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                             output_file = exec_result.get("file_path")
                             if output_file:
                                 step_result["output_file"] = output_file
+                                step_config["_actual_output"] = os.path.basename(output_file)
                                 if i == len(steps) - 1:
                                     result_entry["output_file"] = output_file
                         else:
@@ -866,6 +871,7 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
 
                 workflow.status = "active"
                 workflow.last_run_time = datetime.now()
+                workflow.steps = steps  # 保存 _actual_output 等运行时信息
                 await db.commit()
 
         except Exception as e:
@@ -1025,12 +1031,13 @@ async def download_workflow_result(
         step_type = step.get("type")
         daily_dir = executor_with_type._get_daily_dir(output_date_str)
 
-        # 优先 resolver 文件名，再试 config 文件名，最后 glob 日期目录
+        # 优先 _actual_output（运行时实际文件名），再 resolver，再 config
         auto_filename = executor_with_type.resolver.get_output_filename(step_type, output_date_str)
         output_filename = step_config.get("output_filename")
+        actual_output = step_config.get("_actual_output")
 
         file_path = None
-        for fname in [auto_filename, output_filename]:
+        for fname in [actual_output, auto_filename, output_filename]:
             if fname:
                 candidate = os.path.join(daily_dir, fname)
                 if os.path.exists(candidate):
@@ -1046,7 +1053,15 @@ async def download_workflow_result(
             step_type = step.get("type")
             step_config = step.get("config", {})
 
-            # 优先用 resolver 最新配置的文件名（避免旧配置和实际文件不一致）
+            # 优先 _actual_output（运行时实际文件名）
+            actual_output = step_config.get("_actual_output")
+            if actual_output:
+                candidate_path = os.path.join(daily_dir, actual_output)
+                if os.path.exists(candidate_path):
+                    file_path = candidate_path
+                    break
+
+            # 再用 resolver 最新配置的文件名（避免旧配置和实际文件不一致）
             auto_filename = executor_with_type.resolver.get_output_filename(step_type, output_date_str)
             if auto_filename:
                 candidate_path = os.path.join(daily_dir, auto_filename)
@@ -1071,17 +1086,27 @@ async def download_workflow_result(
     # 收集所有步骤生成的文件路径，下载后全部清理
     generated_files = set()
     daily_dir = executor_with_type._get_daily_dir(output_date_str)
+    try:
+        public_dir = executor_with_type.resolver.get_public_directory(output_date_str)
+    except (ValueError, KeyError):
+        public_dir = None
     for step in steps:
         step_type = step.get("type")
         step_config = step.get("config", {})
-        fname = step_config.get("output_filename")
-        if fname:
-            generated_files.add(os.path.join(daily_dir, fname))
+        for key in ["output_filename", "_actual_output"]:
+            fname = step_config.get(key)
+            if fname:
+                fpath = os.path.join(daily_dir, fname)
+                if public_dir is None or not fpath.startswith(public_dir):
+                    generated_files.add(fpath)
         auto_fname = executor_with_type.resolver.get_output_filename(step_type, output_date_str)
         if auto_fname:
-            generated_files.add(os.path.join(daily_dir, auto_fname))
-    # 最终文件也加入清理（数据已存入DB）
-    generated_files.add(file_path)
+            fpath = os.path.join(daily_dir, auto_fname)
+            if public_dir is None or not fpath.startswith(public_dir):
+                generated_files.add(fpath)
+    # 最终文件也加入清理（数据已存入DB），但排除 public 目录
+    if public_dir is None or not file_path.startswith(public_dir):
+        generated_files.add(file_path)
 
     # 复制到临时文件用于下载，避免传输中被删
     import tempfile
@@ -1122,11 +1147,17 @@ PUBLIC_DIR = os.path.join(BASE_DIR, "2025public")
 @router.get("/public-files/")
 async def get_public_files(
     workflow_type: str = Query(""),
+    date_str: str = Query(""),
     current_user: User = Depends(get_current_user)
 ):
+    if date_str and not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+        raise HTTPException(status_code=400, detail="date_str 格式无效，需要 YYYY-MM-DD")
     from services.path_resolver import get_resolver
     resolver = get_resolver(BASE_DIR, workflow_type)
-    public_dir = resolver.get_public_directory()
+    try:
+        public_dir = resolver.get_public_directory(date_str or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     os.makedirs(public_dir, exist_ok=True)
 
@@ -1150,11 +1181,17 @@ async def get_public_files(
 async def upload_public_file(
     file: UploadFile = File(...),
     workflow_type: str = Form(""),
+    date_str: str = Form(""),
     current_user: User = Depends(get_current_user)
 ):
+    if date_str and not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+        raise HTTPException(status_code=400, detail="date_str 格式无效，需要 YYYY-MM-DD")
     from services.path_resolver import get_resolver
     resolver = get_resolver(BASE_DIR, workflow_type)
-    public_dir = resolver.get_public_directory()
+    try:
+        public_dir = resolver.get_public_directory(date_str or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     os.makedirs(public_dir, exist_ok=True)
     file_path = os.path.join(public_dir, file.filename)

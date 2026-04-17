@@ -31,8 +31,12 @@ class WorkflowPathResolver:
 
         return os.path.join(self.base_dir, dir_path)
 
-    def get_public_directory(self) -> str:
+    def get_public_directory(self, date_str=None) -> str:
         public_template = self.config["directories"]["public"]
+        if self.config.get("date_aware_public"):
+            if not date_str:
+                raise ValueError(f"date_str is required for date_aware_public type: {self.workflow_type}")
+            return os.path.join(self.base_dir, public_template.format(date=date_str))
         return os.path.join(self.base_dir, public_template)
 
     def get_output_filename(
@@ -118,6 +122,26 @@ class WorkflowPathResolver:
 
         logger.warning(f"匹配源目录为空且30天内无历史数据可复制: {target_dir} (step={step_type}, date={date_str})")
         return target_dir
+
+    def find_previous_public_file(self, date_str, max_lookback=60):
+        """从 date_str 的前一天开始，逐天向前查找 public 目录中的 xlsx 文件"""
+        try:
+            base_date = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            logger.warning(f"日期格式无效: {date_str}")
+            return None, None
+
+        for i in range(1, max_lookback + 1):
+            prev = (base_date - timedelta(days=i)).strftime("%Y-%m-%d")
+            pub_dir = self.get_public_directory(prev)
+            if os.path.isdir(pub_dir):
+                files = sorted(
+                    glob.glob(os.path.join(pub_dir, "*.xlsx")),
+                    key=os.path.getmtime, reverse=True
+                )
+                if files:
+                    return files[0], prev
+        return None, None
 
 
 _resolvers = {}

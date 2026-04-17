@@ -149,6 +149,7 @@ class WorkflowResult(Base):
     data_compressed = Column(LONGBLOB, comment="zlib压缩的完整JSON数据")
     preview_json = Column(JSON, comment="前50行预览数据")
     file_size = Column(Integer, default=0, comment="原始文件大小")
+    source_filename = Column(String(255), default="", comment="原始输出文件名")
     created_at = Column(DateTime, server_default=func.now())
 
 

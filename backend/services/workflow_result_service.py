@@ -29,15 +29,16 @@ async def save_workflow_result(
 
         preview = records[:50]
         file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        source_filename = os.path.basename(file_path)
 
         async with AsyncSessionLocal() as session:
             await session.execute(text("""
                 INSERT INTO workflow_results
                 (workflow_id, workflow_type, workflow_name, date_str, step_type,
-                 row_count, columns_json, data_compressed, preview_json, file_size, created_at)
+                 row_count, columns_json, data_compressed, preview_json, file_size, source_filename, created_at)
                 VALUES
                 (:workflow_id, :workflow_type, :workflow_name, :date_str, :step_type,
-                 :row_count, :columns_json, :data_compressed, :preview_json, :file_size, NOW())
+                 :row_count, :columns_json, :data_compressed, :preview_json, :file_size, :source_filename, NOW())
                 AS new_row
                 ON DUPLICATE KEY UPDATE
                 workflow_name = new_row.workflow_name,
@@ -46,6 +47,7 @@ async def save_workflow_result(
                 data_compressed = new_row.data_compressed,
                 preview_json = new_row.preview_json,
                 file_size = new_row.file_size,
+                source_filename = new_row.source_filename,
                 created_at = new_row.created_at
             """), {
                 'workflow_id': workflow_id,
@@ -58,6 +60,7 @@ async def save_workflow_result(
                 'data_compressed': compressed,
                 'preview_json': json.dumps(preview, ensure_ascii=False, default=str),
                 'file_size': file_size,
+                'source_filename': source_filename,
             })
             await session.commit()
 
@@ -73,7 +76,7 @@ async def get_results_grouped() -> Dict[str, Any]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(text("""
             SELECT id, workflow_id, workflow_type, workflow_name, date_str,
-                   step_type, row_count, columns_json, file_size,
+                   step_type, row_count, columns_json, file_size, source_filename,
                    CONVERT_TZ(created_at, '+00:00', '+08:00') as created_at
             FROM workflow_results
             ORDER BY workflow_type, date_str DESC, created_at DESC
@@ -95,7 +98,8 @@ async def get_results_grouped() -> Dict[str, Any]:
             'row_count': row[6],
             'columns': json.loads(row[7]) if row[7] else [],
             'file_size': row[8],
-            'created_at': row[9].isoformat() if row[9] else None,
+            'source_filename': row[9] or '',
+            'created_at': row[10].isoformat() if row[10] else None,
         })
     return grouped
 
@@ -105,7 +109,7 @@ async def get_result_preview(result_id: int) -> Optional[Dict]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(text("""
             SELECT id, workflow_type, workflow_name, date_str, row_count,
-                   columns_json, preview_json,
+                   columns_json, preview_json, source_filename,
                    CONVERT_TZ(created_at, '+00:00', '+08:00') as created_at
             FROM workflow_results WHERE id = :id
         """), {'id': result_id})
@@ -121,7 +125,8 @@ async def get_result_preview(result_id: int) -> Optional[Dict]:
         'row_count': row[4],
         'columns': json.loads(row[5]) if row[5] else [],
         'data': json.loads(row[6]) if row[6] else [],
-        'created_at': row[7].isoformat() if row[7] else None,
+        'source_filename': row[7] or '',
+        'created_at': row[8].isoformat() if row[8] else None,
     }
 
 
@@ -130,7 +135,7 @@ async def get_result_full(result_id: int) -> Optional[Dict]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(text("""
             SELECT id, workflow_type, workflow_name, date_str, row_count,
-                   columns_json, data_compressed,
+                   columns_json, data_compressed, source_filename,
                    CONVERT_TZ(created_at, '+00:00', '+08:00') as created_at
             FROM workflow_results WHERE id = :id
         """), {'id': result_id})
@@ -151,7 +156,8 @@ async def get_result_full(result_id: int) -> Optional[Dict]:
         'row_count': row[4],
         'columns': json.loads(row[5]) if row[5] else [],
         'data': data,
-        'created_at': row[7].isoformat() if row[7] else None,
+        'source_filename': row[7] or '',
+        'created_at': row[8].isoformat() if row[8] else None,
     }
 
 

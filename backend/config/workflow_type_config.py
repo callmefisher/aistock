@@ -204,6 +204,22 @@ WORKFLOW_TYPE_CONFIG = {
         "match_sources": {},
         "allowed_steps": ["export_ma20_trend"],
     },
+
+    "涨幅排名": {
+        "display_name": "涨幅排名",
+        "base_subdir": "涨幅排名",
+        "skip_public_in_merge": True,
+        "date_aware_public": True,
+        "directories": {
+            "upload_date": "涨幅排名/{date}",
+            "public": "涨幅排名/{date}/public",
+        },
+        "naming": {
+            "merge_output": "total_1.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["merge_excel", "ranking_sort"],
+    },
 }
 
 TYPE_ALIASES = {}
