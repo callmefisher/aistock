@@ -132,9 +132,13 @@ def parse_excel_for_trend(file_path: str, workflow_type: str) -> List[Dict[str, 
         if pd.isna(date_val):
             continue
 
-        # 解析日期
+        # 解析日期（兼容 Excel 序列号、datetime 对象、字符串）
         try:
-            date_str = pd.to_datetime(date_val).strftime("%Y-%m-%d")
+            if isinstance(date_val, (int, float)) and 30000 <= date_val <= 60000:
+                # Excel 序列号 → 日期
+                date_str = (pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(date_val))).strftime("%Y-%m-%d")
+            else:
+                date_str = pd.to_datetime(date_val).strftime("%Y-%m-%d")
         except Exception:
             continue
 
@@ -237,16 +241,17 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
     ws = wb.add_worksheet("站上20日均线趋势")
 
     # 格式
-    title_fmt = wb.add_format({'bold': True, 'font_size': 13})
-    header_fmt = wb.add_format({'bold': True, 'bg_color': '#F2F2F2', 'border': 1})
-    data_fmt = wb.add_format({'border': 1})
-    pct_fmt = wb.add_format({'border': 1, 'num_format': '0.00'})
+    title_fmt = wb.add_format({'bold': True, 'font_size': 13, 'align': 'center', 'valign': 'vcenter'})
+    header_fmt = wb.add_format({'bold': True, 'bg_color': '#F2F2F2', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    data_fmt = wb.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    pct_fmt = wb.add_format({'border': 1, 'num_format': '0.00', 'align': 'center', 'valign': 'vcenter'})
 
     # 列宽
-    ws.set_column('A:A', 14)
+    ws.set_column('A:A', 10)
     ws.set_column('B:B', 16)
     ws.set_column('C:C', 10)
     ws.set_column('D:D', 12)
+    ws.set_column('E:E', 14)
 
     if not type_names:
         ws.write(0, 0, "暂无数据")
@@ -261,14 +266,17 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
             continue
 
         prefix = get_type_prefix(wt)
-        display_title = f"【{prefix}{wt}】站上20日均线趋势" if prefix else f"【{wt}】站上20日均线趋势"
+        # 表格标题（不含后缀）
+        table_title = f"【{prefix}{wt}】" if prefix else f"【{wt}】"
+        # 图表标题（保留完整）
+        chart_title = f"{prefix}{wt} - 站上20日均线占比趋势"
 
-        # 标题
-        ws.write(current_row, 0, display_title, title_fmt)
+        # 标题（合并 A~E 列）
+        ws.merge_range(current_row, 0, current_row, 4, table_title, title_fmt)
         current_row += 1
 
         # 表头
-        for col_idx, h in enumerate(["日期", "站20均线数量", "总量", "占比(%)"]):
+        for col_idx, h in enumerate(["日期", "站20均线数量", "总量", "占比(%)", "完整日期"]):
             ws.write(current_row, col_idx, h, header_fmt)
         header_row = current_row
         current_row += 1
@@ -276,16 +284,24 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
         # 数据
         data_start_row = current_row
         for item in items:
-            ws.write(current_row, 0, item["date_str"], data_fmt)
+            # 图表横坐标用短格式 M/D
+            ds = item["date_str"]
+            try:
+                parts = ds.split('-')
+                short_date = f"{int(parts[1])}/{int(parts[2])}"
+            except Exception:
+                short_date = ds
+            ws.write(current_row, 0, short_date, data_fmt)
             ws.write(current_row, 1, item["count"], data_fmt)
             ws.write(current_row, 2, item["total"], data_fmt)
             ws.write(current_row, 3, round(item["ratio"] * 100, 2) if item.get("ratio") else 0, pct_fmt)
+            ws.write(current_row, 4, ds, data_fmt)  # 完整日期备查
             current_row += 1
         data_end_row = current_row - 1
 
         # 图表：仅占比(%)折线
         chart = wb.add_chart({'type': 'line'})
-        chart.set_title({'name': f'{prefix}{wt} - 站上20日均线占比趋势'})
+        chart.set_title({'name': chart_title})
         chart.set_size({'width': 620, 'height': 360})
         chart.set_legend({'none': True})
 
@@ -309,7 +325,7 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
             x_axis_opts['num_font'] = {'rotation': -45, 'size': 9}
         chart.set_x_axis(x_axis_opts)
 
-        ws.insert_chart(header_row - 1, 5, chart)
+        ws.insert_chart(header_row - 1, 8, chart)
 
         # 间距
         chart_height_rows = 22

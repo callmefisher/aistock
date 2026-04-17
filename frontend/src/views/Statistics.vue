@@ -57,9 +57,12 @@
               @change="onDateRangeChange"
             />
           </div>
-          <el-button size="small" type="success" @click="exportAllTrend">
-            <el-icon><Download /></el-icon> 导出全部
-          </el-button>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <el-switch v-model="dualYAxis" size="small" active-text="双Y轴" inactive-text="单Y轴" @change="renderAllCharts" />
+            <el-button size="small" type="success" @click="exportAllTrend">
+              <el-icon><Download /></el-icon> 导出全部
+            </el-button>
+          </div>
         </div>
 
         <!-- 汇总条 -->
@@ -359,10 +362,11 @@ const handleDelete = async (row) => {
 }
 
 // ===== 20日均线趋势 tab =====
-const ALL_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '条件交集', '招投标']
+const ALL_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '招投标']
 const allWorkflowTypes = ref(ALL_WORKFLOW_TYPES)
 
 const trendLoading = ref(false)
+const dualYAxis = ref(false)
 const trendData = ref([])
 const datePreset = ref('year')
 const trendDateRange = ref([])
@@ -463,25 +467,43 @@ const renderChart = (wt) => {
     tooltip: {
       trigger: 'axis',
       formatter: (params) => {
-        const date = params[0].axisValue
-        let html = `<b>${date}</b><br/>`
+        const idx = params[0].dataIndex
+        const fullDate = dates[idx] || params[0].axisValue
+        let html = `<b>${fullDate}</b><br/>`
         params.forEach(p => { html += `${p.marker} ${p.seriesName}: ${p.value}${p.seriesName === '占比' ? '%' : ''}<br/>` })
-        const item = data.find(d => d.date_str === date)
+        const item = data[idx]
         if (item) html += `总量: ${item.total}`
         return html
       }
     },
-    legend: { data: ['站20均线数量', '占比'], top: 0 },
-    grid: { left: 50, right: 50, bottom: 40, top: 36 },
-    xAxis: { type: 'category', data: dates, axisLabel: { rotate: dates.length > 15 ? 45 : 0, fontSize: 11 } },
-    yAxis: [
-      { type: 'value', name: '数量', position: 'left', axisLabel: { fontSize: 11 } },
-      { type: 'value', name: '占比%', position: 'right', axisLabel: { formatter: '{value}%', fontSize: 11 } }
-    ],
-    series: [
-      { name: '站20均线数量', type: 'bar', data: counts, itemStyle: { color: '#409EFF', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 30 },
-      { name: '占比', type: 'line', yAxisIndex: 1, data: ratios, smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { width: 2, color: '#E6A23C' }, itemStyle: { color: '#E6A23C' } }
-    ]
+    legend: { data: dualYAxis.value ? ['站20均线数量', '占比'] : ['占比'], top: 0 },
+    grid: { left: 50, right: 50, bottom: dates.length > 30 ? 70 : 40, top: 36 },
+    xAxis: {
+      type: 'category',
+      data: dates.map(d => { const p = d.split('-'); return `${+p[1]}/${+p[2]}` }),
+      axisLabel: {
+        rotate: dates.length > 15 ? 45 : 0,
+        fontSize: 11,
+        interval: dates.length > 60 ? Math.floor(dates.length / 20) - 1 : dates.length > 30 ? Math.floor(dates.length / 15) - 1 : 'auto'
+      }
+    },
+    dataZoom: dates.length > 30 ? [{ type: 'slider', start: Math.max(0, 100 - 3000 / dates.length), end: 100, height: 20, bottom: 5 }] : [],
+    yAxis: dualYAxis.value
+      ? [
+          { type: 'value', name: '数量', position: 'left', min: 0, splitNumber: 5, axisLabel: { fontSize: 11 } },
+          { type: 'value', name: '占比%', position: 'right', min: 0, max: 100, splitNumber: 5, axisLabel: { formatter: '{value}%', fontSize: 11 } }
+        ]
+      : [
+          { type: 'value', name: '占比%', min: 0, splitNumber: 5, axisLabel: { formatter: '{value}%', fontSize: 11 } }
+        ],
+    series: dualYAxis.value
+      ? [
+          { name: '站20均线数量', type: 'bar', data: counts, itemStyle: { color: '#409EFF', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 30 },
+          { name: '占比', type: 'line', yAxisIndex: 1, data: ratios, smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { width: 2, color: '#E6A23C' }, itemStyle: { color: '#E6A23C' } }
+        ]
+      : [
+          { name: '占比', type: 'line', data: ratios, smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { width: 2, color: '#409EFF' }, itemStyle: { color: '#409EFF' }, areaStyle: { color: 'rgba(64,158,255,0.1)' } }
+        ]
   })
 }
 
@@ -568,13 +590,6 @@ const deleteTrendItem = async (row) => {
 }
 
 // ===== 导出 =====
-const buildTrendSheet = (data) => {
-  const header = ['工作流类型', '日期', '站20均线数量', '总量', '占比']
-  const rows = data.map(d => [d.workflow_type, d.date_str, d.count, d.total, (d.ratio * 100).toFixed(2) + '%'])
-  const ws = XLSX.utils.aoa_to_sheet([header, ...rows])
-  ws['!cols'] = [{ wch: 20 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 10 }]
-  return ws
-}
 
 const exportAllTrend = async () => {
   if (!trendData.value.length) { ElMessage.warning('暂无数据可导出'); return }
@@ -600,7 +615,6 @@ const exportSingleTrend = async (wt) => {
 }
 
 // ===== 工具函数 =====
-const isRankingType = computed(() => previewData.value?.workflow_type === '涨幅排名')
 const getColumnWidth = (col) => {
   if (previewData.value?.workflow_type === '涨幅排名') {
     const cols = previewData.value?.columns || []
