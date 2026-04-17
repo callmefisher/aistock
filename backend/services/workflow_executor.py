@@ -1342,7 +1342,7 @@ class WorkflowExecutor:
         import shutil
         import re as re_mod
         from collections import OrderedDict
-        from openpyxl.styles import PatternFill, Font
+        from openpyxl.styles import PatternFill, Font, Alignment as openpyxl_Alignment
 
         date_str = config.get("date_str") or date_str or self.today
         logger.info(f"[涨幅排名] 开始执行: date={date_str}")
@@ -1357,21 +1357,53 @@ class WorkflowExecutor:
             return {"success": False, "message": f"输入数据至少需要2列，当前只有{len(cols)}列"}
 
         sector_col = cols[0]  # 板块名称（第1列）
-        sort_col = cols[1]    # 排序列（第2列，固定位置）
-        logger.info(f"[涨幅排名] 板块列={sector_col}, 排序列={sort_col}")
+        sort_col_raw = cols[1]    # 排序列（第2列，固定位置）
+        # 多行列名只取第一行（如 "成份区间涨跌幅(算术平均)\n[起始交易日期]..." → "成份区间涨跌幅(算术平均)"）
+        sort_col_display = str(sort_col_raw).split('\n')[0].strip()
+        logger.info(f"[涨幅排名] 板块列={sector_col}, 排序列={sort_col_display}")
 
         # 2. 提取板块名称和排序列，转数值排序
-        work_df = df[[sector_col, sort_col]].copy()
+        work_df = df[[sector_col, sort_col_raw]].copy()
+        work_df = work_df.rename(columns={sort_col_raw: sort_col_display})
+        sort_col = sort_col_display
         work_df[sort_col] = pd.to_numeric(work_df[sort_col], errors='coerce')
         work_df = work_df.dropna(subset=[sort_col])
+        work_df[sort_col] = work_df[sort_col].round(2)
         work_df = work_df.sort_values(by=sort_col, ascending=False).reset_index(drop=True)
 
         if work_df.empty:
             return {"success": False, "message": "排序列无有效数值数据"}
 
-        # 3. 当日日期列名
+        # 3. 列名规范化函数 + 当日日期列名
+        import re as re_mod
+        _col_date_map = {}  # col_name → datetime, 用于后续 Excel 表头写入实际日期值
+
+        def normalize_col_name(c):
+            """Excel 日期对象/序列号/文本 → 'X月X日' 格式，同时记录原始日期"""
+            dt_val = None
+            if isinstance(c, (pd.Timestamp, datetime)):
+                dt_val = c if isinstance(c, datetime) else c.to_pydatetime()
+            elif isinstance(c, (int, float)) and 40000 <= c <= 50000:
+                try:
+                    dt_val = (pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(c))).to_pydatetime()
+                except Exception:
+                    pass
+            elif isinstance(c, str):
+                m = re_mod.match(r'^(\d+)月(\d+)日$', c)
+                if m:
+                    month, day = int(m.group(1)), int(m.group(2))
+                    year = d.year if month <= d.month else d.year - 1
+                    dt_val = datetime(year, month, day)
+
+            if dt_val:
+                name = f"{dt_val.month}月{dt_val.day}日"
+                _col_date_map[name] = dt_val
+                return name
+            return str(c)
+
         d = datetime.strptime(date_str, "%Y-%m-%d")
         today_col = f"{d.month}月{d.day}日"
+        _col_date_map[today_col] = d
 
         # 4. 查找上一个工作日的 public 文件（带 mtime 缓存）
         prev_file, prev_date = self.resolver.find_previous_public_file(date_str)
@@ -1401,7 +1433,9 @@ class WorkflowExecutor:
                 # 用第一个 sheet 提取排名数据
                 first_sheet_name = list(prev_all_sheets.keys())[0]
                 prev_raw_df = prev_all_sheets[first_sheet_name]
-                prev_cols = prev_raw_df.columns.tolist()
+                # 列名规范化
+                prev_cols = [normalize_col_name(c) for c in prev_raw_df.columns.tolist()]
+                prev_raw_df.columns = prev_cols
                 # 列结构: [板块名称, 排序列, 迄今为止排进前5(次数), 上一日期列, ...]
                 if len(prev_cols) >= 4:
                     prev_history_cols = prev_cols[3:]  # 从第4列开始都是历史日期列
@@ -1453,7 +1487,7 @@ class WorkflowExecutor:
         start_date_str = ""
         all_cols = result_df.columns.tolist()
         if len(all_cols) > 4:
-            last_col = all_cols[-1]  # 最后一列 = 最早的日期列
+            last_col = str(all_cols[-1])  # 最后一列 = 最早的日期列，转字符串防止整数列名
             m = re_mod.search(r'(\d+)月(\d+)日', last_col)
             if m:
                 start_date_str = f"{int(m.group(1)):02d}{int(m.group(2)):02d}"
@@ -1474,13 +1508,6 @@ class WorkflowExecutor:
         today_sheet = f"{d.month:02d}{d.day:02d}"
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             result_df.to_excel(writer, sheet_name=today_sheet, index=False)
-            # 复制上一工作日 public 文件的所有 sheet（跳过同名 sheet）
-            if prev_all_sheets:
-                for sheet_name, sheet_df in prev_all_sheets.items():
-                    if sheet_name == today_sheet:
-                        logger.warning(f"[涨幅排名] 跳过重复 sheet: {sheet_name}")
-                        continue
-                    sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
 
         wb = load_workbook(output_path)
 
@@ -1488,11 +1515,40 @@ class WorkflowExecutor:
         DEEP_RED_FONT = Font(color="FFFFFF", bold=True)
         LIGHT_RED = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
         LIGHT_RED_FONT = Font(color="FFFFFF")
+        GOLD_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 
-        # --- 辅助函数: 对 sheet 的所有日期列(col_start 起)标注 Top5 深红 ---
-        def apply_top5_formatting(ws, col_start, max_row):
-            for col_idx in range(col_start, ws.max_column + 1):
-                for row_idx in range(2, max_row + 1):
+        # --- 辅助函数: 对 sheet 应用通用格式（表头、列宽、第3列金色、Top5、过滤） ---
+        def apply_ranking_sheet_format(ws, col_start_for_top5, max_data_row):
+            from openpyxl.utils import get_column_letter
+            from openpyxl.worksheet.dimensions import ColumnDimension
+
+            # 表头格式：加粗居中，仅第3列金色；日期列头写入实际日期值
+            for col_idx in range(1, ws.max_column + 1):
+                cell = ws.cell(row=1, column=col_idx)
+                header_text = str(cell.value or '')
+                # 日期列头: 写入实际日期值 + 自定义格式显示为 "X月X日"
+                if header_text in _col_date_map:
+                    cell.value = _col_date_map[header_text]
+                    cell.number_format = 'm"月"d"日"'
+                cell.font = Font(bold=True, size=11)
+                cell.alignment = openpyxl_Alignment(horizontal="center", vertical="center")
+            ws.cell(row=1, column=3).fill = GOLD_FILL
+            ws.cell(row=1, column=3).font = Font(bold=True, size=11)
+
+            # 列宽
+            for col_idx in range(1, ws.max_column + 1):
+                letter = get_column_letter(col_idx)
+                ws.column_dimensions[letter].width = 35 if col_idx in (2, 3) else 25
+
+            # 所有数据单元格居中
+            center_align = openpyxl_Alignment(horizontal="center", vertical="center")
+            for row_idx in range(2, max_data_row + 1):
+                for col_idx in range(1, ws.max_column + 1):
+                    ws.cell(row=row_idx, column=col_idx).alignment = center_align
+
+            # 日期列 Top5 深红
+            for col_idx in range(col_start_for_top5, ws.max_column + 1):
+                for row_idx in range(2, max_data_row + 1):
                     cell = ws.cell(row=row_idx, column=col_idx)
                     try:
                         val = int(cell.value) if cell.value is not None else None
@@ -1502,15 +1558,19 @@ class WorkflowExecutor:
                         cell.fill = DEEP_RED
                         cell.font = DEEP_RED_FONT
 
-        # --- 当日 sheet: Top5 深红(所有日期列) + 排名提升 浅红(仅当日列) ---
+            # 自动过滤
+            from openpyxl.utils import get_column_letter as gcl
+            last_col_letter = gcl(ws.max_column)
+            ws.auto_filter.ref = f"A1:{last_col_letter}{max_data_row}"
+
+        # --- 当日 sheet ---
         ws_today = wb[today_sheet]
-        today_col_idx = result_df.columns.tolist().index(today_col) + 1  # 1-based
-        data_row_count = len(result_df) + 1  # +1 for header
+        today_col_idx = result_df.columns.tolist().index(today_col) + 1
+        data_row_count = len(result_df) + 1
 
-        # 先对所有日期列(col4+)标注 Top5
-        apply_top5_formatting(ws_today, 4, data_row_count)
+        apply_ranking_sheet_format(ws_today, 4, data_row_count)
 
-        # 再对当日列追加排名提升浅红(仅非 Top5 行)
+        # 当日列追加排名提升浅红(仅非 Top5 行)
         for row_idx in range(2, data_row_count + 1):
             rank_cell = ws_today.cell(row=row_idx, column=today_col_idx)
             try:
@@ -1525,15 +1585,7 @@ class WorkflowExecutor:
                     rank_cell.fill = LIGHT_RED
                     rank_cell.font = LIGHT_RED_FONT
 
-        # --- 复制的历史 sheet: 仅 Top5 深红，无浅红 ---
-        for sn in wb.sheetnames:
-            if sn == today_sheet:
-                continue
-            ws_prev = wb[sn]
-            apply_top5_formatting(ws_prev, 4, ws_prev.max_row)
-
         wb.save(output_path)
-        auto_adjust_excel_width(output_path, all_sheets=True)
 
         logger.info(f"[涨幅排名] 输出文件: {output_path}")
 

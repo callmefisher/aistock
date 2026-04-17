@@ -210,7 +210,7 @@
         </div>
       </div>
       <el-table :data="filteredData" stripe border max-height="55vh" style="width: 100%; margin-top: 8px">
-        <el-table-column v-for="col in (previewData?.columns || [])" :key="col" :prop="col" :label="col" min-width="120" show-overflow-tooltip sortable />
+        <el-table-column v-for="col in (previewData?.columns || [])" :key="col" :prop="col" :label="col" :min-width="getColumnWidth(col)" show-overflow-tooltip sortable />
       </el-table>
     </el-dialog>
   </div>
@@ -319,6 +319,12 @@ const loadFull = async () => {
 const exportExcel = async () => {
   exporting.value = true
   try {
+    // 涨幅排名使用后端格式化下载
+    if (previewData.value?.workflow_type === '涨幅排名') {
+      await api.download(`/statistics/results/${currentResultId.value}/download`)
+      ElMessage.success('已导出（含格式化）')
+      return
+    }
     if (isPreviewMode.value) {
       loadingFull.value = true
       try {
@@ -594,6 +600,15 @@ const exportSingleTrend = async (wt) => {
 }
 
 // ===== 工具函数 =====
+const isRankingType = computed(() => previewData.value?.workflow_type === '涨幅排名')
+const getColumnWidth = (col) => {
+  if (previewData.value?.workflow_type === '涨幅排名') {
+    const cols = previewData.value?.columns || []
+    const idx = cols.indexOf(col)
+    return (idx === 1 || idx === 2) ? 160 : 70
+  }
+  return 120
+}
 const formatSize = (bytes) => {
   if (!bytes) return '-'
   if (bytes < 1024) return bytes + ' B'

@@ -214,7 +214,7 @@
                     format="YYYY-MM-DD"
                     value-format="YYYY-MM-DD"
                     style="width: 100%"
-                    @change="fetchUploadedFiles(step, index)"
+                    @change="onMergeDateChange(step, index)"
                   />
                 </el-form-item>
                 <el-form-item label="上传数据">
@@ -1229,6 +1229,21 @@ const moveTypeOrder = (step, idx, direction) => {
 const onIntersectionDateChange = (step) => {
   const date = step.config.date_str || new Date().toISOString().split('T')[0]
   step.config.output_filename = `7条件交集${date.replace(/-/g, '')}.xlsx`
+}
+
+const onMergeDateChange = (step, index) => {
+  fetchUploadedFiles(step, index)
+  // 涨幅排名: 步骤1日期联动步骤2 + 刷新公共文件列表
+  if (form.value.workflow_type === '涨幅排名') {
+    const newDate = step.config.date_str
+    form.value.steps.forEach((s, i) => {
+      if (i !== index && s.config) {
+        s.config.date_str = newDate
+      }
+    })
+    // 刷新步骤1的公共文件列表（date-aware）
+    fetchPublicFiles(step, index)
+  }
 }
 
 // 标记是否正在加载编辑数据（跳过 watcher 副作用）

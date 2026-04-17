@@ -362,7 +362,50 @@ const findSynonymMatch = (colA, colsB) => {
       }
     }
   }
+  // 日期列匹配：不同格式的日期列名自动配对
+  const dateA = parseDateColumnName(colA)
+  if (dateA) {
+    for (const colB of colsB) {
+      const dateB = parseDateColumnName(colB)
+      if (dateB && dateA.month === dateB.month && dateA.day === dateB.day) {
+        return colB
+      }
+    }
+  }
   return ''
+}
+
+/**
+ * 解析各种日期格式的列名，返回 {month, day, year?} 或 null
+ * 支持: "3月31日", "3/31/26", "3/31/2026", "2026-03-31", "2026/3/31", "0331"
+ */
+const parseDateColumnName = (name) => {
+  if (!name || typeof name !== 'string') return null
+  const s = name.trim()
+  let m
+
+  // "3月31日" or "03月31日"
+  m = s.match(/^(\d{1,2})月(\d{1,2})日$/)
+  if (m) return { month: parseInt(m[1]), day: parseInt(m[2]) }
+
+  // "3/31/26" or "3/31/2026" (M/D/YY or M/D/YYYY)
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/)
+  if (m) return { month: parseInt(m[1]), day: parseInt(m[2]) }
+
+  // "2026-03-31" or "2026/03/31" (YYYY-MM-DD or YYYY/MM/DD)
+  m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/)
+  if (m) return { month: parseInt(m[2]), day: parseInt(m[3]) }
+
+  // "0331" (MMDD, 4 digits)
+  m = s.match(/^(\d{2})(\d{2})$/)
+  if (m) {
+    const month = parseInt(m[1]), day = parseInt(m[2])
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return { month, day }
+    }
+  }
+
+  return null
 }
 
 const generateMappings = () => {
@@ -587,6 +630,27 @@ const buildDisplayRow = (row, mappings, file) => {
   return displayRow
 }
 
+/**
+ * 规范化比较值：
+ * - 空白/NaN/null/undefined → "0"
+ * - 数值统一四舍五入保留2位小数
+ */
+const normalizeForCompare = (val) => {
+  // 去除不可见字符
+  const cleaned = val.replace(/[\s\u00A0\u200B\uFEFF]/g, '')
+  // 空值/NaN/null → "0"
+  if (cleaned === '' || cleaned.toLowerCase() === 'nan' || cleaned.toLowerCase() === 'null' || cleaned.toLowerCase() === 'undefined') {
+    return '0'
+  }
+  // 数值：仅小数做四舍五入保留2位，整数不动
+  const num = Number(cleaned)
+  if (!isNaN(num) && isFinite(num) && cleaned.includes('.')) {
+    const rounded = Math.round(num * 100) / 100
+    return (Object.is(rounded, -0) ? 0 : rounded).toString()
+  }
+  return cleaned
+}
+
 const startCompare = () => {
   comparing.value = true
 
@@ -623,8 +687,8 @@ const startCompare = () => {
         const diffCols = []
 
         compareMappings.forEach(m => {
-          const valA = (rowA[m.columnA] ?? '').toString().trim()
-          const valB = (rowB[m.columnB] ?? '').toString().trim()
+          const valA = normalizeForCompare((rowA[m.columnA] ?? '').toString().trim())
+          const valB = normalizeForCompare((rowB[m.columnB] ?? '').toString().trim())
           if (valA !== valB) {
             diffCols.push(m.label)
           }
