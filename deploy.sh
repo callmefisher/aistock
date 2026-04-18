@@ -58,6 +58,63 @@ build() {
     fi
 }
 
+# 计算构建指纹: HEAD SHA + 影响构建的文件 diff 哈希
+_build_fingerprint() {
+    local head_sha
+    head_sha=$(git rev-parse HEAD 2>/dev/null || echo "no-git")
+    local diff_hash
+    diff_hash=$(git diff HEAD -- backend frontend Dockerfile* docker-compose*.yml backend/requirements.txt frontend/package.json 2>/dev/null \
+        | { command -v md5sum >/dev/null && md5sum || md5 -q; } 2>/dev/null \
+        | awk '{print $1}')
+    echo "${head_sha}:${diff_hash}"
+}
+
+# 轻量清理: 保留在用镜像 + 最近5GB构建缓存，砍掉悬空镜像和旧缓存
+# 不使用 -a，避免删除正在使用的 tagged 镜像
+auto_cleanup() {
+    log_info "自动清理 Docker 缓存..."
+    docker image prune -f >/dev/null 2>&1
+    docker builder prune --keep-storage 5gb -f >/dev/null 2>&1
+    local disk_info
+    disk_info=$(docker system df --format "table {{.Type}}\t{{.Size}}\t{{.Reclaimable}}" 2>/dev/null | tail -n +2)
+    log_success "清理完成，当前占用："
+    echo "$disk_info" | sed 's/^/    /'
+}
+
+# 深度清理: 手动触发，删除所有未被服务使用的资源
+deep_cleanup() {
+    log_warning "深度清理：将删除所有未被服务使用的镜像、卷、缓存..."
+    docker image prune -af >/dev/null 2>&1
+    docker builder prune -af >/dev/null 2>&1
+    docker volume prune -f >/dev/null 2>&1
+    log_success "深度清理完成"
+    docker system df
+}
+
+# 智能构建: 指纹未变则跳过，否则完整构建；构建后自动轻量清理
+smart_build() {
+    local fp_file=".last-built-fingerprint"
+    local current_fp last_fp
+    current_fp=$(_build_fingerprint)
+    last_fp=""
+    [ -f "$fp_file" ] && last_fp=$(cat "$fp_file")
+
+    if [ "$current_fp" = "$last_fp" ] && [ -n "$current_fp" ]; then
+        log_success "无构建影响的变更，跳过 build"
+        return 0
+    fi
+
+    log_info "检测到变更，开始构建..."
+    build "$@"
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        echo "$current_fp" > "$fp_file"
+        log_success "构建指纹已更新"
+        auto_cleanup
+    fi
+    return $rc
+}
+
 up() {
     log_info "启动服务..."
     $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
@@ -128,8 +185,11 @@ usage() {
     echo "  start    启动已存在的服务"
     echo "  stop     停止服务"
     echo "  restart  重启所有服务"
-    echo "  build    构建所有镜像"
+    echo "  build    构建所有镜像（总是执行）"
     echo "  build [服务]  构建指定服务镜像"
+    echo "  smart-build  智能构建（指纹未变则跳过，构建后自动轻量清理）"
+    echo "  cleanup      轻量清理：悬空镜像+超出5GB的旧构建缓存"
+    echo "  deep-cleanup 深度清理：所有未被服务使用的镜像/卷/缓存"
     echo "  ps       查看服务状态"
     echo "  logs     查看后端日志"
     echo "  logs [服务]  查看指定服务日志"
@@ -174,6 +234,16 @@ case "${1:-}" in
     build)
         check_docker
         build "$2"
+        ;;
+    smart-build)
+        check_docker
+        smart_build "$2"
+        ;;
+    cleanup)
+        auto_cleanup
+        ;;
+    deep-cleanup)
+        deep_cleanup
         ;;
     ps|status)
         ps_status
