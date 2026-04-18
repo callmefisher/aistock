@@ -134,7 +134,7 @@ if !errorlevel! neq 0 (
 echo [OK] Docker is running.
 
 :: =============================================
-:: [5] Smart build — delegates to deploy.sh smart-build
+:: [5] Smart build - delegates to deploy.sh smart-build
 ::     which checks git fingerprint and skips if unchanged.
 :: =============================================
 echo.
