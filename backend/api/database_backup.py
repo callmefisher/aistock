@@ -80,9 +80,15 @@ async def import_database(
     if not (file.filename or "").endswith(".sql"):
         raise HTTPException(status_code=400, detail="仅接受 .sql 文件")
 
-    header = await file.read(64)
+    # 校验 SQL 文件头部：接受常见 SQL 起始格式
+    #   --   行注释（mysqldump 传统格式）
+    #   /*   块注释（现代 mysqldump 的 /*M!999999...*/ sandbox 头）
+    #   SET/USE/CREATE/INSERT/DROP   直接 DDL/DML
+    header = await file.read(128)
     await file.seek(0)
-    if not header.lstrip().startswith(b"--"):
+    stripped = header.lstrip()
+    valid_prefixes = (b"--", b"/*", b"SET ", b"USE ", b"CREATE", b"INSERT", b"DROP", b"ALTER")
+    if not any(stripped.upper().startswith(p.upper()) if p[0:1].isalpha() else stripped.startswith(p) for p in valid_prefixes):
         raise HTTPException(status_code=400, detail="文件内容不符合 SQL 格式")
 
     db = _parse_db_url(settings.DATABASE_URL_SYNC)
