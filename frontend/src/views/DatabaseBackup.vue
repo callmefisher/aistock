@@ -69,7 +69,19 @@ async function handleExport() {
     document.body.removeChild(link)
     setTimeout(() => window.URL.revokeObjectURL(url), 100)
   } catch (e) {
-    exportError.value = e.response?.data?.detail || '导出失败，请检查服务状态'
+    // responseType=blob 时，错误响应 JSON 会被当成 Blob，需要手动读取
+    let detail = ''
+    if (e.response?.data instanceof Blob) {
+      try {
+        const text = await e.response.data.text()
+        detail = JSON.parse(text).detail || ''
+      } catch {
+        detail = ''
+      }
+    } else {
+      detail = e.response?.data?.detail || ''
+    }
+    exportError.value = detail || '导出失败，请检查服务状态'
   } finally {
     exporting.value = false
   }

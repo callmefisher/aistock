@@ -40,7 +40,7 @@ api.interceptors.response.use(
           ElMessage.error('登录已过期，请重新登录')
           break
         case 403:
-          ElMessage.error('没有权限访问')
+          ElMessage.error(error.response.data?.detail || '没有权限访问')
           break
         case 404:
           ElMessage.error('请求的资源不存在')
