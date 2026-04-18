@@ -76,7 +76,10 @@ async def import_database(
 
     try:
         with open(sql_path, "wb") as f:
-            while chunk := await file.read(1024 * 1024):
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
                 f.write(chunk)
 
         with open(sql_path, "rb") as f:
