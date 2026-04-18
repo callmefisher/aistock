@@ -175,6 +175,19 @@ init_db() {
     log_success "数据库初始化完成"
 }
 
+promote_admin() {
+    local username="${1:-}"
+    if [ -z "$username" ]; then
+        log_error "用法: ./deploy.sh promote-admin <username>"
+        return 1
+    fi
+    log_info "把用户 '$username' 提升为管理员..."
+    $COMPOSE_CMD -f "$COMPOSE_FILE" exec -T mysql mysql -uroot -proot_password stock_pool \
+        -e "UPDATE users SET is_superuser=1 WHERE username='$username'; SELECT id, username, is_superuser FROM users WHERE username='$username';" 2>&1 \
+        | grep -v "Warning.*password"
+    log_success "完成（若 is_superuser=1 即提权成功）"
+}
+
 usage() {
     echo ""
     echo "用法: ./deploy.sh [命令] [服务]"
@@ -194,6 +207,7 @@ usage() {
     echo "  logs     查看后端日志"
     echo "  logs [服务]  查看指定服务日志"
     echo "  init-db  初始化数据库表"
+    echo "  promote-admin <username>  把指定用户提升为管理员"
     echo "  exec [服务] [命令]  在服务容器中执行命令"
     echo ""
     echo "示例："
@@ -253,6 +267,9 @@ case "${1:-}" in
         ;;
     init-db)
         init_db
+        ;;
+    promote-admin)
+        promote_admin "$2"
         ;;
     exec)
         if [ -z "$2" ]; then
