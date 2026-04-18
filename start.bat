@@ -134,18 +134,35 @@ if !errorlevel! neq 0 (
 echo [OK] Docker is running.
 
 :: =============================================
-:: [5] Build images
+:: [5] Smart build — skip when no changes since last build
+::     Fingerprint = HEAD SHA + hash of uncommitted build-affecting files
+::     (backend/, frontend/, Dockerfile*, docker-compose*.yml, requirements.txt, package.json)
+::     If fingerprint matches .last-built-fingerprint, skip build.
 :: =============================================
 echo.
-echo [5/6] Building images (first run: 5-10 min, later runs use cache)...
-"!BASH!" -c "bash ./deploy.sh build"
-if !errorlevel! neq 0 (
-    echo.
-    echo [ERROR] Build failed. See output above for details.
-    pause
-    exit /b 1
+echo [5/6] Checking for build changes...
+set "CURRENT_FP="
+for /f "usebackq delims=" %%F in (`"!BASH!" -c "git rev-parse HEAD 2>/dev/null; git diff HEAD -- backend frontend Dockerfile* docker-compose*.yml backend/requirements.txt frontend/package.json 2>/dev/null | md5sum 2>/dev/null | awk '{print $1}'"`) do (
+    if not defined CURRENT_FP (set "CURRENT_FP=%%F") else (set "CURRENT_FP=!CURRENT_FP!:%%F")
 )
-echo [OK] Build complete.
+set "LAST_FP="
+if exist ".last-built-fingerprint" set /p LAST_FP=<.last-built-fingerprint
+
+if "!CURRENT_FP!" == "!LAST_FP!" (
+    echo [OK] No build-affecting changes since last build — skipping rebuild.
+) else (
+    echo Building images ^(first run: 5-10 min, later runs use cache^)...
+    "!BASH!" -c "bash ./deploy.sh build"
+    if !errorlevel! neq 0 (
+        echo.
+        echo [ERROR] Build failed. If "cannot allocate memory":
+        echo         Open Docker Desktop settings ^> Resources, set Memory to 4GB+.
+        pause
+        exit /b 1
+    )
+    > .last-built-fingerprint echo !CURRENT_FP!
+    echo [OK] Build complete.
+)
 
 :: =============================================
 :: [6] Start services
