@@ -124,28 +124,30 @@ async def import_database(
                     raise HTTPException(status_code=413, detail="文件过大，最大支持 500MB")
                 f.write(chunk)
 
-        # MariaDB/MySQL client 依赖 stdin 类型判断批处理模式：
-        #   stdin=真实文件fd → batch 模式，正常执行
-        #   stdin=PIPE (input= 或 asyncio.PIPE) → 会 hang，等某种握手/EOF
-        # 所以必须传文件对象而非字节流
-        with open(sql_path, "rb") as f_in:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    [
-                        "mysql",
-                        f"--host={db['host']}",
-                        f"--port={db['port']}",
-                        f"--user={db['user']}",
-                        db["database"],
-                    ],
-                    stdin=f_in,
-                    capture_output=True,
-                    timeout=300,
-                    env={**os.environ, "MYSQL_PWD": db["password"]},
-                )
+        # MariaDB/MySQL client 对 stdin 来源敏感：真实文件 fd 走 batch 模式（<1s），
+        # 任何 PIPE（input=, asyncio PIPE, 跨线程传 fd）都会 hang 等握手。
+        # 最稳定方案：shell `<` 重定向，和手动 `docker exec ... mysql < file.sql` 等价。
+        import shlex
+        cmd_str = " ".join([
+            "mysql",
+            f"--host={shlex.quote(db['host'])}",
+            f"--port={shlex.quote(str(db['port']))}",
+            f"--user={shlex.quote(db['user'])}",
+            shlex.quote(db["database"]),
+            "<",
+            shlex.quote(sql_path),
+        ])
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                cmd_str,
+                shell=True,
+                capture_output=True,
+                timeout=300,
+                env={**os.environ, "MYSQL_PWD": db["password"]},
             )
+        )
 
         if result.returncode != 0:
             raise HTTPException(
