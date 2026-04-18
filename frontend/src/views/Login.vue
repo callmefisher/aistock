@@ -171,7 +171,7 @@ const handleLogin = async () => {
       
       if (result.success) {
         ElMessage.success('登录成功')
-        router.push('/dashboard')
+        router.push('/stock-pools')
       } else {
         ElMessage.error(result.message)
       }
