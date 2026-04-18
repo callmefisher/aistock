@@ -39,11 +39,11 @@ async def export_database(current_user: User = Depends(get_current_user)):
             f"--host={db['host']}",
             f"--port={db['port']}",
             f"--user={db['user']}",
-            f"--password={db['password']}",
             db["database"],
         ],
         capture_output=True,
         timeout=300,
+        env={**os.environ, "MYSQL_PWD": db["password"]},
     )
 
     if result.returncode != 0:
@@ -86,12 +86,12 @@ async def import_database(
                     f"--host={db['host']}",
                     f"--port={db['port']}",
                     f"--user={db['user']}",
-                    f"--password={db['password']}",
                     db["database"],
                 ],
                 stdin=f,
                 capture_output=True,
                 timeout=300,
+                env={**os.environ, "MYSQL_PWD": db["password"]},
             )
 
         if result.returncode != 0:
