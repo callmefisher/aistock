@@ -30,6 +30,7 @@ WORKDIR /app
 # 安装运行时依赖和Playwright系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     default-libmysqlclient-dev \
+    default-mysql-client \
     curl \
     # Playwright系统依赖
     libnss3 \
