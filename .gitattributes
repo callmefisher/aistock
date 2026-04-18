@@ -4,6 +4,11 @@
 # Force LF line endings for shell scripts (critical on Windows)
 *.sh text eol=lf
 
+# Force CRLF for Windows batch files - cmd.exe mis-parses LF-only .bat,
+# producing errors like "'tlocal' is not recognized" from `setlocal`.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # Force LF for Docker and compose files
 Dockerfile text eol=lf
 *.yml text eol=lf
