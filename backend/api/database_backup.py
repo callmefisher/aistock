@@ -124,35 +124,33 @@ async def import_database(
                     raise HTTPException(status_code=413, detail="文件过大，最大支持 500MB")
                 f.write(chunk)
 
-        # 用 asyncio 原生 subprocess：避免 run_in_executor+subprocess.run(input=...)
-        # 在 uvicorn 线程池里 stdin 不能正确关闭导致 mysql CLI 卡住等 EOF（实测 300s 超时）
+        # MariaDB/MySQL client 依赖 stdin 类型判断批处理模式：
+        #   stdin=真实文件fd → batch 模式，正常执行
+        #   stdin=PIPE (input= 或 asyncio.PIPE) → 会 hang，等某种握手/EOF
+        # 所以必须传文件对象而非字节流
         with open(sql_path, "rb") as f_in:
-            sql_bytes = f_in.read()
-
-        proc = await asyncio.create_subprocess_exec(
-            "mysql",
-            f"--host={db['host']}",
-            f"--port={db['port']}",
-            f"--user={db['user']}",
-            db["database"],
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "MYSQL_PWD": db["password"]},
-        )
-        try:
-            stdout_data, stderr_data = await asyncio.wait_for(
-                proc.communicate(input=sql_bytes), timeout=300
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    [
+                        "mysql",
+                        f"--host={db['host']}",
+                        f"--port={db['port']}",
+                        f"--user={db['user']}",
+                        db["database"],
+                    ],
+                    stdin=f_in,
+                    capture_output=True,
+                    timeout=300,
+                    env={**os.environ, "MYSQL_PWD": db["password"]},
+                )
             )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise HTTPException(status_code=504, detail="数据库恢复超时（300 秒）")
 
-        if proc.returncode != 0:
+        if result.returncode != 0:
             raise HTTPException(
                 status_code=500,
-                detail=f"数据库恢复失败: {stderr_data.decode(errors='replace')}",
+                detail=f"数据库恢复失败: {result.stderr.decode(errors='replace')}",
             )
 
         return {"success": True, "message": "数据库恢复成功"}
