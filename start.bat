@@ -36,10 +36,41 @@ echo [OK] Git Bash: !BASH!
 
 :: =============================================
 :: [1] Clone or update code
+::     Three cases handled explicitly to avoid the "aistock subfolder"
+::     collision bug: if the bat lives in a folder already named "aistock",
+::     git clone creates aistock\aistock\ on first run. On re-runs .git
+::     still won't exist in the bat's directory but aistock\.git will,
+::     so we cd in and pull instead of trying to clone again.
 :: =============================================
 echo.
-echo [1/6] Checking project code...
-if not exist ".git" (
+echo [1/6] Getting latest code...
+set "GOT_CODE=0"
+
+:: Case A: bat is inside the repo itself
+if exist ".git" (
+    echo Pulling latest from GitHub...
+    git pull
+    if !errorlevel! neq 0 (
+        echo [WARN] git pull failed, continuing with existing code.
+    )
+    set "GOT_CODE=1"
+)
+
+:: Case B: already cloned to aistock\ subdirectory on a previous run
+if !GOT_CODE! equ 0 (
+    if exist "aistock\.git" (
+        cd /d aistock
+        echo Pulling latest from GitHub...
+        git pull
+        if !errorlevel! neq 0 (
+            echo [WARN] git pull failed, continuing with existing code.
+        )
+        set "GOT_CODE=1"
+    )
+)
+
+:: Case C: fresh install - clone for the first time
+if !GOT_CODE! equ 0 (
     echo Cloning from GitHub...
     git clone https://github.com/callmefisher/aistock.git aistock
     if !errorlevel! neq 0 (
@@ -47,15 +78,11 @@ if not exist ".git" (
         pause
         exit /b 1
     )
-    echo [OK] Repository cloned.
-) else (
-    echo [OK] Project already present. Pulling latest...
-    git pull --ff-only >nul 2>&1
-    echo [OK] Up to date.
+    cd /d aistock
+    set "GOT_CODE=1"
 )
 
-:: Normalize CWD to project root regardless of clone vs pull path
-if exist "aistock\deploy.sh" cd /d aistock
+echo [OK] Code ready.
 
 :: =============================================
 :: [2] Fix CRLF (Windows git may convert LF->CRLF in .sh files)
