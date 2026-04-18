@@ -47,6 +47,10 @@
           <el-icon><DocumentCopy /></el-icon>
           <span>Excel比对</span>
         </el-menu-item>
+        <el-menu-item index="/database-backup">
+          <el-icon><Coin /></el-icon>
+          <span>数据库备份</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     

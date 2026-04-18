@@ -70,6 +70,12 @@ const routes = [
         name: 'Statistics',
         component: () => import('@/views/Statistics.vue'),
         meta: { title: '统计分析' }
+      },
+      {
+        path: 'database-backup',
+        name: 'DatabaseBackup',
+        component: () => import('@/views/DatabaseBackup.vue'),
+        meta: { title: '数据库备份' }
       }
     ]
   }
