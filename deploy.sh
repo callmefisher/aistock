@@ -188,6 +188,66 @@ promote_admin() {
     log_success "完成（若 is_superuser=1 即提权成功）"
 }
 
+# CLI 备份数据库（不走 UI/权限），用于运维/灾难恢复场景
+backup_db() {
+    local output_file="${1:-aistock_backup_$(date +%Y-%m-%d_%H-%M-%S).sql}"
+    log_info "备份 stock_pool 数据库到: $output_file"
+    $COMPOSE_CMD -f "$COMPOSE_FILE" exec -T mysql \
+        mysqldump -uroot -proot_password stock_pool 2>/dev/null > "$output_file"
+    local rc=$?
+    if [ $rc -eq 0 ] && [ -s "$output_file" ]; then
+        local size
+        size=$(du -h "$output_file" | cut -f1)
+        log_success "备份完成: $output_file ($size)"
+    else
+        log_error "备份失败（返回码 $rc）"
+        rm -f "$output_file"
+        return 1
+    fi
+}
+
+# CLI 从 SQL 文件恢复数据库（绕过 UI，灾难恢复/登录不可用时使用）
+restore_db() {
+    local sql_file="${1:-}"
+    local skip_confirm="${2:-}"
+    if [ -z "$sql_file" ]; then
+        log_error "用法: ./deploy.sh restore-db <sql文件路径> [--yes]"
+        log_error "     加 --yes 跳过确认提示（谨慎使用）"
+        return 1
+    fi
+    if [ ! -f "$sql_file" ]; then
+        log_error "文件不存在: $sql_file"
+        return 1
+    fi
+
+    local size
+    size=$(du -h "$sql_file" | cut -f1)
+    log_warning "============================================"
+    log_warning "即将用 $sql_file ($size) 恢复到数据库 stock_pool"
+    log_warning "当前数据库的全部数据将被覆盖，操作不可逆！"
+    log_warning "============================================"
+
+    if [ "$skip_confirm" != "--yes" ]; then
+        printf "输入 YES 继续（其他任何输入都会取消）: "
+        read -r confirm
+        if [ "$confirm" != "YES" ]; then
+            log_info "已取消"
+            return 0
+        fi
+    fi
+
+    log_info "开始恢复..."
+    $COMPOSE_CMD -f "$COMPOSE_FILE" exec -T mysql \
+        mysql -uroot -proot_password stock_pool < "$sql_file"
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log_success "恢复完成"
+    else
+        log_error "恢复失败（返回码 $rc）"
+        return 1
+    fi
+}
+
 usage() {
     echo ""
     echo "用法: ./deploy.sh [命令] [服务]"
@@ -208,6 +268,8 @@ usage() {
     echo "  logs [服务]  查看指定服务日志"
     echo "  init-db  初始化数据库表"
     echo "  promote-admin <username>  把指定用户提升为管理员"
+    echo "  backup-db [输出文件]      CLI 备份数据库（绕过 UI/权限）"
+    echo "  restore-db <文件> [--yes] CLI 从 SQL 文件恢复（灾难恢复用，需确认）"
     echo "  exec [服务] [命令]  在服务容器中执行命令"
     echo ""
     echo "示例："
@@ -270,6 +332,12 @@ case "${1:-}" in
         ;;
     promote-admin)
         promote_admin "$2"
+        ;;
+    backup-db)
+        backup_db "$2"
+        ;;
+    restore-db)
+        restore_db "$2" "$3"
         ;;
     exec)
         if [ -z "$2" ]; then

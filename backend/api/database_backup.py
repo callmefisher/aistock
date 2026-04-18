@@ -108,18 +108,22 @@ async def import_database(
                     raise HTTPException(status_code=413, detail="文件过大，最大支持 500MB")
                 f.write(chunk)
 
+        # 用 input=bytes 而非 stdin=file_obj。后者在 run_in_executor 线程里
+        # 通过 BufferedReader 的 fd 传递，mysql/mariadb CLI 会卡住等 EOF（实测 300s 超时）。
         with open(sql_path, "rb") as f_in:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    ["mysql", f"--host={db['host']}", f"--port={db['port']}", f"--user={db['user']}", db["database"]],
-                    stdin=f_in,
-                    capture_output=True,
-                    timeout=300,
-                    env={**os.environ, "MYSQL_PWD": db["password"]},
-                )
+            sql_bytes = f_in.read()
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                ["mysql", f"--host={db['host']}", f"--port={db['port']}", f"--user={db['user']}", db["database"]],
+                input=sql_bytes,
+                capture_output=True,
+                timeout=300,
+                env={**os.environ, "MYSQL_PWD": db["password"]},
             )
+        )
 
         if result.returncode != 0:
             raise HTTPException(
