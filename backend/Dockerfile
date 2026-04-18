@@ -3,6 +3,16 @@ FROM python:3.11-slim as builder
 
 WORKDIR /build
 
+# 切换到国内 Debian + pip 镜像源（避免海外网络不稳定导致 apt/pip 超时）
+# Debian trixie 使用 /etc/apt/sources.list.d/debian.sources (DEB822 格式)
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
+    fi && \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
+    fi && \
+    pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
 # 安装构建依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -26,6 +36,14 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
+
+# 切换到国内 Debian 镜像源
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
+    fi && \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
+    fi
 
 # 安装运行时依赖和Playwright系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
