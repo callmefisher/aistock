@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -15,6 +16,8 @@ from models.models import User
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+MAX_IMPORT_SIZE = 500 * 1024 * 1024  # 500 MB
+
 
 def _parse_db_url(url: str) -> dict:
     parsed = urlparse(url)
@@ -29,21 +32,24 @@ def _parse_db_url(url: str) -> dict:
 
 @router.get("/export")
 async def export_database(current_user: User = Depends(get_current_user)):
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+
     db = _parse_db_url(settings.DATABASE_URL_SYNC)
     date_str = datetime.now().strftime("%Y-%m-%d")
-    sql_path = tempfile.mktemp(suffix=".sql")
 
-    result = subprocess.run(
-        [
-            "mysqldump",
-            f"--host={db['host']}",
-            f"--port={db['port']}",
-            f"--user={db['user']}",
-            db["database"],
-        ],
-        capture_output=True,
-        timeout=300,
-        env={**os.environ, "MYSQL_PWD": db["password"]},
+    with tempfile.NamedTemporaryFile(suffix=".sql", delete=False) as tmp:
+        sql_path = tmp.name
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: subprocess.run(
+            ["mysqldump", f"--host={db['host']}", f"--port={db['port']}", f"--user={db['user']}", db["database"]],
+            capture_output=True,
+            timeout=300,
+            env={**os.environ, "MYSQL_PWD": db["password"]},
+        )
     )
 
     if result.returncode != 0:
@@ -68,33 +74,45 @@ async def import_database(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+
     if not (file.filename or "").endswith(".sql"):
         raise HTTPException(status_code=400, detail="仅接受 .sql 文件")
 
+    header = await file.read(64)
+    await file.seek(0)
+    if not header.lstrip().startswith(b"--"):
+        raise HTTPException(status_code=400, detail="文件内容不符合 SQL 格式")
+
     db = _parse_db_url(settings.DATABASE_URL_SYNC)
-    sql_path = tempfile.mktemp(suffix=".sql")
+
+    with tempfile.NamedTemporaryFile(suffix=".sql", delete=False) as tmp:
+        sql_path = tmp.name
 
     try:
+        total = 0
         with open(sql_path, "wb") as f:
             while True:
                 chunk = await file.read(1024 * 1024)
                 if not chunk:
                     break
+                total += len(chunk)
+                if total > MAX_IMPORT_SIZE:
+                    raise HTTPException(status_code=413, detail="文件过大，最大支持 500MB")
                 f.write(chunk)
 
-        with open(sql_path, "rb") as f:
-            result = subprocess.run(
-                [
-                    "mysql",
-                    f"--host={db['host']}",
-                    f"--port={db['port']}",
-                    f"--user={db['user']}",
-                    db["database"],
-                ],
-                stdin=f,
-                capture_output=True,
-                timeout=300,
-                env={**os.environ, "MYSQL_PWD": db["password"]},
+        with open(sql_path, "rb") as f_in:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["mysql", f"--host={db['host']}", f"--port={db['port']}", f"--user={db['user']}", db["database"]],
+                    stdin=f_in,
+                    capture_output=True,
+                    timeout=300,
+                    env={**os.environ, "MYSQL_PWD": db["password"]},
+                )
             )
 
         if result.returncode != 0:

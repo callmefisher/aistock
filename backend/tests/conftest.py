@@ -88,6 +88,29 @@ async def auth_headers(test_user: User) -> dict:
 
 
 @pytest_asyncio.fixture(scope="function")
+async def superuser(db_session: AsyncSession) -> User:
+    """超级用户fixture"""
+    user = User(
+        username="superuser",
+        email="super@example.com",
+        hashed_password=get_password_hash("superpass123"),
+        is_active=True,
+        is_superuser=True,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+@pytest_asyncio.fixture(scope="function")
+async def superuser_auth_headers(superuser: User) -> dict:
+    """超级用户认证头fixture"""
+    token = create_access_token(data={"sub": superuser.username})
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest_asyncio.fixture(scope="function")
 async def test_data_source(db_session: AsyncSession, test_user: User) -> DataSource:
     """测试数据源fixture"""
     data_source = DataSource(
