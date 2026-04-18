@@ -109,9 +109,14 @@ async function handleImport() {
     const res = await api.post('/database/import', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
-    importResult.value = { success: true, message: res.message || '恢复成功' }
+    importResult.value = { success: true, message: res.message || '恢复成功，建议刷新页面' }
     selectedFile.value = null
     uploadRef.value?.clearFiles()
+    // 数据库表已被覆盖，当前 token 可能对应旧 users → 清 token 强制重登
+    setTimeout(() => {
+      localStorage.removeItem('token')
+      window.location.href = '/login'
+    }, 3000)
   } catch (e) {
     importResult.value = {
       success: false,

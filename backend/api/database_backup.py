@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 
 from core.config import settings
+from core.database import async_engine, sync_engine
 from api.auth import get_current_user
 from models.models import User
 
@@ -124,9 +125,48 @@ async def import_database(
                     raise HTTPException(status_code=413, detail="文件过大，最大支持 500MB")
                 f.write(chunk)
 
-        # MariaDB/MySQL client 对 stdin 来源敏感：真实文件 fd 走 batch 模式（<1s），
-        # 任何 PIPE（input=, asyncio PIPE, 跨线程传 fd）都会 hang 等握手。
-        # 最稳定方案：shell `<` 重定向，和手动 `docker exec ... mysql < file.sql` 等价。
+        # 关键：mysql import 要执行 DROP/CREATE TABLE，凡是此时对这些表还「持有过事务」的
+        # 连接都会让 DDL 卡在 metadata lock（处于 Sleep 的连接也算，MySQL 以 trx 为界释放锁）。
+        # FastAPI 这次请求本身已经通过 get_current_user 开过 session 查 users 表，
+        # 加上 pool_size=10 连接池还有别的空闲连接 → mysql 会永久等锁。
+        #
+        # 做法：用一个独立的 pymysql 连接查 information_schema.processlist，
+        # KILL 掉所有同用户的其他连接。这些连接被 KILL 后，SQLAlchemy 下次用到时
+        # pool_pre_ping=True 会自动重建，对业务无感。
+        #
+        # 注意：必须是「新连接」去 KILL，不能复用 SQLAlchemy 的池（池里的连接就是我们要杀的目标）。
+        import pymysql
+        kill_conn = pymysql.connect(
+            host=db["host"],
+            port=int(db["port"]),
+            user=db["user"],
+            password=db["password"],
+            database=db["database"],
+            connect_timeout=5,
+        )
+        try:
+            with kill_conn.cursor() as cur:
+                cur.execute("SELECT CONNECTION_ID()")
+                my_id = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT id FROM information_schema.processlist "
+                    "WHERE user=%s AND id <> %s",
+                    (db["user"], my_id),
+                )
+                victims = [row[0] for row in cur.fetchall()]
+                for vid in victims:
+                    try:
+                        cur.execute(f"KILL {int(vid)}")
+                    except Exception as e:
+                        logger.warning("KILL %s failed: %s", vid, e)
+            logger.info("killed %d stock_user connections before import: %s", len(victims), victims)
+        finally:
+            kill_conn.close()
+
+        # 顺手 dispose 一下，让池里那些已被 server 侧 KILL 的 socket 被回收。
+        await async_engine.dispose()
+        sync_engine.dispose()
+
         import shlex
         cmd_str = " ".join([
             "mysql",
@@ -137,23 +177,29 @@ async def import_database(
             "<",
             shlex.quote(sql_path),
         ])
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: subprocess.run(
-                cmd_str,
-                shell=True,
-                capture_output=True,
-                timeout=300,
-                env={**os.environ, "MYSQL_PWD": db["password"]},
-            )
+        proc = await asyncio.create_subprocess_shell(
+            cmd_str,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "MYSQL_PWD": db["password"]},
         )
+        try:
+            _, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise HTTPException(status_code=504, detail="数据库恢复超时（300 秒）")
 
-        if result.returncode != 0:
+        if proc.returncode != 0:
             raise HTTPException(
                 status_code=500,
-                detail=f"数据库恢复失败: {result.stderr.decode(errors='replace')}",
+                detail=f"数据库恢复失败: {stderr_data.decode(errors='replace')}",
             )
+
+        # 导入成功后再 dispose 一次：restore 中 DROP/CREATE 会让连接 ping 失败，
+        # 提前清掉避免下一次请求拿到坏连接。
+        await async_engine.dispose()
+        sync_engine.dispose()
 
         return {"success": True, "message": "数据库恢复成功"}
 
