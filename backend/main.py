@@ -50,7 +50,28 @@ async def lifespan(app: FastAPI):
                 logger.info("workflow_type 字段已存在")
     except Exception as e:
         logger.warning(f"数据库迁移检查: {e}")
-    
+
+    # 自愈：若库里没有 superuser，把最早注册的用户提升为 superuser
+    # 场景：老用户在 superuser 检查加入前注册，升级后没人能访问需要管理员权限的功能
+    try:
+        async with AsyncSessionLocal() as session:
+            from models.models import User
+            from sqlalchemy import select, func as sqlfunc
+            count_row = await session.execute(
+                select(sqlfunc.count(User.id)).where(User.is_superuser == True)
+            )
+            if (count_row.scalar() or 0) == 0:
+                oldest = await session.execute(
+                    select(User).order_by(User.id.asc()).limit(1)
+                )
+                first_user = oldest.scalar_one_or_none()
+                if first_user is not None:
+                    first_user.is_superuser = True
+                    await session.commit()
+                    logger.info(f"无 superuser：已自动提升用户 '{first_user.username}' 为管理员")
+    except Exception as e:
+        logger.warning(f"superuser 自愈检查失败: {e}")
+
     from service.scheduler_service import scheduler_service
     await scheduler_service.start()
     

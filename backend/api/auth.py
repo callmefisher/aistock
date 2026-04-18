@@ -94,25 +94,34 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="用户名已存在"
         )
-    
+
     result = await db.execute(select(User).where(User.email == user_create.email))
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="邮箱已存在"
         )
-    
+
+    # 若当前库中没有 superuser，自动把本次注册的用户提升为 superuser
+    # 单管理员部署场景：首个用户即系统管理员，后续用户默认普通权限
+    from sqlalchemy import func as sqlfunc
+    superuser_count_result = await db.execute(
+        select(sqlfunc.count(User.id)).where(User.is_superuser == True)
+    )
+    is_first_admin = (superuser_count_result.scalar() or 0) == 0
+
     hashed_password = get_password_hash(user_create.password)
     user = User(
         username=user_create.username,
         email=user_create.email,
-        hashed_password=hashed_password
+        hashed_password=hashed_password,
+        is_superuser=is_first_admin,
     )
-    
+
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    
+
     return user
 
 
