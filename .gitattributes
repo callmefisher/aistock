@@ -1,0 +1,12 @@
+# Auto-detect text files
+* text=auto
+
+# Force LF line endings for shell scripts (critical on Windows)
+*.sh text eol=lf
+
+# Force LF for Docker and compose files
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.env.example text eol=lf
+*.sql text eol=lf
