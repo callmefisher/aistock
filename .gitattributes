@@ -8,5 +8,8 @@
 Dockerfile text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
-*.env.example text eol=lf
+# .env files — critical: CRLF breaks env var parsing on Linux containers
+.env text eol=lf
+.env.example text eol=lf
+.env.* text eol=lf
 *.sql text eol=lf

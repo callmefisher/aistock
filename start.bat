@@ -85,13 +85,16 @@ if !GOT_CODE! equ 0 (
 echo [OK] Code ready.
 
 :: =============================================
-:: [2] Fix CRLF (Windows git may convert LF->CRLF in .sh files)
+:: [2] Fix CRLF (Windows git may convert LF->CRLF)
+::     - .sh files: bash execute fails with \r in shebang
+::     - .env file: trailing \r in env vars breaks MySQL auth, JWT, URLs
 ::     Use "bash ./script.sh" everywhere to bypass execute-bit issue
 ::     (Windows git does not preserve +x permission bits)
 :: =============================================
 echo.
-echo [2/6] Fixing line endings on shell scripts...
-"!BASH!" -c "find . -maxdepth 3 -name '*.sh' -exec sed -i 's/\r//' {} \; 2>/dev/null; true"
+echo [2/6] Fixing line endings on shell scripts and .env...
+"!BASH!" -c "find . -maxdepth 3 -name '*.sh' -exec sed -i 's/\r$//' {} \; 2>/dev/null; true"
+"!BASH!" -c "[ -f .env ] && sed -i 's/\r$//' .env; [ -f .env.example ] && sed -i 's/\r$//' .env.example; true"
 echo [OK] Line endings fixed.
 
 :: =============================================
