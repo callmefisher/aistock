@@ -41,11 +41,27 @@ async def export_database(current_user: User = Depends(get_current_user)):
     with tempfile.NamedTemporaryFile(suffix=".sql", delete=False) as tmp:
         sql_path = tmp.name
 
+    # --hex-blob: 把 BLOB/BINARY 列编码成十六进制字符串 (0xAABBCC)，
+    #   避免导出文件含二进制字节（workflow_results.data_compressed 是 zlib 压缩的 LONGBLOB），
+    #   否则 mysql/mariadb client 读 stdin 恢复时会卡在某些字节上
+    # --single-transaction: InnoDB 下获取一致快照而不锁表
+    # --routines --events --triggers: 导出存储过程/事件/触发器
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,
         lambda: subprocess.run(
-            ["mysqldump", f"--host={db['host']}", f"--port={db['port']}", f"--user={db['user']}", db["database"]],
+            [
+                "mysqldump",
+                "--hex-blob",
+                "--single-transaction",
+                "--routines",
+                "--events",
+                "--triggers",
+                f"--host={db['host']}",
+                f"--port={db['port']}",
+                f"--user={db['user']}",
+                db["database"],
+            ],
             capture_output=True,
             timeout=300,
             env={**os.environ, "MYSQL_PWD": db["password"]},

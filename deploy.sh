@@ -192,8 +192,10 @@ promote_admin() {
 backup_db() {
     local output_file="${1:-aistock_backup_$(date +%Y-%m-%d_%H-%M-%S).sql}"
     log_info "备份 stock_pool 数据库到: $output_file"
+    # --hex-blob: 二进制 BLOB 编码成十六进制，避免恢复时 mysql client 卡在二进制字节
     $COMPOSE_CMD -f "$COMPOSE_FILE" exec -T mysql \
-        mysqldump -uroot -proot_password stock_pool 2>/dev/null > "$output_file"
+        mysqldump --hex-blob --single-transaction --routines --events --triggers \
+        -uroot -proot_password stock_pool 2>/dev/null > "$output_file"
     local rc=$?
     if [ $rc -eq 0 ] && [ -s "$output_file" ]; then
         local size
