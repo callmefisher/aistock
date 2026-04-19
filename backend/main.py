@@ -18,6 +18,27 @@ logger = logging.getLogger(__name__)
 scheduler = TaskScheduler(settings.DATABASE_URL_SYNC)
 
 
+async def seed_default_admin_if_empty(session) -> bool:
+    """users 表为空时创建默认 admin/admin123 superuser。返回是否实际创建。"""
+    from models.models import User
+    from sqlalchemy import select, func as sqlfunc
+    from api.auth import get_password_hash
+
+    total = (await session.execute(select(sqlfunc.count(User.id)))).scalar() or 0
+    if total > 0:
+        return False
+
+    session.add(User(
+        username="admin",
+        email="admin@example.com",
+        hashed_password=get_password_hash("admin123"),
+        is_active=True,
+        is_superuser=True,
+    ))
+    await session.commit()
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("正在启动应用...")
@@ -50,6 +71,20 @@ async def lifespan(app: FastAPI):
                 logger.info("workflow_type 字段已存在")
     except Exception as e:
         logger.warning(f"数据库迁移检查: {e}")
+
+    # 空库 seed：users 表为空时自动创建 admin/admin123 作为 superuser
+    # 场景：全新部署，避免用户面对空登录页不知道怎么进去
+    # 注意：只在 "一条记录都没有" 时触发；导入备份（即使 admin 密码未知）不处理
+    try:
+        async with AsyncSessionLocal() as session:
+            created = await seed_default_admin_if_empty(session)
+            if created:
+                logger.warning(
+                    "空库 seed：已创建默认管理员 admin / admin123 (superuser)。"
+                    "请首次登录后立即修改密码。"
+                )
+    except Exception as e:
+        logger.warning(f"空库 seed 检查失败: {e}")
 
     # 自愈：若库里没有 superuser，把最早注册的用户提升为 superuser
     # 场景：老用户在 superuser 检查加入前注册，升级后没人能访问需要管理员权限的功能

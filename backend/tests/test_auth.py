@@ -10,8 +10,8 @@ class TestAuthAPI:
     """认证API集成测试"""
 
     @pytest.mark.asyncio
-    async def test_register_success(self, client: AsyncClient):
-        """测试成功注册"""
+    async def test_register_first_user_becomes_superuser(self, client: AsyncClient):
+        """业务规则：空库下第一个注册的用户自动提升为 superuser（单管理员部署场景）"""
         response = await client.post(
             "/api/v1/auth/register",
             json={
@@ -24,6 +24,23 @@ class TestAuthAPI:
         data = response.json()
         assert data["username"] == "newuser"
         assert data["email"] == "newuser@example.com"
+        assert data["is_active"] is True
+        assert data["is_superuser"] is True
+
+    @pytest.mark.asyncio
+    async def test_register_subsequent_user_is_not_superuser(self, client: AsyncClient, superuser: User):
+        """业务规则：已有 superuser 时，后续注册者默认是普通用户"""
+        response = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "seconduser",
+                "email": "second@example.com",
+                "password": "pass123"
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["username"] == "seconduser"
         assert data["is_active"] is True
         assert data["is_superuser"] is False
 
