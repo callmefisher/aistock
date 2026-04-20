@@ -176,6 +176,10 @@ class WorkflowExecutor:
         files.extend(glob.glob(pattern))
         return sorted(files)
 
+    def _derive_pledge_source(self, sheet_name: str) -> str:
+        """质押类型：Sheet 名以"中大盘"开头 → "中大盘"，否则 → "小盘"。"""
+        return "中大盘" if str(sheet_name).strip().startswith("中大盘") else "小盘"
+
     def _detect_header_and_parse(self, df_all: pd.DataFrame, known_col_names: set, filepath: str) -> pd.DataFrame:
         """统一处理单行表头、双行表头、分组头三种情况。
 
@@ -391,6 +395,39 @@ class WorkflowExecutor:
                 is_public_file = check_is_public_file(filepath, public_dir)
 
                 try:
+                    # 质押：多 Sheet 遍历，每 Sheet 单独检测表头并注入"来源"列
+                    if self.workflow_type == "质押" and not is_public_file:
+                        sheet_map = pd.read_excel(filepath, sheet_name=None)
+                        known_col_names_pledge = {
+                            "证券代码", "证券简称", "证券名称", "最新公告日",
+                            "股权质押公告日期",
+                        }
+                        for sheet_name, df_sheet in sheet_map.items():
+                            if df_sheet is None or len(df_sheet) == 0:
+                                continue
+                            df_parsed = self._detect_header_and_parse(
+                                df_sheet, known_col_names_pledge,
+                                f"{filepath}#{sheet_name}"
+                            )
+                            # 动态匹配"股权质押公告日期"前缀列（sheet 粒度，保证每个 sheet 独立生效）
+                            pledge_date_cols = [
+                                c for c in df_parsed.columns
+                                if isinstance(c, str) and "股权质押公告日期" in c
+                            ]
+                            df_parsed["来源"] = self._derive_pledge_source(sheet_name)
+                            df_parsed["_source_file"] = filename
+                            # 提前列过滤（质押白名单）
+                            target_cols_pledge = [
+                                "序号", "证券代码", "证券简称", "证券名称",
+                                "最新公告日", "来源", "_source_file",
+                            ] + pledge_date_cols
+                            available_p = [c for c in target_cols_pledge if c in df_parsed.columns]
+                            if available_p:
+                                df_parsed = df_parsed[available_p]
+                            dfs.append(df_parsed)
+                            logger.info(f"读取 sheet: {filepath}#{sheet_name}, 行数: {len(df_parsed)}, 来源: {df_parsed['来源'].iloc[0] if len(df_parsed) else '-'}")
+                        continue
+
                     if is_public_file:
                         public_skiprows = self.resolver.config.get("public_skiprows", 1)
                         df = self._read_public_file_cached(filepath, skiprows=public_skiprows)
@@ -501,6 +538,42 @@ class WorkflowExecutor:
                     merged_df = merged_df.rename(columns={"发生日期": "最新公告日"})
                     logger.info("招投标：发生日期→最新公告日 映射完成")
 
+            if self.workflow_type == "质押":
+                # 清洗不规范字符
+                for col in merged_df.columns:
+                    if merged_df[col].dtype == object:
+                        mask = merged_df[col].notna()
+                        merged_df.loc[mask, col] = (merged_df.loc[mask, col]
+                                                    .astype(str)
+                                                    .str.replace('\u3000', ' ', regex=False)
+                                                    .str.replace(r'[\x00-\x1f\x7f-\x9f]', '', regex=True)
+                                                    .str.strip())
+
+                # 证券名称 → 证券简称（仅在目标列不存在时）
+                if "证券简称" not in merged_df.columns and "证券名称" in merged_df.columns:
+                    merged_df = merged_df.rename(columns={"证券名称": "证券简称"})
+                    logger.info("质押：证券名称→证券简称 映射完成")
+
+                # 前缀含"股权质押公告日期" → 最新公告日
+                if "最新公告日" not in merged_df.columns:
+                    candidates = [c for c in merged_df.columns
+                                  if isinstance(c, str) and "股权质押公告日期" in c]
+                    if candidates:
+                        primary = candidates[0]
+                        for extra in candidates[1:]:
+                            merged_df[primary] = merged_df[primary].fillna(merged_df[extra])
+                            merged_df = merged_df.drop(columns=[extra])
+                        merged_df = merged_df.rename(columns={primary: "最新公告日"})
+                        logger.info(f"质押：{primary}→最新公告日 映射完成")
+
+                # 若存在"股权质押公告日期"列 但 也存在"最新公告日"列，合并到最新公告日
+                if "最新公告日" in merged_df.columns:
+                    leftover = [c for c in merged_df.columns
+                                if isinstance(c, str) and "股权质押公告日期" in c and c != "最新公告日"]
+                    for extra in leftover:
+                        merged_df["最新公告日"] = merged_df["最新公告日"].fillna(merged_df[extra])
+                        merged_df = merged_df.drop(columns=[extra])
+
             # 删除内部辅助列
             if "_source_file" in merged_df.columns:
                 merged_df = merged_df.drop(columns=["_source_file"])
@@ -509,6 +582,9 @@ class WorkflowExecutor:
             # 保留原始列结构供后续 ranking_sort 步骤使用
             if not self.resolver.config.get("skip_public_in_merge"):
                 keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
+                # 质押类型额外保留"来源"列
+                if self.workflow_type == "质押":
+                    keep_columns.append("来源")
                 existing_columns = [col for col in keep_columns if col in merged_df.columns]
                 merged_df = merged_df[existing_columns]
                 # 去除重复列名（concat 不同格式文件 + rename 可能产生重复列）
@@ -702,6 +778,9 @@ class WorkflowExecutor:
                     }
         else:
             fixed_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
+            # 质押类型额外保留"来源"列
+            if self.workflow_type == "质押":
+                fixed_columns = fixed_columns + ["来源"]
             for fixed_col in fixed_columns:
                 found = False
                 for avail_col in available_columns:
