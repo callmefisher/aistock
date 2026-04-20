@@ -1258,26 +1258,7 @@ class WorkflowExecutor:
         # 重新编号序号
         combined_df["序号"] = range(1, len(combined_df) + 1)
 
-        # 4. 交集计算逻辑（暂保留，当前 Sheet2 直接复制 Sheet1）
-        # code_sets = []
-        # for wtype, df in filtered_dfs.items():
-        #     if "证券代码" in df.columns:
-        #         codes = set(df["证券代码"].dropna().astype(str).str.strip())
-        #         codes.discard("")
-        #         code_sets.append(codes)
-        #     else:
-        #         logger.warning(f"[条件交集] {wtype} 缺少证券代码列，跳过交集计算")
-        # intersection_codes = set()
-        # if code_sets:
-        #     intersection_codes = code_sets[0]
-        #     for s in code_sets[1:]:
-        #         intersection_codes &= s
-        # if intersection_codes and "证券代码" in combined_df.columns:
-        #     mask = combined_df["证券代码"].astype(str).str.strip().isin(intersection_codes)
-        #     pool_raw = combined_df[mask].drop_duplicates(subset=["证券代码"], keep="first").copy()
-        #     pool_raw["序号"] = range(1, len(pool_raw) + 1)
-        # else:
-        #     pool_raw = pd.DataFrame(columns=INTERSECTION_SOURCE_COLUMNS + ["资本运作行为"])
+        # 4. Sheet2（选股池）= Sheet1 数据的完整复制（当前产品决策：不做代码交集）
 
         # 列名重映射（原始数据不变，只改最终输出的列名）
         combined_display = combined_df.rename(columns=INTERSECTION_COLUMN_RENAME)
@@ -1791,12 +1772,12 @@ class WorkflowExecutor:
         }
         fail_samples: List[Dict[str, str]] = []
 
+        import re as _re_mod
         for idx, row in df.iterrows():
             raw_code = str(row["证券代码"])
             symbol = normalize_stock_code(raw_code)
             # 取纯数字部分（东财 SECURITY_CODE 是 6 位数字）
-            import re
-            m = re.search(r'(\d{6})', symbol)
+            m = _re_mod.search(r'(\d{6})', symbol)
             numeric = m.group(1) if m else symbol
             anchor = str(row["最新公告日"]).strip()[:10]
             try:
