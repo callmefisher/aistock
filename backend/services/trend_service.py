@@ -99,6 +99,34 @@ async def delete_trend_data(record_id: int) -> bool:
         return False
 
 
+def _find_pledge_side_by_side_sheet(file_path: str) -> Optional[str]:
+    """扫描 Excel 所有可见 sheet，找第一个符合"日期 + 中大盘 + 小盘"双行表头的 sheet。"""
+    from openpyxl import load_workbook
+    try:
+        wb = load_workbook(file_path, read_only=True, data_only=True)
+    except Exception:
+        return None
+    target = None
+    try:
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            if getattr(ws, "sheet_state", "visible") != "visible":
+                continue
+            # 读前 3 行
+            head_rows = []
+            for row in ws.iter_rows(min_row=1, max_row=3, values_only=True):
+                head_rows.append(row)
+                if len(head_rows) >= 3:
+                    break
+            flat = "|".join(str(c) for r in head_rows for c in r if c is not None)
+            if "中大盘" in flat and "小盘" in flat and ("日期" in flat or "占比" in flat):
+                target = sn
+                break
+    finally:
+        wb.close()
+    return target
+
+
 def _parse_pledge_side_by_side(file_path: str) -> List[Dict[str, Any]]:
     """解析质押"中大盘 + 小盘"并排双列的 Excel。
 
@@ -106,8 +134,16 @@ def _parse_pledge_side_by_side(file_path: str) -> List[Dict[str, Any]]:
       Row 1: 日期 | 中大盘 | 中大盘 | 小盘 | 小盘 （日期列可能跨 2 行或只占 Row 1）
       Row 2:       | 占20均线数量 | 占比 | 占20均线数量 | 占比
     返回 2 * N 条记录（中大盘一份 + 小盘一份）。
+
+    文件可能含多个 sheet，自动找到匹配"日期 + 中大盘 + 小盘"的那个 sheet。
     """
-    df = pd.read_excel(file_path, header=[0, 1])
+    target_sheet = _find_pledge_side_by_side_sheet(file_path)
+    if target_sheet is None:
+        raise ValueError(
+            "未找到符合格式的 sheet（需要双行表头：日期 | 中大盘-数量/占比 | 小盘-数量/占比）"
+        )
+    df = pd.read_excel(file_path, sheet_name=target_sheet, header=[0, 1])
+    logger.info(f"[质押双列并排] 使用 sheet: {target_sheet}")
     # df.columns 是 MultiIndex[(l0, l1), ...]
     # 推断日期列、中大盘数量/占比、小盘数量/占比的位置
     date_col = None
