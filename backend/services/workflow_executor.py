@@ -180,6 +180,44 @@ class WorkflowExecutor:
         """质押类型：Sheet 名以"中大盘"开头 → "中大盘"，否则 → "小盘"。"""
         return "中大盘" if str(sheet_name).strip().startswith("中大盘") else "小盘"
 
+    def _sync_pledge_final_to_public(self, final_file_path: str, date_str: Optional[str] = None) -> bool:
+        """把最终输出文件同步到 质押/public 目录。
+
+        顺序：先复制成功 → 删除 public 中除了新复制文件外的其他文件（原子语义的兜底）。
+        仅在 workflow_type=='质押' 时生效；失败不抛，仅 warning（不阻塞主流程）。
+        """
+        if self.workflow_type != "质押":
+            return False
+        if not final_file_path or not os.path.exists(final_file_path):
+            logger.warning(f"[质押 public 同步] 源文件不存在，跳过: {final_file_path}")
+            return False
+        try:
+            import shutil
+            public_dir = self.resolver.get_public_directory(date_str)
+            os.makedirs(public_dir, exist_ok=True)
+            src_name = os.path.basename(final_file_path)
+            dst_path = os.path.join(public_dir, src_name)
+            # 先复制到目标（若目标已存在会覆盖）
+            shutil.copy2(final_file_path, dst_path)
+            logger.info(f"[质押 public 同步] 已复制 {src_name} → {public_dir}")
+            # 复制成功后清理 public 中其他文件
+            removed = 0
+            for entry in os.listdir(public_dir):
+                entry_path = os.path.join(public_dir, entry)
+                if os.path.abspath(entry_path) == os.path.abspath(dst_path):
+                    continue
+                if os.path.isfile(entry_path):
+                    try:
+                        os.remove(entry_path)
+                        removed += 1
+                    except Exception as e:
+                        logger.warning(f"[质押 public 同步] 删除 {entry_path} 失败: {e}")
+            logger.info(f"[质押 public 同步] 清理 public 中其他文件 {removed} 个，保留: {src_name}")
+            return True
+        except Exception as e:
+            logger.warning(f"[质押 public 同步] 失败（不影响主流程）: {e}")
+            return False
+
     def _detect_header_and_parse(self, df_all: pd.DataFrame, known_col_names: set, filepath: str) -> pd.DataFrame:
         """统一处理单行表头、双行表头、分组头三种情况。
 
@@ -397,8 +435,12 @@ class WorkflowExecutor:
                 is_public_file = check_is_public_file(filepath, public_dir)
 
                 try:
-                    # 质押：多 Sheet 遍历，每 Sheet 单独检测表头并注入"来源"列
-                    if self.workflow_type == "质押" and not is_public_file:
+                    # 质押：多 Sheet 遍历（含 public 文件），每 Sheet 单独检测表头并注入"来源"列
+                    if self.workflow_type == "质押":
+                        # 跳过历史的最终输出文件（如"5质押20260420.xlsx"）避免循环合并
+                        if isinstance(filename, str) and filename.startswith("5质押"):
+                            logger.info(f"质押：跳过最终输出文件: {filepath}")
+                            continue
                         sheet_map = pd.read_excel(filepath, sheet_name=None)
                         known_col_names_pledge = {
                             "证券代码", "证券简称", "证券名称", "最新公告日",
@@ -749,8 +791,37 @@ class WorkflowExecutor:
         except Exception:
             pass
 
-        df_sorted = df.sort_values(date_col, ascending=False)
-        df_deduped = df_sorted.drop_duplicates(subset=[stock_code_col], keep="first")
+        # 质押类型：优先保留"3列(持续递增/递减/质押异动)任一非空"的行 → 再按最新公告日
+        # 其他类型：保持原逻辑（按日期降序 + keep=first）
+        if self.workflow_type == "质押":
+            preset_cols = ["持续递增（一年内）", "持续递减（一年内）", "质押异动"]
+            existing_preset = [c for c in preset_cols if c in df.columns]
+            if existing_preset:
+                def _has_preset(row):
+                    for c in existing_preset:
+                        v = row.get(c)
+                        if v is None:
+                            continue
+                        s = str(v).strip()
+                        if s != "" and s.lower() != "nan":
+                            return 1
+                    return 0
+                df = df.copy()
+                df["_has_preset"] = df.apply(_has_preset, axis=1)
+                # 先按 _has_preset 降序（1 在前），再按 date_col 降序
+                df_sorted = df.sort_values(
+                    by=["_has_preset", date_col], ascending=[False, False]
+                )
+                df_deduped = df_sorted.drop_duplicates(
+                    subset=[stock_code_col], keep="first"
+                )
+                df_deduped = df_deduped.drop(columns=["_has_preset"])
+            else:
+                df_sorted = df.sort_values(date_col, ascending=False)
+                df_deduped = df_sorted.drop_duplicates(subset=[stock_code_col], keep="first")
+        else:
+            df_sorted = df.sort_values(date_col, ascending=False)
+            df_deduped = df_sorted.drop_duplicates(subset=[stock_code_col], keep="first")
 
         df_deduped = df_deduped[~df_deduped[stock_code_col].astype(str).str.upper().str.endswith('.NQ')]
 
@@ -1140,6 +1211,11 @@ class WorkflowExecutor:
         df.to_excel(output_path, index=False)
         auto_adjust_excel_width(output_path)
         logger.info(f"结果已保存到: {output_path}")
+
+        # 质押类型：match_sector 作为最后一步时，同步到 public
+        # （若后续还有 pledge_trend_analysis 步骤，那里会再次覆盖 public）
+        if self.workflow_type == "质押":
+            self._sync_pledge_final_to_public(output_path, date_str)
 
         # 自动采集20日均线趋势数据
         if '20日均线' in df.columns:
@@ -1904,7 +1980,10 @@ class WorkflowExecutor:
         except Exception as e:
             logger.warning(f"[质押异动趋势] 设置列宽失败: {e}")
 
-        # 6. 缓存清理兜底
+        # 6. 同步最终输出到 public（质押类型专用；失败不阻塞）
+        self._sync_pledge_final_to_public(output_path, date_str)
+
+        # 7. 缓存清理兜底
         try:
             cleanup_expired_pledge_cache(redis_cli, max_age_days=370)
         except Exception as e:

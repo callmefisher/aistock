@@ -158,6 +158,47 @@ async def test_merge_preserves_preset_columns_and_renames_to_standard(tmpbase):
 
 
 @pytest.mark.asyncio
+async def test_merge_includes_public_directory_files(tmpbase):
+    """质押 public 目录下的文件也会被合并。"""
+    upload_dir = os.path.join(tmpbase, "质押", "2026-04-20")
+    public_dir = os.path.join(tmpbase, "质押", "public")
+    # 日上传目录 1 个文件
+    _make_pledge_excel(os.path.join(upload_dir, "daily.xlsx"), {
+        "小盘": [{"证券代码": "000001.SZ", "证券简称": "平安", "最新公告日": "2026-04-14"}],
+    })
+    # public 目录 1 个文件（不是以 5质押 开头）
+    _make_pledge_excel(os.path.join(public_dir, "history.xlsx"), {
+        "中大盘": [{"证券代码": "600519.SH", "证券简称": "茅台", "最新公告日": "2026-03-10"}],
+    })
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    result = await ex._merge_excel({}, date_str="2026-04-20")
+    assert result["success"], result["message"]
+    df = result["_df"]
+    assert len(df) == 2
+    assert set(df["证券代码"]) == {"000001.SZ", "600519.SH"}
+
+
+@pytest.mark.asyncio
+async def test_merge_skips_previous_final_output_in_public(tmpbase):
+    """public 下若已有"5质押xxx.xlsx"（上次执行的最终输出），本次合并应跳过，避免循环。"""
+    upload_dir = os.path.join(tmpbase, "质押", "2026-04-20")
+    public_dir = os.path.join(tmpbase, "质押", "public")
+    _make_pledge_excel(os.path.join(upload_dir, "daily.xlsx"), {
+        "小盘": [{"证券代码": "000001.SZ", "证券简称": "平安", "最新公告日": "2026-04-14"}],
+    })
+    # public 里模拟一个历史最终输出
+    _make_pledge_excel(os.path.join(public_dir, "5质押20260301.xlsx"), {
+        "小盘": [{"证券代码": "999999.SH", "证券简称": "历史", "最新公告日": "2026-03-01"}],
+    })
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    result = await ex._merge_excel({}, date_str="2026-04-20")
+    assert result["success"]
+    df = result["_df"]
+    assert "999999.SH" not in df["证券代码"].values
+    assert "000001.SZ" in df["证券代码"].values
+
+
+@pytest.mark.asyncio
 async def test_extract_columns_keeps_source_for_pledge(tmpbase):
     """extract_columns 默认提取列针对质押类型保留"来源"列。"""
     upload_dir = os.path.join(tmpbase, "质押", "2026-04-20")

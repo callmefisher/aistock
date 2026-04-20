@@ -122,6 +122,7 @@ WORKFLOW_TYPE_CONFIG = {
     "质押": {
         "display_name": "质押",
         "base_subdir": "质押",
+        "public_skiprows": 0,
         "directories": {
             "upload_date": "质押/{date}",
             "public": "质押/public",
