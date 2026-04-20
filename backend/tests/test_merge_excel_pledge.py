@@ -133,6 +133,31 @@ async def test_merge_auto_generate_seq_when_missing(tmpbase):
 
 
 @pytest.mark.asyncio
+async def test_merge_preserves_preset_columns_and_renames_to_standard(tmpbase):
+    """原表含"持续递增xxx"/"持续递减xxx"/"质押异动"前缀列 → 合并后 rename 到标准名并保留。"""
+    upload_dir = os.path.join(tmpbase, "质押", "2026-04-20")
+    _make_pledge_excel(os.path.join(upload_dir, "f.xlsx"), {
+        "小盘": [{
+            "证券代码": "002768.SZ", "证券简称": "国恩",
+            "最新公告日": "2026-04-14",
+            "持续递增最近一年": "",
+            "持续递减一年内": "Y",
+            "质押异动备注": "小幅转减",
+        }],
+    })
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    result = await ex._merge_excel({}, date_str="2026-04-20")
+    assert result["success"]
+    df = result["_df"]
+    assert "持续递增（一年内）" in df.columns
+    assert "持续递减（一年内）" in df.columns
+    assert "质押异动" in df.columns
+    row = df.iloc[0]
+    assert row["持续递减（一年内）"] == "Y"
+    assert row["质押异动"] == "小幅转减"
+
+
+@pytest.mark.asyncio
 async def test_extract_columns_keeps_source_for_pledge(tmpbase):
     """extract_columns 默认提取列针对质押类型保留"来源"列。"""
     upload_dir = os.path.join(tmpbase, "质押", "2026-04-20")

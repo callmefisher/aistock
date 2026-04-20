@@ -135,6 +135,83 @@ async def test_output_file_respects_user_specified(tmpbase):
 
 
 @pytest.mark.asyncio
+async def test_skip_preset_row_not_queried(tmpbase):
+    """原表 3 列任一非空 → skip，不调用数据源，保持原值。"""
+    df = pd.DataFrame([
+        {"证券代码": "002768", "证券简称": "国恩",
+         "最新公告日": "2026-04-14", "来源": "小盘",
+         "持续递增（一年内）": "", "持续递减（一年内）": "Y", "质押异动": ""},
+        {"证券代码": "000001", "证券简称": "平安",
+         "最新公告日": "2026-04-14", "来源": "中大盘",
+         "持续递增（一年内）": "", "持续递减（一年内）": "", "质押异动": ""},
+    ])
+
+    class Spy:
+        def __init__(self, *a, **kw):
+            self.calls = []
+        def get_history(self, symbol, anchor, window_days=365):
+            self.calls.append(symbol)
+            return [], "empty"
+
+    spy_inst = {"val": None}
+    def factory(*a, **kw):
+        spy_inst["val"] = Spy()
+        return spy_inst["val"]
+
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    with patch("services.pledge_data_source.PledgeDataSource", factory), \
+         patch("core.redis_client.get_redis", return_value=None):
+        result = await ex._pledge_trend_analysis({}, df, date_str="2026-04-20")
+
+    assert result["success"]
+    df_out = result["_df"]
+    # 第 1 行保留原值（已有递减=Y）
+    assert df_out.iloc[0]["持续递减（一年内）"] == "Y"
+    # 第 2 行被正常查询（空值）
+    assert result["stats"]["skipped_preset"] == 1
+    # 数据源仅被调用 1 次（只查第 2 行）
+    assert spy_inst["val"].calls == ["000001"]
+
+
+@pytest.mark.asyncio
+async def test_skip_old_row_beyond_recency_window(tmpbase):
+    """锚点早于 row_recency_days 前 → skip。"""
+    from datetime import datetime as _dt, timedelta as _td
+    old_date = (_dt.now() - _td(days=60)).date().isoformat()
+    recent_date = (_dt.now() - _td(days=5)).date().isoformat()
+    df = pd.DataFrame([
+        {"证券代码": "002768", "证券简称": "国恩",
+         "最新公告日": old_date, "来源": "小盘"},
+        {"证券代码": "000001", "证券简称": "平安",
+         "最新公告日": recent_date, "来源": "中大盘"},
+    ])
+
+    class Spy:
+        def __init__(self, *a, **kw):
+            self.calls = []
+        def get_history(self, symbol, anchor, window_days=365):
+            self.calls.append(symbol)
+            return [], "empty"
+
+    spy_inst = {"val": None}
+    def factory(*a, **kw):
+        spy_inst["val"] = Spy()
+        return spy_inst["val"]
+
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    with patch("services.pledge_data_source.PledgeDataSource", factory), \
+         patch("core.redis_client.get_redis", return_value=None):
+        result = await ex._pledge_trend_analysis(
+            {"row_recency_days": 30}, df, date_str="2026-04-20"
+        )
+
+    assert result["success"]
+    assert result["stats"]["skipped_old"] == 1
+    # 数据源只被调用 1 次（只查最近行）
+    assert spy_inst["val"].calls == ["000001"]
+
+
+@pytest.mark.asyncio
 async def test_fail_samples_limited_to_10(tmpbase):
     """单股异常 → 进入 fail_samples，最多 10 条。"""
     class BombDS:

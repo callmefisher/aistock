@@ -717,6 +717,15 @@
                     v-model="step.config.window_days"
                     :min="30" :max="1500" :step="30" style="width: 200px"
                   />
+                  <span class="param-hint">&nbsp; 单股历史质押记录窗口</span>
+                </el-form-item>
+
+                <el-form-item label="行有效期 (天)">
+                  <el-input-number
+                    v-model="step.config.row_recency_days"
+                    :min="1" :max="365" :step="1" style="width: 200px"
+                  />
+                  <span class="param-hint">&nbsp; 只处理最新公告日在此范围内的行</span>
                 </el-form-item>
 
                 <el-form-item label="输出文件名">
@@ -874,6 +883,8 @@
               <el-tag type="success">成功 {{ executionResult.stats.ok }}</el-tag>
               <el-tag type="warning">无历史 {{ executionResult.stats.empty }}</el-tag>
               <el-tag type="danger" v-if="executionResult.stats.fail > 0">失败 {{ executionResult.stats.fail }}</el-tag>
+              <el-tag type="info" v-if="executionResult.stats.skipped_preset > 0">跳过(已有值) {{ executionResult.stats.skipped_preset }}</el-tag>
+              <el-tag type="info" v-if="executionResult.stats.skipped_old > 0">跳过(过期) {{ executionResult.stats.skipped_old }}</el-tag>
             </div>
             <div class="pledge-row" style="margin-top:6px;">
               <span class="pledge-label">数据源:</span>
@@ -1476,6 +1487,7 @@ const onStepTypeChange = (step, index) => {
       event_no_change_threshold: 0.5,
       event_large_threshold: 3.0,
       window_days: 365,
+      row_recency_days: 30,
       output_filename: ''
     }
   }

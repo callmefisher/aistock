@@ -416,13 +416,22 @@ class WorkflowExecutor:
                                 c for c in df_parsed.columns
                                 if isinstance(c, str) and "股权质押公告日期" in c
                             ]
+                            # 动态匹配原表的 3 个预判列（任意含该关键字的前缀列）
+                            preset_inc_cols = [c for c in df_parsed.columns
+                                               if isinstance(c, str) and "持续递增" in c]
+                            preset_dec_cols = [c for c in df_parsed.columns
+                                               if isinstance(c, str) and "持续递减" in c]
+                            preset_event_cols = [c for c in df_parsed.columns
+                                                 if isinstance(c, str) and "质押异动" in c]
                             df_parsed["来源"] = self._derive_pledge_source(sheet_name)
                             df_parsed["_source_file"] = filename
                             # 提前列过滤（质押白名单）
-                            target_cols_pledge = [
-                                "序号", "证券代码", "证券简称", "证券名称",
-                                "最新公告日", "来源", "_source_file",
-                            ] + pledge_date_cols
+                            target_cols_pledge = (
+                                ["序号", "证券代码", "证券简称", "证券名称",
+                                 "最新公告日", "来源", "_source_file"]
+                                + pledge_date_cols
+                                + preset_inc_cols + preset_dec_cols + preset_event_cols
+                            )
                             available_p = [c for c in target_cols_pledge if c in df_parsed.columns]
                             if available_p:
                                 df_parsed = df_parsed[available_p]
@@ -576,6 +585,24 @@ class WorkflowExecutor:
                         merged_df["最新公告日"] = merged_df["最新公告日"].fillna(merged_df[extra])
                         merged_df = merged_df.drop(columns=[extra])
 
+                # 预判列 rename：前缀列 → 标准列名（任一行有值即跳过后续计算）
+                def _coalesce_rename(merged_df, prefix_keyword, target_name):
+                    if target_name in merged_df.columns:
+                        return merged_df
+                    candidates = [c for c in merged_df.columns
+                                  if isinstance(c, str) and prefix_keyword in c]
+                    if not candidates:
+                        return merged_df
+                    primary = candidates[0]
+                    for extra in candidates[1:]:
+                        merged_df[primary] = merged_df[primary].fillna(merged_df[extra])
+                        merged_df = merged_df.drop(columns=[extra])
+                    return merged_df.rename(columns={primary: target_name})
+
+                merged_df = _coalesce_rename(merged_df, "持续递增", "持续递增（一年内）")
+                merged_df = _coalesce_rename(merged_df, "持续递减", "持续递减（一年内）")
+                merged_df = _coalesce_rename(merged_df, "质押异动", "质押异动")
+
             # 删除内部辅助列
             if "_source_file" in merged_df.columns:
                 merged_df = merged_df.drop(columns=["_source_file"])
@@ -584,9 +611,14 @@ class WorkflowExecutor:
             # 保留原始列结构供后续 ranking_sort 步骤使用
             if not self.resolver.config.get("skip_public_in_merge"):
                 keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
-                # 质押类型额外保留"来源"列
+                # 质押类型额外保留"来源"及 3 个预判列
                 if self.workflow_type == "质押":
-                    keep_columns.append("来源")
+                    keep_columns += [
+                        "来源",
+                        "持续递增（一年内）",
+                        "持续递减（一年内）",
+                        "质押异动",
+                    ]
                 existing_columns = [col for col in keep_columns if col in merged_df.columns]
                 merged_df = merged_df[existing_columns]
                 # 去除重复列名（concat 不同格式文件 + rename 可能产生重复列）
@@ -780,9 +812,13 @@ class WorkflowExecutor:
                     }
         else:
             fixed_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
-            # 质押类型额外保留"来源"列
+            # 质押类型额外保留"来源"列和 3 个预判列（若已存在）
             if self.workflow_type == "质押":
                 fixed_columns = fixed_columns + ["来源"]
+                # 只把原表已存在的预判列加入，否则跳过（extract 不会要求"缺少"）
+                for preset in ["持续递增（一年内）", "持续递减（一年内）", "质押异动"]:
+                    if preset in available_columns:
+                        fixed_columns.append(preset)
             for fixed_col in fixed_columns:
                 found = False
                 for avail_col in available_columns:
@@ -1752,17 +1788,24 @@ class WorkflowExecutor:
         event_no_change  = float(config.get("event_no_change_threshold", 0.5))
         event_large     = float(config.get("event_large_threshold", 3.0))
         window_days      = int(config.get("window_days", 365))
+        row_recency_days = int(config.get("row_recency_days", 30))
 
         # 3. 初始化数据源
         redis_cli = get_redis()
         ds = PledgeDataSource(redis_client=redis_cli, akshare_fallback=True)
 
-        # 4. 逐股处理
-        df["持续递增（一年内）"] = ""
-        df["持续递减（一年内）"] = ""
-        df["质押异动"] = ""
+        # 4. 逐股处理：预判列不存在则新建；存在则保留原值
+        for preset in ["持续递增（一年内）", "持续递减（一年内）", "质押异动"]:
+            if preset not in df.columns:
+                df[preset] = ""
+        # 计算行有效期的 cutoff（anchor 早于 cutoff 的行 skip）
+        from datetime import datetime as _dt, timedelta as _td
+        today = _dt.now().date()
+        recency_cutoff = (today - _td(days=row_recency_days)).isoformat()
+
         stats = {
             "total": len(df), "ok": 0, "empty": 0, "fail": 0,
+            "skipped_preset": 0, "skipped_old": 0,
             "by_source": {"eastmoney": 0, "cache": 0, "akshare": 0, "empty": 0},
             "by_result": {
                 "持续递增": 0, "持续递减": 0, "无趋势": 0,
@@ -1773,6 +1816,13 @@ class WorkflowExecutor:
         fail_samples: List[Dict[str, str]] = []
 
         import re as _re_mod
+
+        def _nonempty(v):
+            if v is None:
+                return False
+            s = str(v).strip()
+            return s != "" and s.lower() != "nan"
+
         for idx, row in df.iterrows():
             raw_code = str(row["证券代码"])
             symbol = normalize_stock_code(raw_code)
@@ -1780,6 +1830,32 @@ class WorkflowExecutor:
             m = _re_mod.search(r'(\d{6})', symbol)
             numeric = m.group(1) if m else symbol
             anchor = str(row["最新公告日"]).strip()[:10]
+
+            # 跳过规则 1：原表 3 列任一非空 → 整行跳过
+            has_preset = (
+                _nonempty(row.get("持续递增（一年内）"))
+                or _nonempty(row.get("持续递减（一年内）"))
+                or _nonempty(row.get("质押异动"))
+            )
+            if has_preset:
+                stats["skipped_preset"] += 1
+                logger.info(
+                    f"[质押异动趋势] {idx+1}/{len(df)} {symbol} {row.get('证券简称','')} "
+                    f"原表已有值 → skip（递增={row.get('持续递增（一年内）') or '-'} "
+                    f"递减={row.get('持续递减（一年内）') or '-'} "
+                    f"异动={row.get('质押异动') or '-'}）"
+                )
+                continue
+
+            # 跳过规则 2：行日期早于 row_recency_days 前 → 整行跳过
+            if anchor < recency_cutoff:
+                stats["skipped_old"] += 1
+                logger.info(
+                    f"[质押异动趋势] {idx+1}/{len(df)} {symbol} {row.get('证券简称','')} "
+                    f"锚点 {anchor} 早于 {recency_cutoff} → skip（超出{row_recency_days}天行有效期）"
+                )
+                continue
+
             try:
                 records, source = ds.get_history(numeric, anchor, window_days)
                 stats["by_source"][source] = stats["by_source"].get(source, 0) + 1
@@ -1836,7 +1912,9 @@ class WorkflowExecutor:
 
         summary = (
             f"质押异动趋势: 共{stats['total']}只, "
-            f"成功{stats['ok']}, 无历史{stats['empty']}, 失败{stats['fail']} | "
+            f"成功{stats['ok']}, 无历史{stats['empty']}, 失败{stats['fail']}, "
+            f"跳过(原表已有){stats['skipped_preset']}, "
+            f"跳过(超出{row_recency_days}天){stats['skipped_old']} | "
             f"源: 东财{stats['by_source']['eastmoney']}, "
             f"缓存{stats['by_source']['cache']}, "
             f"降级AkShare{stats['by_source']['akshare']}, "
