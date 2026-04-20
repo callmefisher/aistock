@@ -274,11 +274,95 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
         return
 
     current_row = 0
+    pledge_written = False
+
+    def _write_pledge_block(start_row: int) -> int:
+        """写入【5质押】合并表格 + 双曲线图，返回写入后的 current_row。"""
+        if not (pledge_sub["中大盘"] or pledge_sub["小盘"]):
+            return start_row
+        zdp_items = sorted(pledge_sub["中大盘"], key=lambda x: x["date_str"])
+        xp_items = sorted(pledge_sub["小盘"], key=lambda x: x["date_str"])
+        all_dates = sorted(set([d["date_str"] for d in zdp_items] + [d["date_str"] for d in xp_items]))
+        zdp_map = {d["date_str"]: d for d in zdp_items}
+        xp_map = {d["date_str"]: d for d in xp_items}
+
+        cur = start_row
+        ws.merge_range(cur, 0, cur, 8, "【5质押】", title_fmt)
+        cur += 1
+        headers = ["日期", "中大盘数量", "中大盘总量", "中大盘占比(%)",
+                   "小盘数量", "小盘总量", "小盘占比(%)", "完整日期"]
+        for col_idx, h in enumerate(headers):
+            ws.write(cur, col_idx, h, header_fmt)
+        header_row_local = cur
+        cur += 1
+        data_start_row = cur
+        for ds in all_dates:
+            try:
+                parts = ds.split('-')
+                short_date = f"{int(parts[1])}/{int(parts[2])}"
+            except Exception:
+                short_date = ds
+            zd = zdp_map.get(ds)
+            xd = xp_map.get(ds)
+            ws.write(cur, 0, short_date, data_fmt)
+            if zd:
+                ws.write(cur, 1, zd["count"], data_fmt)
+                ws.write(cur, 2, zd["total"], data_fmt)
+                ws.write(cur, 3, round(zd["ratio"] * 100, 2) if zd.get("ratio") else 0, pct_fmt)
+            else:
+                for c in (1, 2, 3):
+                    ws.write(cur, c, "", data_fmt)
+            if xd:
+                ws.write(cur, 4, xd["count"], data_fmt)
+                ws.write(cur, 5, xd["total"], data_fmt)
+                ws.write(cur, 6, round(xd["ratio"] * 100, 2) if xd.get("ratio") else 0, pct_fmt)
+            else:
+                for c in (4, 5, 6):
+                    ws.write(cur, c, "", data_fmt)
+            ws.write(cur, 7, ds, data_fmt)
+            cur += 1
+        data_end_row = cur - 1
+
+        chart_local = wb.add_chart({'type': 'line'})
+        chart_local.set_title({'name': "5质押 - 站上20日均线占比趋势（中大盘 vs 小盘）"})
+        chart_local.set_size({'width': 720, 'height': 380})
+        chart_local.add_series({
+            'name': '中大盘占比(%)',
+            'categories': ['站上20日均线趋势', data_start_row, 0, data_end_row, 0],
+            'values': ['站上20日均线趋势', data_start_row, 3, data_end_row, 3],
+            'line': {'width': 2.5, 'color': '#409EFF'},
+            'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#409EFF'}},
+        })
+        chart_local.add_series({
+            'name': '小盘占比(%)',
+            'categories': ['站上20日均线趋势', data_start_row, 0, data_end_row, 0],
+            'values': ['站上20日均线趋势', data_start_row, 6, data_end_row, 6],
+            'line': {'width': 2.5, 'color': '#E6A23C'},
+            'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#E6A23C'}},
+        })
+        chart_local.set_y_axis({'name': '占比(%)', 'num_format': '0.00'})
+        num_points = len(all_dates)
+        x_axis_opts = {'name': '日期', 'label_position': 'low'}
+        if num_points > 15:
+            interval = max(1, num_points // 15)
+            x_axis_opts['interval_unit'] = interval
+            x_axis_opts['num_font'] = {'rotation': -45, 'size': 9}
+        chart_local.set_x_axis(x_axis_opts)
+        ws.insert_chart(header_row_local - 1, 10, chart_local)
+
+        chart_height_rows = 22
+        data_rows_used = len(all_dates) + 2
+        return header_row_local - 1 + max(chart_height_rows, data_rows_used) + 2
 
     for wt in type_names:
         items = sorted(type_groups[wt], key=lambda x: x["date_str"])
         if not items:
             continue
+
+        # 在 prefix > 5 的第一个类型前插入【5质押】块
+        if not pledge_written and get_type_sort_key(wt) > 5:
+            current_row = _write_pledge_block(current_row)
+            pledge_written = True
 
         prefix = get_type_prefix(wt)
         # 表格标题（不含后缀）
@@ -347,90 +431,10 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
         data_rows_used = len(items) + 2
         current_row = header_row - 1 + max(chart_height_rows, data_rows_used) + 2
 
-    # 质押：中大盘+小盘 合并成一个逻辑组 + 双曲线图表
-    if pledge_sub["中大盘"] or pledge_sub["小盘"]:
-        zdp_items = sorted(pledge_sub["中大盘"], key=lambda x: x["date_str"])
-        xp_items = sorted(pledge_sub["小盘"], key=lambda x: x["date_str"])
-        # x 轴 = 所有日期并集
-        all_dates = sorted(set([d["date_str"] for d in zdp_items] + [d["date_str"] for d in xp_items]))
-        zdp_map = {d["date_str"]: d for d in zdp_items}
-        xp_map = {d["date_str"]: d for d in xp_items}
-
-        table_title = "【5质押】"
-        chart_title = "5质押 - 站上20日均线占比趋势（中大盘 vs 小盘）"
-
-        # 留出顶部间距
-        current_row += 1
-        ws.merge_range(current_row, 0, current_row, 8, table_title, title_fmt)
-        current_row += 1
-        # 表头: 日期 | 中大盘数量 | 中大盘总量 | 中大盘占比% | 小盘数量 | 小盘总量 | 小盘占比% | 完整日期
-        headers = ["日期", "中大盘数量", "中大盘总量", "中大盘占比(%)",
-                   "小盘数量", "小盘总量", "小盘占比(%)", "完整日期"]
-        for col_idx, h in enumerate(headers):
-            ws.write(current_row, col_idx, h, header_fmt)
-        header_row = current_row
-        current_row += 1
-
-        data_start_row = current_row
-        for ds in all_dates:
-            try:
-                parts = ds.split('-')
-                short_date = f"{int(parts[1])}/{int(parts[2])}"
-            except Exception:
-                short_date = ds
-            zd = zdp_map.get(ds)
-            xd = xp_map.get(ds)
-            ws.write(current_row, 0, short_date, data_fmt)
-            if zd:
-                ws.write(current_row, 1, zd["count"], data_fmt)
-                ws.write(current_row, 2, zd["total"], data_fmt)
-                ws.write(current_row, 3, round(zd["ratio"] * 100, 2) if zd.get("ratio") else 0, pct_fmt)
-            else:
-                for c in (1, 2, 3):
-                    ws.write(current_row, c, "", data_fmt)
-            if xd:
-                ws.write(current_row, 4, xd["count"], data_fmt)
-                ws.write(current_row, 5, xd["total"], data_fmt)
-                ws.write(current_row, 6, round(xd["ratio"] * 100, 2) if xd.get("ratio") else 0, pct_fmt)
-            else:
-                for c in (4, 5, 6):
-                    ws.write(current_row, c, "", data_fmt)
-            ws.write(current_row, 7, ds, data_fmt)
-            current_row += 1
-        data_end_row = current_row - 1
-
-        chart = wb.add_chart({'type': 'line'})
-        chart.set_title({'name': chart_title})
-        chart.set_size({'width': 720, 'height': 380})
-
-        chart.add_series({
-            'name': '中大盘占比(%)',
-            'categories': ['站上20日均线趋势', data_start_row, 0, data_end_row, 0],
-            'values': ['站上20日均线趋势', data_start_row, 3, data_end_row, 3],
-            'line': {'width': 2.5, 'color': '#409EFF'},
-            'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#409EFF'}},
-        })
-        chart.add_series({
-            'name': '小盘占比(%)',
-            'categories': ['站上20日均线趋势', data_start_row, 0, data_end_row, 0],
-            'values': ['站上20日均线趋势', data_start_row, 6, data_end_row, 6],
-            'line': {'width': 2.5, 'color': '#E6A23C'},
-            'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#E6A23C'}},
-        })
-        chart.set_y_axis({'name': '占比(%)', 'num_format': '0.00'})
-
-        num_points = len(all_dates)
-        x_axis_opts = {'name': '日期', 'label_position': 'low'}
-        if num_points > 15:
-            interval = max(1, num_points // 15)
-            x_axis_opts['interval_unit'] = interval
-            x_axis_opts['num_font'] = {'rotation': -45, 'size': 9}
-        chart.set_x_axis(x_axis_opts)
-
-        ws.insert_chart(header_row - 1, 10, chart)
-        chart_height_rows = 22
-        data_rows_used = len(all_dates) + 2
-        current_row = header_row - 1 + max(chart_height_rows, data_rows_used) + 2
+    # 若遍历完所有类型都没触发插入（所有 prefix ≤ 5），兜底追加在末尾
+    if not pledge_written:
+        current_row = _write_pledge_block(current_row)
+        pledge_written = True
 
     wb.close()
     logger.info(
