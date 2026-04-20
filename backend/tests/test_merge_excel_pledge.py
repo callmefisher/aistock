@@ -212,3 +212,47 @@ async def test_extract_columns_keeps_source_for_pledge(tmpbase):
     assert extract_result["success"], extract_result["message"]
     cols = extract_result["columns"]
     assert "来源" in cols
+
+
+@pytest.mark.asyncio
+async def test_extract_columns_preserves_preset_even_with_custom_config(tmpbase):
+    """质押类型：即便用户传入 columns 只有 4 列，后端仍兜底保留 来源+3 预判列。"""
+    import pandas as pd
+    df = pd.DataFrame([{
+        "序号": 1, "证券代码": "002768.SZ", "证券简称": "国恩",
+        "最新公告日": "2026-04-14", "来源": "小盘",
+        "持续递增（一年内）": "", "持续递减（一年内）": "Y", "质押异动": "小幅转减",
+    }])
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    result = await ex._extract_columns(
+        {"columns": ["序号", "证券代码", "证券简称", "最新公告日"]},
+        df, date_str="2026-04-20"
+    )
+    assert result["success"]
+    cols = result["columns"]
+    # 用户仅传了 4 列，但质押类型兜底补入"来源"+3 预判列（原表存在时）
+    assert "来源" in cols
+    assert "持续递减（一年内）" in cols
+    assert "质押异动" in cols
+    # 且这 3 列的值未丢
+    row = result["data"][0]
+    assert row["持续递减（一年内）"] == "Y"
+    assert row["质押异动"] == "小幅转减"
+
+
+@pytest.mark.asyncio
+async def test_extract_columns_custom_config_non_pledge_unchanged(tmpbase):
+    """非质押类型：自定义 columns 严格按用户输入，不兜底补充。"""
+    import pandas as pd
+    df = pd.DataFrame([{
+        "序号": 1, "证券代码": "600000.SH", "证券简称": "浦发",
+        "最新公告日": "2026-04-14", "来源": "somehow",
+    }])
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="并购重组")
+    result = await ex._extract_columns(
+        {"columns": ["序号", "证券代码", "证券简称", "最新公告日"]},
+        df, date_str="2026-04-20"
+    )
+    assert result["success"]
+    # 并购重组不应自动补入"来源"
+    assert "来源" not in result["columns"]

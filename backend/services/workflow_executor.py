@@ -881,6 +881,13 @@ class WorkflowExecutor:
                         "success": False,
                         "message": f"未找到列: {col_name}，可用列: {available_columns}"
                     }
+            # 质押类型：即便用户传了自定义 columns，也强制追加存在的"来源"及 3 个预判列
+            # （避免用户在 UI 仅选择 4 标准列时，原表的预判信息被意外丢弃）
+            if self.workflow_type == "质押":
+                extras = ["来源", "持续递增（一年内）", "持续递减（一年内）", "质押异动"]
+                for extra in extras:
+                    if extra in available_columns and extra not in selected_columns:
+                        selected_columns.append(extra)
         else:
             fixed_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
             # 质押类型额外保留"来源"列和 3 个预判列（若已存在）

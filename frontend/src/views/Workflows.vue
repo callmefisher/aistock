@@ -336,25 +336,51 @@
               <template v-if="step.type === 'extract_columns'">
                 <el-form-item label="选择模式">
                   <el-radio-group v-model="step.config.use_fixed_columns" @change="onColumnModeChange(step)">
-                    <el-radio :value="true">固定4列</el-radio>
+                    <el-radio :value="true">
+                      {{ form.workflow_type === '质押' ? '固定列（含来源+3预判列）' : '固定4列' }}
+                    </el-radio>
                     <el-radio :value="false">自定义列</el-radio>
                   </el-radio-group>
                 </el-form-item>
 
                 <template v-if="step.config.use_fixed_columns !== false">
-                  <el-alert title="提取: 序号、证券代码、证券简称、最新公告日" type="success" :closable="false" />
+                  <el-alert
+                    v-if="form.workflow_type === '质押'"
+                    title="提取: 序号、证券代码、证券简称、最新公告日、来源、持续递增（一年内）、持续递减（一年内）、质押异动"
+                    type="success" :closable="false"
+                  />
+                  <el-alert
+                    v-else
+                    title="提取: 序号、证券代码、证券简称、最新公告日"
+                    type="success" :closable="false"
+                  />
                 </template>
                 <template v-else>
                   <el-form-item label="选择列">
-                    <el-select v-model="step.config.columns" multiple style="width: 100%" placeholder="选择要提取的列">
+                    <el-select v-model="step.config.columns" multiple filterable allow-create
+                               style="width: 100%" placeholder="选择要提取的列（可输入自定义）">
                       <el-option label="序号" value="序号" />
                       <el-option label="证券代码" value="证券代码" />
                       <el-option label="证券简称" value="证券简称" />
                       <el-option label="最新公告日" value="最新公告日" />
-                      <el-option label="其他可配置列..." value="__custom__" disabled />
+                      <template v-if="form.workflow_type === '质押'">
+                        <el-option label="来源" value="来源" />
+                        <el-option label="持续递增（一年内）" value="持续递增（一年内）" />
+                        <el-option label="持续递减（一年内）" value="持续递减（一年内）" />
+                        <el-option label="质押异动" value="质押异动" />
+                      </template>
                     </el-select>
                   </el-form-item>
-                  <el-alert title="提示: 如需其他列名，请在config.columns中手动配置" type="info" :closable="false" />
+                  <el-alert
+                    v-if="form.workflow_type === '质押'"
+                    title="质押类型：即便未显式勾选，后端仍会自动保留已存在的「来源/持续递增/持续递减/质押异动」以免信息丢失"
+                    type="info" :closable="false"
+                  />
+                  <el-alert
+                    v-else
+                    title="提示: 可直接输入自定义列名并回车添加"
+                    type="info" :closable="false"
+                  />
                 </template>
 
                 <el-form-item label="输出文件名">
