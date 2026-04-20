@@ -1289,18 +1289,45 @@ class WorkflowExecutor:
         # 自动采集20日均线趋势数据
         if '20日均线' in df.columns:
             try:
-                ma20_count = int((df['20日均线'].fillna('').astype(str).str.strip() != '').sum())
-                ma20_total = len(df)
                 from services.trend_service import save_trend_data
-                await save_trend_data(
-                    metric_type='ma20',
-                    workflow_type=self.workflow_type or '并购重组',
-                    date_str=date_str or self.today,
-                    count=ma20_count,
-                    total=ma20_total,
-                    source='auto'
-                )
-                logger.info(f"自动采集MA20趋势: type={self.workflow_type}, count={ma20_count}, total={ma20_total}")
+                # 质押类型：按"来源"(中大盘/小盘)拆成两个子类型独立存储
+                if self.workflow_type == "质押" and "来源" in df.columns:
+                    src_series = df["来源"].fillna("").astype(str).str.strip()
+                    for src_label in ["中大盘", "小盘"]:
+                        mask = src_series == src_label
+                        sub_total = int(mask.sum())
+                        if sub_total == 0:
+                            continue
+                        sub_count = int(
+                            (df.loc[mask, '20日均线'].fillna('').astype(str).str.strip() != '').sum()
+                        )
+                        sub_wt = f"质押({src_label})"
+                        await save_trend_data(
+                            metric_type='ma20',
+                            workflow_type=sub_wt,
+                            date_str=date_str or self.today,
+                            count=sub_count,
+                            total=sub_total,
+                            source='auto',
+                        )
+                        logger.info(
+                            f"自动采集MA20趋势: type={sub_wt}, count={sub_count}, total={sub_total}"
+                        )
+                else:
+                    ma20_count = int((df['20日均线'].fillna('').astype(str).str.strip() != '').sum())
+                    ma20_total = len(df)
+                    await save_trend_data(
+                        metric_type='ma20',
+                        workflow_type=self.workflow_type or '并购重组',
+                        date_str=date_str or self.today,
+                        count=ma20_count,
+                        total=ma20_total,
+                        source='auto'
+                    )
+                    logger.info(
+                        f"自动采集MA20趋势: type={self.workflow_type}, "
+                        f"count={ma20_count}, total={ma20_total}"
+                    )
             except Exception as e:
                 logger.warning(f"自动采集MA20趋势失败: {e}")
 

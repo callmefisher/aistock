@@ -208,13 +208,24 @@ async def batch_save_trend_data(metric_type: str, records: List[Dict[str, Any]],
 
 
 def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type: str = None):
-    """导出趋势数据到 Excel（xlsxwriter）：每个工作流类型的数据 + 双Y轴折线图，兼容 WPS 和 Excel"""
+    """导出趋势数据到 Excel（xlsxwriter）：每个工作流类型的数据 + 双Y轴折线图，兼容 WPS 和 Excel
+
+    质押类型特殊处理：DB 里的 '质押(中大盘)' 和 '质押(小盘)' 两个子类型在导出时
+    合并成一个 '质押' 逻辑组，同一表格并列两套数据列，共享 1 个双曲线图表。
+    """
     from config.workflow_type_config import WORKFLOW_TYPE_CONFIG
 
-    # 按工作流类型分组
+    # 按工作流类型分组；质押子类型先归入 pledge_sub 两个桶（不入 type_groups）
     type_groups = {}
+    pledge_sub = {"中大盘": [], "小盘": []}
     for d in data:
         wt = d["workflow_type"]
+        if wt == "质押(中大盘)":
+            pledge_sub["中大盘"].append(d)
+            continue
+        if wt == "质押(小盘)":
+            pledge_sub["小盘"].append(d)
+            continue
         if wt not in type_groups:
             type_groups[wt] = []
         type_groups[wt].append(d)
@@ -332,5 +343,94 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
         data_rows_used = len(items) + 2
         current_row = header_row - 1 + max(chart_height_rows, data_rows_used) + 2
 
+    # 质押：中大盘+小盘 合并成一个逻辑组 + 双曲线图表
+    if pledge_sub["中大盘"] or pledge_sub["小盘"]:
+        zdp_items = sorted(pledge_sub["中大盘"], key=lambda x: x["date_str"])
+        xp_items = sorted(pledge_sub["小盘"], key=lambda x: x["date_str"])
+        # x 轴 = 所有日期并集
+        all_dates = sorted(set([d["date_str"] for d in zdp_items] + [d["date_str"] for d in xp_items]))
+        zdp_map = {d["date_str"]: d for d in zdp_items}
+        xp_map = {d["date_str"]: d for d in xp_items}
+
+        table_title = "【5质押】"
+        chart_title = "5质押 - 站上20日均线占比趋势（中大盘 vs 小盘）"
+
+        # 留出顶部间距
+        current_row += 1
+        ws.merge_range(current_row, 0, current_row, 8, table_title, title_fmt)
+        current_row += 1
+        # 表头: 日期 | 中大盘数量 | 中大盘总量 | 中大盘占比% | 小盘数量 | 小盘总量 | 小盘占比% | 完整日期
+        headers = ["日期", "中大盘数量", "中大盘总量", "中大盘占比(%)",
+                   "小盘数量", "小盘总量", "小盘占比(%)", "完整日期"]
+        for col_idx, h in enumerate(headers):
+            ws.write(current_row, col_idx, h, header_fmt)
+        header_row = current_row
+        current_row += 1
+
+        data_start_row = current_row
+        for ds in all_dates:
+            try:
+                parts = ds.split('-')
+                short_date = f"{int(parts[1])}/{int(parts[2])}"
+            except Exception:
+                short_date = ds
+            zd = zdp_map.get(ds)
+            xd = xp_map.get(ds)
+            ws.write(current_row, 0, short_date, data_fmt)
+            if zd:
+                ws.write(current_row, 1, zd["count"], data_fmt)
+                ws.write(current_row, 2, zd["total"], data_fmt)
+                ws.write(current_row, 3, round(zd["ratio"] * 100, 2) if zd.get("ratio") else 0, pct_fmt)
+            else:
+                for c in (1, 2, 3):
+                    ws.write(current_row, c, "", data_fmt)
+            if xd:
+                ws.write(current_row, 4, xd["count"], data_fmt)
+                ws.write(current_row, 5, xd["total"], data_fmt)
+                ws.write(current_row, 6, round(xd["ratio"] * 100, 2) if xd.get("ratio") else 0, pct_fmt)
+            else:
+                for c in (4, 5, 6):
+                    ws.write(current_row, c, "", data_fmt)
+            ws.write(current_row, 7, ds, data_fmt)
+            current_row += 1
+        data_end_row = current_row - 1
+
+        chart = wb.add_chart({'type': 'line'})
+        chart.set_title({'name': chart_title})
+        chart.set_size({'width': 720, 'height': 380})
+
+        chart.add_series({
+            'name': '中大盘占比(%)',
+            'categories': ['站上20日均线趋势', data_start_row, 0, data_end_row, 0],
+            'values': ['站上20日均线趋势', data_start_row, 3, data_end_row, 3],
+            'line': {'width': 2.5, 'color': '#409EFF'},
+            'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#409EFF'}},
+        })
+        chart.add_series({
+            'name': '小盘占比(%)',
+            'categories': ['站上20日均线趋势', data_start_row, 0, data_end_row, 0],
+            'values': ['站上20日均线趋势', data_start_row, 6, data_end_row, 6],
+            'line': {'width': 2.5, 'color': '#E6A23C'},
+            'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#E6A23C'}},
+        })
+        chart.set_y_axis({'name': '占比(%)', 'num_format': '0.00'})
+
+        num_points = len(all_dates)
+        x_axis_opts = {'name': '日期', 'label_position': 'low'}
+        if num_points > 15:
+            interval = max(1, num_points // 15)
+            x_axis_opts['interval_unit'] = interval
+            x_axis_opts['num_font'] = {'rotation': -45, 'size': 9}
+        chart.set_x_axis(x_axis_opts)
+
+        ws.insert_chart(header_row - 1, 10, chart)
+        chart_height_rows = 22
+        data_rows_used = len(all_dates) + 2
+        current_row = header_row - 1 + max(chart_height_rows, data_rows_used) + 2
+
     wb.close()
-    logger.info(f"趋势Excel已导出(xlsxwriter): {file_path}, {len(data)}条, {len(type_names)}个类型")
+    logger.info(
+        f"趋势Excel已导出(xlsxwriter): {file_path}, {len(data)}条, "
+        f"{len(type_names)}个类型"
+        f"{'；质押(中大盘 '+str(len(pledge_sub['中大盘']))+' / 小盘 '+str(len(pledge_sub['小盘']))+')' if pledge_sub['中大盘'] or pledge_sub['小盘'] else ''}"
+    )

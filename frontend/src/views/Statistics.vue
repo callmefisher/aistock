@@ -69,7 +69,18 @@
         <div class="trend-summary" v-if="trendData.length">
           <div v-for="wt in allWorkflowTypes" :key="wt" class="summary-item">
             <span class="summary-type">{{ getTypeDisplay(wt) }}</span>
-            <template v-if="latestByType[wt]">
+            <template v-if="wt === '质押' && latestByType[wt]?._sub">
+              <span v-for="(v, sub) in latestByType[wt]._sub" :key="sub"
+                    class="summary-ratio" :class="v.trend"
+                    :title="`${sub}: ${(v.ratio * 100).toFixed(2)}%`">
+                <small>{{ sub }}</small>
+                {{ (v.ratio * 100).toFixed(2) }}%
+                <span v-if="v.trend === 'up'">&#8593;</span>
+                <span v-else-if="v.trend === 'down'">&#8595;</span>
+              </span>
+              <span v-if="!Object.keys(latestByType[wt]._sub).length" class="summary-empty">--</span>
+            </template>
+            <template v-else-if="latestByType[wt]">
               <span class="summary-ratio" :class="latestByType[wt].trend">
                 {{ (latestByType[wt].ratio * 100).toFixed(2) }}%
                 <span v-if="latestByType[wt].trend === 'up'">&#8593;</span>
@@ -393,6 +404,8 @@ const TYPE_ORDER = [
   { key: '增发实现', display: '3增发实现' },
   { key: '申报并购重组', display: '4申报并购重组' },
   { key: '质押', display: '5质押' },
+  { key: '质押(中大盘)', display: '5质押(中大盘)' },
+  { key: '质押(小盘)', display: '5质押(小盘)' },
   { key: '减持叠加质押和大宗交易', display: '6减持叠加质押和大宗交易' },
   { key: '条件交集', display: '7条件交集' },
   { key: '涨幅排名', display: '8涨幅排名' },
@@ -513,7 +526,10 @@ const handleDelete = async (row) => {
 }
 
 // ===== 20日均线趋势 tab =====
+// 注意: 这里 '质押' 是"合成类型"，前端把 DB 里的 '质押(中大盘)'+'质押(小盘)'
+// 两个独立记录合并成 1 个卡片 2 条曲线展示
 const ALL_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组', '质押', '减持叠加质押和大宗交易', '招投标']
+const PLEDGE_SUBTYPES = ['质押(中大盘)', '质押(小盘)']
 const allWorkflowTypes = ref(ALL_WORKFLOW_TYPES)
 
 const trendLoading = ref(false)
@@ -555,13 +571,20 @@ const onDateRangeChange = () => {
   fetchTrendData()
 }
 
-// 按 type 分组
+// 按 type 分组；质押的两个子类型合并到 "质押" key 下，附带 _source_label
 const trendByType = computed(() => {
   const map = {}
   allWorkflowTypes.value.forEach(t => { map[t] = [] })
   trendData.value.forEach(d => {
-    if (!map[d.workflow_type]) map[d.workflow_type] = []
-    map[d.workflow_type].push(d)
+    const wt = d.workflow_type
+    if (PLEDGE_SUBTYPES.includes(wt)) {
+      const sub = wt === '质押(中大盘)' ? '中大盘' : '小盘'
+      if (!map['质押']) map['质押'] = []
+      map['质押'].push({ ...d, _source_label: sub })
+      return
+    }
+    if (!map[wt]) map[wt] = []
+    map[wt].push(d)
   })
   return map
 })
@@ -571,6 +594,25 @@ const latestByType = computed(() => {
   const result = {}
   for (const [wt, arr] of Object.entries(trendByType.value)) {
     if (!arr.length) continue
+    // 质押：按 _source_label 分组各自取最新
+    if (wt === '质押') {
+      const groups = { '中大盘': [], '小盘': [] }
+      arr.forEach(d => { if (groups[d._source_label]) groups[d._source_label].push(d) })
+      const subLatest = {}
+      for (const [sub, subArr] of Object.entries(groups)) {
+        if (!subArr.length) continue
+        const sorted = [...subArr].sort((a, b) => a.date_str.localeCompare(b.date_str))
+        const latest = sorted[sorted.length - 1]
+        let trend = ''
+        if (sorted.length >= 2) {
+          const prev = sorted[sorted.length - 2]
+          trend = latest.ratio > prev.ratio ? 'up' : latest.ratio < prev.ratio ? 'down' : ''
+        }
+        subLatest[sub] = { ...latest, trend }
+      }
+      result[wt] = { _sub: subLatest }
+      continue
+    }
     const sorted = [...arr].sort((a, b) => a.date_str.localeCompare(b.date_str))
     const latest = sorted[sorted.length - 1]
     let trend = ''
@@ -609,6 +651,12 @@ const renderChart = (wt) => {
   if (chartInstances[wt]) chartInstances[wt].dispose()
   const chart = echarts.init(el)
   chartInstances[wt] = chart
+
+  // 质押类型：画中大盘 + 小盘双曲线
+  if (wt === '质押') {
+    renderPledgeChart(chart, data)
+    return
+  }
 
   const dates = data.map(d => d.date_str)
   const counts = data.map(d => d.count)
@@ -655,6 +703,65 @@ const renderChart = (wt) => {
       : [
           { name: '占比', type: 'line', data: ratios, smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { width: 2, color: '#409EFF' }, itemStyle: { color: '#409EFF' }, areaStyle: { color: 'rgba(64,158,255,0.1)' } }
         ]
+  })
+}
+
+// 质押：把中大盘 + 小盘画成双曲线（x 轴 = 所有日期并集）
+const renderPledgeChart = (chart, data) => {
+  const zdp = data.filter(d => d._source_label === '中大盘')
+  const xp = data.filter(d => d._source_label === '小盘')
+
+  const allDatesSet = new Set([...zdp.map(d => d.date_str), ...xp.map(d => d.date_str)])
+  const allDates = [...allDatesSet].sort()
+
+  const zdpMap = Object.fromEntries(zdp.map(d => [d.date_str, d]))
+  const xpMap = Object.fromEntries(xp.map(d => [d.date_str, d]))
+
+  const toRatio = (m, d) => m[d] ? +(m[d].ratio * 100).toFixed(2) : null
+  const zdpRatios = allDates.map(d => toRatio(zdpMap, d))
+  const xpRatios = allDates.map(d => toRatio(xpMap, d))
+
+  chart.setOption({
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        const idx = params[0].dataIndex
+        const fullDate = allDates[idx] || params[0].axisValue
+        let html = `<b>${fullDate}</b><br/>`
+        params.forEach(p => {
+          if (p.value == null) return
+          html += `${p.marker} ${p.seriesName}: ${p.value}%<br/>`
+          const m = p.seriesName === '中大盘' ? zdpMap[fullDate] : xpMap[fullDate]
+          if (m) html += `&nbsp;&nbsp;（站上 ${m.count} / 总量 ${m.total}）<br/>`
+        })
+        return html
+      }
+    },
+    legend: { data: ['中大盘', '小盘'], top: 0 },
+    grid: { left: 50, right: 50, bottom: allDates.length > 30 ? 70 : 40, top: 36 },
+    xAxis: {
+      type: 'category',
+      data: allDates.map(d => { const p = d.split('-'); return `${+p[1]}/${+p[2]}` }),
+      axisLabel: {
+        rotate: allDates.length > 15 ? 45 : 0,
+        fontSize: 11,
+        interval: allDates.length > 60 ? Math.floor(allDates.length / 20) - 1 : allDates.length > 30 ? Math.floor(allDates.length / 15) - 1 : 'auto'
+      }
+    },
+    dataZoom: allDates.length > 30 ? [{ type: 'slider', start: 0, end: 100, height: 20, bottom: 5 }] : [],
+    yAxis: [
+      { type: 'value', name: '占比%', min: 0, splitNumber: 5, axisLabel: { formatter: '{value}%', fontSize: 11 } }
+    ],
+    series: [
+      { name: '中大盘', type: 'line', data: zdpRatios, smooth: true, connectNulls: true,
+        symbol: 'circle', symbolSize: 6,
+        lineStyle: { width: 2, color: '#409EFF' },
+        itemStyle: { color: '#409EFF' } },
+      { name: '小盘', type: 'line', data: xpRatios, smooth: true, connectNulls: true,
+        symbol: 'circle', symbolSize: 6,
+        lineStyle: { width: 2, color: '#E6A23C' },
+        itemStyle: { color: '#E6A23C' } }
+    ]
   })
 }
 
