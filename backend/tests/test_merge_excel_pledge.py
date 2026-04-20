@@ -158,6 +158,63 @@ async def test_merge_preserves_preset_columns_and_renames_to_standard(tmpbase):
 
 
 @pytest.mark.asyncio
+async def test_merge_ignores_hidden_sheets(tmpbase):
+    """Excel 中 state=hidden / veryHidden 的 sheet 应被完全跳过。"""
+    upload_dir = os.path.join(tmpbase, "质押", "2026-04-20")
+    filepath = os.path.join(upload_dir, "mixed.xlsx")
+    _make_pledge_excel(filepath, {
+        "中大盘可见": [{"证券代码": "000001.SZ", "证券简称": "平安", "最新公告日": "2026-04-10"}],
+        "中大盘隐藏": [{"证券代码": "999999.SH", "证券简称": "不应出现", "最新公告日": "2026-03-01"}],
+        "小盘可见": [{"证券代码": "300001.SZ", "证券简称": "特锐德", "最新公告日": "2026-04-12"}],
+    })
+    # 把"中大盘隐藏"设为 hidden
+    from openpyxl import load_workbook
+    wb = load_workbook(filepath)
+    wb["中大盘隐藏"].sheet_state = "hidden"
+    wb.save(filepath)
+
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    result = await ex._merge_excel({}, date_str="2026-04-20")
+    assert result["success"], result["message"]
+    df = result["_df"]
+    codes = set(df["证券代码"])
+    assert "999999.SH" not in codes
+    assert "000001.SZ" in codes
+    assert "300001.SZ" in codes
+
+
+@pytest.mark.asyncio
+async def test_merge_degrades_when_sheet_name_none_raises(tmpbase, monkeypatch):
+    """pd.read_excel(sheet_name=None) 抛错时，降级 ExcelFile 逐 sheet 读。"""
+    upload_dir = os.path.join(tmpbase, "质押", "2026-04-20")
+    filepath = os.path.join(upload_dir, "bad.xlsx")
+    _make_pledge_excel(filepath, {
+        "中大盘": [{"证券代码": "002768.SZ", "证券简称": "国恩", "最新公告日": "2026-04-14"}],
+        "小盘": [{"证券代码": "300001.SZ", "证券简称": "特锐德", "最新公告日": "2026-04-12"}],
+    })
+
+    import pandas as _pd
+    _orig_read = _pd.read_excel
+    calls = {"n": 0}
+
+    def patched_read(path, **kw):
+        if kw.get("sheet_name", False) is None:
+            calls["n"] += 1
+            raise ValueError("Value must be either numerical or a string containing a wildcard")
+        return _orig_read(path, **kw)
+
+    monkeypatch.setattr(_pd, "read_excel", patched_read)
+
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    result = await ex._merge_excel({}, date_str="2026-04-20")
+    assert result["success"], result["message"]
+    assert calls["n"] >= 1  # 触发了降级路径
+    df = result["_df"]
+    # 两个 sheet 都被成功读到
+    assert len(df) == 2
+
+
+@pytest.mark.asyncio
 async def test_merge_includes_public_directory_files(tmpbase):
     """质押 public 目录下的文件也会被合并。"""
     upload_dir = os.path.join(tmpbase, "质押", "2026-04-20")

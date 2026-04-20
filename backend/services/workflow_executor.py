@@ -441,7 +441,50 @@ class WorkflowExecutor:
                         if isinstance(filename, str) and filename.startswith("5质押"):
                             logger.info(f"质押：跳过最终输出文件: {filepath}")
                             continue
-                        sheet_map = pd.read_excel(filepath, sheet_name=None)
+                        # 预先识别隐藏 sheet（state=hidden/veryHidden），合并时一律忽略
+                        hidden_sheets = set()
+                        try:
+                            from openpyxl import load_workbook as _lwb
+                            _wb = _lwb(filepath, read_only=True, data_only=True)
+                            for _ws in _wb.worksheets:
+                                if getattr(_ws, "sheet_state", "visible") != "visible":
+                                    hidden_sheets.add(_ws.title)
+                            _wb.close()
+                        except Exception as e:
+                            logger.warning(
+                                f"质押：读取 sheet 可见性失败（忽略该检查）: {filepath}, {e}"
+                            )
+                        # 先尝试一次性读所有 sheet；失败则降级为逐 sheet 读取
+                        sheet_map = None
+                        try:
+                            sheet_map = pd.read_excel(filepath, sheet_name=None)
+                        except Exception as e:
+                            logger.warning(
+                                f"质押：一次性读全部 sheet 失败（{e}），降级为逐 sheet 读取: {filepath}"
+                            )
+                            try:
+                                xl = pd.ExcelFile(filepath)
+                                sheet_map = {}
+                                for sn in xl.sheet_names:
+                                    if sn in hidden_sheets:
+                                        continue
+                                    try:
+                                        sheet_map[sn] = xl.parse(sn)
+                                    except Exception as ee:
+                                        logger.warning(f"质押：跳过损坏 sheet {sn}: {ee}")
+                                        continue
+                            except Exception as ee:
+                                logger.warning(f"质押：文件彻底无法打开，跳过: {filepath}, {ee}")
+                                continue
+                        # 最终过滤掉隐藏的 sheet
+                        if hidden_sheets and sheet_map:
+                            before = len(sheet_map)
+                            sheet_map = {k: v for k, v in sheet_map.items() if k not in hidden_sheets}
+                            skipped = before - len(sheet_map)
+                            if skipped > 0:
+                                logger.info(
+                                    f"质押：跳过 {skipped} 个隐藏 sheet ({sorted(hidden_sheets)[:5]}...): {filepath}"
+                                )
                         known_col_names_pledge = {
                             "证券代码", "证券简称", "证券名称", "最新公告日",
                             "股权质押公告日期",
