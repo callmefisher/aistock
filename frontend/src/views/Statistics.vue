@@ -392,6 +392,7 @@ const TYPE_ORDER = [
   { key: '股权转让', display: '2股权转让' },
   { key: '增发实现', display: '3增发实现' },
   { key: '申报并购重组', display: '4申报并购重组' },
+  { key: '质押', display: '5质押' },
   { key: '减持叠加质押和大宗交易', display: '6减持叠加质押和大宗交易' },
   { key: '条件交集', display: '7条件交集' },
   { key: '涨幅排名', display: '8涨幅排名' },
@@ -512,7 +513,7 @@ const handleDelete = async (row) => {
 }
 
 // ===== 20日均线趋势 tab =====
-const ALL_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '招投标']
+const ALL_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组', '质押', '减持叠加质押和大宗交易', '招投标']
 const allWorkflowTypes = ref(ALL_WORKFLOW_TYPES)
 
 const trendLoading = ref(false)

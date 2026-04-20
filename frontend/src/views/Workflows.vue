@@ -1114,7 +1114,7 @@ const AGGREGATION_TYPES = ['条件交集', '导出20日均线趋势']
 const isAggregationType = computed(() => AGGREGATION_TYPES.includes(form.value.workflow_type))
 
 const FILTER_COLUMNS = ['百日新高', '20日均线', '国企', '一级板块']
-const DEFAULT_TYPE_ORDER = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '招投标']
+const DEFAULT_TYPE_ORDER = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '质押', '招投标']
 
 const defaultIntersectionStep = () => ({
   type: 'condition_intersection',
