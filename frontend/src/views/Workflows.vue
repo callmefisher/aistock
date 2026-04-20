@@ -320,7 +320,7 @@
                     @blur="onExcludePatternsChange(step)"
                   />
                 </el-form-item>
-                <el-alert title="合并当日目录和2025public目录下所有Excel文件" type="info" :closable="false" />
+                <el-alert :title="`合并当日目录和 ${getPublicDirDisplay()} 目录下所有Excel文件`" type="info" :closable="false" />
               </template>
 
               <template v-if="step.type === 'smart_dedup'">
@@ -1822,6 +1822,9 @@ const getTargetDirDisplay = (stepType, dateStr) => {
     if (workflowType === '涨幅排名') {
       return `涨幅排名/${dateStr || '当日数据'}/`
     }
+    if (workflowType === '质押') {
+      return `质押/${dateStr || '当日数据'}/`
+    }
     return `${dateStr || '当日数据'}/`
   }
   // match 步骤: 日期联动路径
@@ -1849,6 +1852,9 @@ const getPublicDirDisplay = () => {
   if (workflowType === '涨幅排名') {
     const dateStr = form.value.steps.find(s => s.config?.date_str)?.config?.date_str || '当日数据'
     return `涨幅排名/${dateStr}/public/`
+  }
+  if (workflowType === '质押') {
+    return '质押/public/'
   }
   return '2025public/'
 }
