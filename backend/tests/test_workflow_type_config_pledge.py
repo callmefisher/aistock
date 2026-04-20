@@ -76,3 +76,24 @@ def test_path_resolver_public_directory():
     resolver = WorkflowPathResolver(base_dir="/tmp/fake_base", workflow_type="质押")
     d = resolver.get_public_directory(date_str="2026-04-20")
     assert d.endswith("/质押/public")
+
+
+def test_path_resolver_match_sector_user_specified_takes_precedence():
+    """修正前 match_sector 忽略 user_specified；修正后 user_specified 生效。"""
+    resolver = WorkflowPathResolver(base_dir="/tmp/fake_base", workflow_type="质押")
+    # 无 user_specified → 模板生成
+    assert resolver.get_output_filename("match_sector", "2026-04-20") == "5质押20260420.xlsx"
+    # 有 user_specified → 返回用户自定义
+    assert resolver.get_output_filename("match_sector", "2026-04-20",
+                                         user_specified="自定义.xlsx") == "自定义.xlsx"
+    # 空白 user_specified 被忽略，走模板
+    assert resolver.get_output_filename("match_sector", "2026-04-20",
+                                         user_specified="   ") == "5质押20260420.xlsx"
+
+
+def test_path_resolver_match_sector_user_specified_other_type():
+    """同样的 user_specified 规则对并购重组/股权转让/增发实现 等其他类型也生效。"""
+    resolver = WorkflowPathResolver(base_dir="/tmp/fake_base", workflow_type="股权转让")
+    assert resolver.get_output_filename("match_sector", "2026-04-20") == "2股权转让20260420.xlsx"
+    assert resolver.get_output_filename("match_sector", "2026-04-20",
+                                         user_specified="myfile.xlsx") == "myfile.xlsx"

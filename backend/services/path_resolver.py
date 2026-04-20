@@ -46,6 +46,8 @@ class WorkflowPathResolver:
         user_specified: str = None
     ) -> str:
         if step_type == "match_sector":
+            if user_specified and user_specified.strip():
+                return user_specified.strip()
             return self._generate_final_output_name(date_str)
 
         if user_specified and user_specified.strip():
