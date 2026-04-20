@@ -36,6 +36,8 @@ webdriver-manager==4.0.1
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0
+fakeredis==2.35.1
+aiosqlite==0.22.1
 black==23.11.0
 flake8==6.1.0
 XlsxWriter==3.2.0

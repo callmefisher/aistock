@@ -48,10 +48,26 @@ def mann_kendall(values: list[float]) -> tuple[float, float]:
 
 
 def _detect_trend_mk(series: list[tuple[str, float]], p_threshold: float) -> str:
-    """返回 'up' / 'down' / 'none'。"""
-    if len(series) < 4:
+    """返回 'up' / 'down' / 'none'。
+
+    小样本兜底：若 3 ≤ n < 10 且序列严格单调（所有点都同向），
+    直接判 up/down（金融意义上的明显趋势，但 MK 统计检验在小样本
+    下 p 值必然偏高，会漏判）。
+    """
+    n = len(series)
+    if n < 3:
         return "none"
     vals = [v for _, v in series]
+
+    # 小样本严格单调兜底（包括 n≥4 的情况）
+    diffs = [vals[i + 1] - vals[i] for i in range(n - 1)]
+    if all(d > 0 for d in diffs):
+        return "up"
+    if all(d < 0 for d in diffs):
+        return "down"
+
+    if n < 4:
+        return "none"
     z, p = mann_kendall(vals)
     if p < p_threshold:
         if z > 0:

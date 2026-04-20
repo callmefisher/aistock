@@ -14,6 +14,8 @@
 1. Excel 源文件可能有双行表头（第1行分组头，第2行实际列名）。`_merge_excel` 动态查找序号=1行，检测前一行是否含已知列名再决定是否重映射。禁止硬编码 iloc 分割。
 2. 列名重映射仅在前一行含已知列名（证券代码/证券简称/最新公告日等）时触发，否则元数据值会被误当列名。
 3. 双行表头子列名可能重复（如受让方/转让方各有"名称"列），重映射后必须去重列名（追加 `_1` 后缀），否则 `pd.concat` 报 Reindexing 错误。
+4. Mann-Kendall 在 n=4 严格单调时 p≈0.089 > 0.05 会漏判（002768.SZ 实测：4 点递减序列）。`_detect_trend_mk` 必须增加"小样本严格单调兜底"：3≤n<10 且 diffs 全同向 → 直接判 up/down。
+5. 质押数据源：东方财富 `datacenter-web/api/data/v1/get` 用 `reportName=RPTA_APP_ACCUMDETAILS + filter=(SECURITY_CODE="xxx")` 可单股拉全量历史（含 `ACCUM_PLEDGE_TSR` 本次/前次累计质押比例），0.18s 返回。AkShare `stock_gpzy_pledge_ratio_detail_em` 拉全市场要 3.5 分钟——不适合单股查询，只作降级用（且缺少 ACCUM/PRE_ACCUM 字段）。
 
 ## 命令
 

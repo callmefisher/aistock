@@ -74,6 +74,22 @@ def test_trend_mk_too_few_returns_empty():
     assert result["持续递减（一年内）"] == ""
 
 
+def test_trend_mk_small_sample_strict_monotonic_fallback():
+    """小样本兜底：n=4 严格单调递减 → down（MK 在 n=4 无法达到 p<0.05）。
+
+    这对应 002768.SZ 实测：聚合后 4 个点 [13.73, 11.99, 9.78, 8.14] 严格递减，
+    但 MK Z≈-1.70 p≈0.089 > 0.05；兜底规则应判为 down。
+    """
+    records = [
+        _mk_rec("2025-08-30", 13.73, 17.74),
+        _mk_rec("2025-12-17", 11.99, 13.73),
+        _mk_rec("2026-01-22", 9.78, 11.99),
+        _mk_rec("2026-04-14", 8.14, 9.78),
+    ]
+    result = compute_trend(records, anchor_date="2026-04-14")
+    assert result["持续递减（一年内）"] == "Y"
+
+
 def test_empty_records():
     result = compute_trend([], anchor_date="2026-01-10")
     assert result == {"持续递增（一年内）": "", "持续递减（一年内）": "", "质押异动": ""}
