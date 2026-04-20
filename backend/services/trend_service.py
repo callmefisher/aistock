@@ -1,4 +1,5 @@
 import logging
+import re as _re
 import pandas as pd
 from typing import Optional, List, Dict, Any
 from sqlalchemy import text
@@ -98,8 +99,152 @@ async def delete_trend_data(record_id: int) -> bool:
         return False
 
 
+def _parse_pledge_side_by_side(file_path: str) -> List[Dict[str, Any]]:
+    """解析质押"中大盘 + 小盘"并排双列的 Excel。
+
+    表头为 2 行：
+      Row 1: 日期 | 中大盘 | 中大盘 | 小盘 | 小盘 （日期列可能跨 2 行或只占 Row 1）
+      Row 2:       | 占20均线数量 | 占比 | 占20均线数量 | 占比
+    返回 2 * N 条记录（中大盘一份 + 小盘一份）。
+    """
+    df = pd.read_excel(file_path, header=[0, 1])
+    # df.columns 是 MultiIndex[(l0, l1), ...]
+    # 推断日期列、中大盘数量/占比、小盘数量/占比的位置
+    date_col = None
+    zdp_count_col = None
+    zdp_ratio_col = None
+    xp_count_col = None
+    xp_ratio_col = None
+
+    def _norm(s):
+        return str(s).replace('\n', '').replace(' ', '').strip()
+
+    for c in df.columns:
+        l0 = _norm(c[0])
+        l1 = _norm(c[1])
+        # 日期列：l0 含"日期"或 l1 含"日期"
+        if ("日期" in l0 or "日期" in l1) and date_col is None:
+            date_col = c
+            continue
+        is_zdp = "中大盘" in l0 or "中大盘" in l1
+        is_xp = "小盘" in l0 or "小盘" in l1
+        is_count = "数量" in l1 or "数量" in l0
+        is_ratio = "占比" in l1 or "占比" in l0 or "比例" in l1 or "比例" in l0
+        if is_zdp and is_count:
+            zdp_count_col = c
+        elif is_zdp and is_ratio:
+            zdp_ratio_col = c
+        elif is_xp and is_count:
+            xp_count_col = c
+        elif is_xp and is_ratio:
+            xp_ratio_col = c
+
+    if not date_col:
+        raise ValueError(f"未找到日期列，可用列: {list(df.columns)}")
+    if not (zdp_count_col or xp_count_col):
+        raise ValueError(f"未找到'中大盘'或'小盘'的数量列，可用列: {list(df.columns)}")
+
+    def _to_ratio_float(v):
+        if pd.isna(v):
+            return None
+        if isinstance(v, str):
+            v2 = v.strip().rstrip('%')
+            try:
+                f = float(v2)
+                if f > 1:
+                    f /= 100
+                return f
+            except ValueError:
+                return None
+        if isinstance(v, (int, float)):
+            f = float(v)
+            if f > 1:
+                f /= 100
+            return f
+        return None
+
+    # 自动识别日期年份：如果原表只给"3月11日"，需要推断年份；就近规则：
+    # 基准 = 今天；若"M月D日"的日期晚于今天则视为去年，否则今年。
+    from datetime import datetime as _dt
+    base_year = _dt.now().year
+    today = _dt.now().date()
+    re_cnd = _re.compile(r'(\d+)\s*月\s*(\d+)\s*日')
+
+    def _parse_date(val):
+        if pd.isna(val):
+            return None
+        if isinstance(val, (int, float)) and 30000 <= val <= 60000:
+            try:
+                return (pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(val))).strftime("%Y-%m-%d")
+            except Exception:
+                return None
+        if isinstance(val, str):
+            s = val.strip()
+            m = re_cnd.match(s)
+            if m:
+                month, day = int(m.group(1)), int(m.group(2))
+                for y in (base_year, base_year - 1):
+                    try:
+                        d = _dt(y, month, day).date()
+                        if d <= today:
+                            return d.strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
+                return None
+        try:
+            return pd.to_datetime(val).strftime("%Y-%m-%d")
+        except Exception:
+            return None
+
+    records = []
+    for _, row in df.iterrows():
+        date_str = _parse_date(row[date_col])
+        if not date_str:
+            continue
+        # 中大盘
+        if zdp_count_col is not None:
+            cnt_v = row[zdp_count_col]
+            if pd.notna(cnt_v):
+                try:
+                    cnt = int(float(str(cnt_v).strip()))
+                    ratio_f = _to_ratio_float(row[zdp_ratio_col]) if zdp_ratio_col is not None else None
+                    if ratio_f and ratio_f > 0:
+                        total = round(cnt / ratio_f)
+                        records.append({
+                            "workflow_type": "质押(中大盘)",
+                            "date_str": date_str,
+                            "count": cnt,
+                            "total": int(total),
+                            "ratio": round(cnt / total, 4) if total > 0 else 0.0,
+                        })
+                except (ValueError, TypeError):
+                    pass
+        # 小盘
+        if xp_count_col is not None:
+            cnt_v = row[xp_count_col]
+            if pd.notna(cnt_v):
+                try:
+                    cnt = int(float(str(cnt_v).strip()))
+                    ratio_f = _to_ratio_float(row[xp_ratio_col]) if xp_ratio_col is not None else None
+                    if ratio_f and ratio_f > 0:
+                        total = round(cnt / ratio_f)
+                        records.append({
+                            "workflow_type": "质押(小盘)",
+                            "date_str": date_str,
+                            "count": cnt,
+                            "total": int(total),
+                            "ratio": round(cnt / total, 4) if total > 0 else 0.0,
+                        })
+                except (ValueError, TypeError):
+                    pass
+    return records
+
+
 def parse_excel_for_trend(file_path: str, workflow_type: str) -> List[Dict[str, Any]]:
     """解析 Excel 文件为趋势数据记录列表，供前端预览确认"""
+    # 特殊类型：质押并排双列
+    if workflow_type == "质押(双列并排)":
+        return _parse_pledge_side_by_side(file_path)
     df = pd.read_excel(file_path)
 
     # 归一化列名：去除空白、换行后缀

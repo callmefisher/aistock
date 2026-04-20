@@ -119,8 +119,8 @@
             <template #header><span>手动录入</span></template>
             <el-form :model="manualForm" inline size="small">
               <el-form-item label="工作流类型">
-                <el-select v-model="manualForm.workflow_type" placeholder="选择类型" style="width: 160px">
-                  <el-option v-for="t in allWorkflowTypes" :key="t" :label="getTypeDisplay(t)" :value="t" />
+                <el-select v-model="manualForm.workflow_type" placeholder="选择类型" style="width: 180px">
+                  <el-option v-for="t in INPUT_WORKFLOW_TYPES" :key="t" :label="getTypeDisplay(t)" :value="t" />
                 </el-select>
               </el-form-item>
               <el-form-item label="日期">
@@ -146,8 +146,9 @@
             <template #header><span>Excel 上传</span></template>
             <el-form inline size="small">
               <el-form-item label="工作流类型">
-                <el-select v-model="uploadType" placeholder="先选择类型" style="width: 160px">
-                  <el-option v-for="t in allWorkflowTypes" :key="t" :label="getTypeDisplay(t)" :value="t" />
+                <el-select v-model="uploadType" placeholder="先选择类型" style="width: 260px">
+                  <el-option v-for="t in INPUT_WORKFLOW_TYPES" :key="t" :label="getTypeDisplay(t)" :value="t" />
+                  <el-option label="5质押（并排双列：中大盘+小盘）" value="质押(双列并排)" />
                 </el-select>
               </el-form-item>
               <el-form-item>
@@ -526,10 +527,12 @@ const handleDelete = async (row) => {
 }
 
 // ===== 20日均线趋势 tab =====
-// 注意: 这里 '质押' 是"合成类型"，前端把 DB 里的 '质押(中大盘)'+'质押(小盘)'
-// 两个独立记录合并成 1 个卡片 2 条曲线展示
+// 图表/汇总用：'质押' 是合成类型，UI 里展示为 1 个卡片双曲线
 const ALL_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组', '质押', '减持叠加质押和大宗交易', '招投标']
 const PLEDGE_SUBTYPES = ['质押(中大盘)', '质押(小盘)']
+// 录入/上传用：直接写入 DB 的 workflow_type 值 —— 质押必须选中大盘或小盘
+const INPUT_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组',
+  '质押(中大盘)', '质押(小盘)', '减持叠加质押和大宗交易', '招投标']
 const allWorkflowTypes = ref(ALL_WORKFLOW_TYPES)
 
 const trendLoading = ref(false)
