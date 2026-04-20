@@ -625,3 +625,58 @@ frontend/src/views/
 - `./deploy.sh build && ./deploy.sh restart` 成功
 - `cd backend && python -m pytest tests/ -v` 通过
 - `cd frontend && npm test` 通过
+
+## 14. 深度代码 Review（强制）
+
+所有阶段实施完成、测试通过、服务部署成功后，**必须**触发一次深度代码 review，不可跳过。Review 聚焦以下维度：
+
+### 14.1 Review 范围
+
+- 新增文件：`pledge_data_source.py` / `pledge_trend.py` / `pledge_cache_cleanup.py` / `redis_client.py` / 全部新测试文件
+- 修改文件：`workflow_executor.py`（_merge_excel/_detect_header_and_parse/_pledge_trend_analysis/_condition_intersection）、`workflow_type_config.py`、`path_resolver.py`、`main.py`、`Workflows.vue`、`Statistics.vue`
+
+### 14.2 Review 清单
+
+**安全**
+- 无硬编码密钥
+- Redis 键无用户输入拼接注入
+- 东财响应 JSON 的字段读取有异常兜底（避免 KeyError / NoneType 崩溃工作流）
+- 外部 HTTP 调用有超时和重试上限
+
+**正确性**
+- Mann-Kendall 实现与 NIST 参考结果一致（用一组已知值对比）
+- 月度下采样不做 forward-fill（与 spec 一致）
+- 异动 Δ 取 `max(ACCUM) - min(PRE_ACCUM)` 与 spec 一致
+- 来源派生 `startswith("中大盘")` 与 spec 一致
+- 锚点缺失时**整步骤失败**（不降级不跳过）
+- 缓存 key 用 `{symbol}:{anchor_date}`，不同锚点 key 独立
+
+**边界**
+- 空 DataFrame / 单股 / 单笔公告 / 所有公告同日 / 1 年内 < 4 条记录 / 历史中有负数累计比例（脏数据）
+- 东财返回 `result=null`（测试中贵州茅台的情况）
+- Redis 未启动 / 连接断开
+
+**性能**
+- 无 `O(N²)` 误用；MK 内部的 `O(n²)` 是算法本身
+- 每股调用有节流；不并发打穿东财
+- 日志不会在每股 1 条时压垮磁盘（对 < 1000 股，约 1MB 级别，OK）
+
+**一致性（与 spec）**
+- 4 处类型顺序数组与 spec 完全一致
+- 三列字段名为 `持续递增（一年内）` / `持续递减（一年内）` / `质押异动`（含中文括号）
+- 异动 5 种文本完全一致：`小幅转增` / `小幅转减` / `大幅激增` / `大幅骤减` / `本次质押趋势无变化`
+- 资本运作行为映射 `质押中大盘` / `质押小盘` 字串一致
+
+**工程质量**
+- 无死代码 / 注释的 TODO 遗留
+- 日志级别合理（INFO 进度 / WARNING 单股失败 / ERROR 步骤级异常）
+- 错误信息用户友好（能用于排查）
+- 单元测试独立、确定性、不依赖网络
+
+### 14.3 Review 流程
+
+1. 实施 Agent 完成所有阶段后，回报"实施完成"
+2. 用户触发 `/review` 或调用 `code-reviewer` agent 做第一轮自动扫描
+3. 再由用户人工 review 上面 14.2 清单里的关键正确性点（尤其 MK 算法和来源派生）
+4. 发现的问题分级：CRITICAL 立即修；MAJOR 必修；MINOR 记录到经验教训
+5. Review 通过后，更新 `CLAUDE.md` 经验教训，本次交付才算完成
