@@ -1214,6 +1214,7 @@ class WorkflowExecutor:
 
         # 3. 合并数据，按 type_order 顺序
         combined_rows = []
+        warnings_list = []   # 冒泡到返回值的警告
         for wtype in type_order:
             if wtype not in filtered_dfs:
                 continue
@@ -1225,9 +1226,32 @@ class WorkflowExecutor:
                     extracted[col] = df[col]
                 else:
                     extracted[col] = ""
-            # 添加资本运作行为列
-            display_name = WORKFLOW_TYPE_CONFIG.get(wtype, {}).get("display_name", wtype)
-            extracted["资本运作行为"] = display_name
+
+            # 资本运作行为列：质押类型按"来源"细分为"质押中大盘"/"质押小盘"
+            if wtype == "质押":
+                if "来源" in df.columns:
+                    source_series = df["来源"].fillna("").astype(str).str.strip()
+                    missing_mask = ~source_series.isin(["中大盘", "小盘"])
+                    missing_count = int(missing_mask.sum())
+                    if missing_count > 0:
+                        sample_codes = []
+                        if "证券代码" in df.columns:
+                            sample_codes = df.loc[missing_mask, "证券代码"].head(5).tolist()
+                        warnings_list.append(
+                            f"质押类型 {missing_count}/{len(df)} 行'来源'字段缺失或非法，"
+                            f"已兜底为'质押小盘'。示例: {sample_codes}"
+                        )
+                        logger.warning(f"[条件交集] {warnings_list[-1]}")
+                    extracted["资本运作行为"] = source_series.apply(
+                        lambda s: "质押中大盘" if s == "中大盘" else "质押小盘"
+                    ).values
+                else:
+                    warnings_list.append("质押类型 final 数据完全缺少'来源'列，全部归入'质押小盘'")
+                    logger.warning(f"[条件交集] {warnings_list[-1]}")
+                    extracted["资本运作行为"] = "质押小盘"
+            else:
+                display_name = WORKFLOW_TYPE_CONFIG.get(wtype, {}).get("display_name", wtype)
+                extracted["资本运作行为"] = display_name
             combined_rows.append(extracted)
 
         combined_df = pd.concat(combined_rows, ignore_index=True)
@@ -1301,15 +1325,19 @@ class WorkflowExecutor:
         except Exception as e:
             logger.error(f"[条件交集] 保存选股池失败: {e}")
 
+        base_msg = f"条件交集完成: 合并{len(combined_display)}行, 选股池{len(pool_df)}条, 来源{len(filtered_dfs)}个类型"
+        if warnings_list:
+            base_msg += f"（{len(warnings_list)}条警告）"
         return {
             "success": True,
-            "message": f"条件交集完成: 合并{len(combined_display)}行, 选股池{len(pool_df)}条, 来源{len(filtered_dfs)}个类型",
+            "message": base_msg,
             "data": clean_df_for_json(combined_display),
             "columns": combined_display.columns.tolist(),
             "rows": len(combined_display),
             "file_path": output_path,
             "_df": combined_display,
             "pool_count": len(pool_df),
+            "warnings": warnings_list,
         }
 
     async def _export_ma20_trend(self, config: Dict, date_str: Optional[str] = None) -> Dict[str, Any]:

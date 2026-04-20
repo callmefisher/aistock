@@ -163,6 +163,11 @@
                     <el-option label="匹配20日均线" value="match_ma20" />
                     <el-option label="匹配国企" value="match_soe" />
                     <el-option label="匹配一级板块" value="match_sector" />
+                    <el-option
+                      v-if="form.workflow_type === '质押'"
+                      label="质押异动和趋势"
+                      value="pledge_trend_analysis"
+                    />
                     <el-option label="待定" value="pending" />
                   </template>
                 </el-select>
@@ -645,6 +650,83 @@
                 </el-form-item>
               </template>
 
+              <template v-if="step.type === 'pledge_trend_analysis'">
+                <el-form-item label="趋势算法">
+                  <el-select v-model="step.config.trend_algo" style="width: 100%">
+                    <el-option label="Mann-Kendall（默认，推荐）" value="mann_kendall" />
+                    <el-option label="月度下采样" value="monthly_downsample" />
+                    <el-option label="线性回归" value="linear_regression" />
+                  </el-select>
+                </el-form-item>
+
+                <el-form-item
+                  v-if="step.config.trend_algo === 'mann_kendall'"
+                  label="MK p 值阈值"
+                >
+                  <el-input-number
+                    v-model="step.config.mk_pvalue"
+                    :min="0.001" :max="0.2" :step="0.01"
+                    :precision="3" style="width: 200px"
+                  />
+                  <span class="param-hint">&nbsp; p &lt; 阈值 判为趋势显著</span>
+                </el-form-item>
+
+                <el-form-item
+                  v-if="step.config.trend_algo === 'monthly_downsample'"
+                  label="月度最大反转数"
+                >
+                  <el-input-number
+                    v-model="step.config.b_max_reversals"
+                    :min="0" :max="12" :step="1" style="width: 200px"
+                  />
+                  <span class="param-hint">&nbsp; ≤ 阈值 判为单向趋势</span>
+                </el-form-item>
+
+                <el-form-item
+                  v-if="step.config.trend_algo === 'linear_regression'"
+                  label="线性回归最小 R²"
+                >
+                  <el-input-number
+                    v-model="step.config.c_min_r2"
+                    :min="0.1" :max="0.99" :step="0.05"
+                    :precision="2" style="width: 200px"
+                  />
+                  <span class="param-hint">&nbsp; ≥ 阈值 判为趋势显著</span>
+                </el-form-item>
+
+                <el-form-item label="异动无变化阈值 (pct)">
+                  <el-input-number
+                    v-model="step.config.event_no_change_threshold"
+                    :min="0" :max="5" :step="0.1"
+                    :precision="1" style="width: 200px"
+                  />
+                  <span class="param-hint">&nbsp; |Δ| &lt; 阈值 判"本次质押趋势无变化"</span>
+                </el-form-item>
+
+                <el-form-item label="异动大幅阈值 (pct)">
+                  <el-input-number
+                    v-model="step.config.event_large_threshold"
+                    :min="0.5" :max="20" :step="0.5"
+                    :precision="1" style="width: 200px"
+                  />
+                  <span class="param-hint">&nbsp; |Δ| ≥ 阈值 判"大幅激增/大幅骤减"</span>
+                </el-form-item>
+
+                <el-form-item label="历史窗口 (天)">
+                  <el-input-number
+                    v-model="step.config.window_days"
+                    :min="30" :max="1500" :step="30" style="width: 200px"
+                  />
+                </el-form-item>
+
+                <el-form-item label="输出文件名">
+                  <el-input
+                    v-model="step.config.output_filename"
+                    placeholder="默认使用 match_sector 的输出文件名（5质押{date}.xlsx）"
+                  />
+                </el-form-item>
+              </template>
+
               <template v-if="step.type === 'export_ma20_trend'">
                 <el-form-item label="数据日期">
                   <el-date-picker
@@ -783,6 +865,58 @@
         </el-form-item>
         <el-form-item label="执行结果" v-if="executionResult">
           <el-alert :type="executionResult.type" :title="executionResult.message" show-icon />
+        </el-form-item>
+
+        <el-form-item label="质押趋势" v-if="executionResult?.stats && executionResult?.stats?.by_source">
+          <div class="pledge-summary-card">
+            <div class="pledge-row">
+              <el-tag>总数 {{ executionResult.stats.total }}</el-tag>
+              <el-tag type="success">成功 {{ executionResult.stats.ok }}</el-tag>
+              <el-tag type="warning">无历史 {{ executionResult.stats.empty }}</el-tag>
+              <el-tag type="danger" v-if="executionResult.stats.fail > 0">失败 {{ executionResult.stats.fail }}</el-tag>
+            </div>
+            <div class="pledge-row" style="margin-top:6px;">
+              <span class="pledge-label">数据源:</span>
+              <span>东财 {{ executionResult.stats.by_source.eastmoney }}</span>
+              <span>缓存 {{ executionResult.stats.by_source.cache }}</span>
+              <span>降级 AkShare {{ executionResult.stats.by_source.akshare }}</span>
+              <span>空 {{ executionResult.stats.by_source.empty }}</span>
+            </div>
+            <div class="pledge-row" style="margin-top:6px;" v-if="executionResult.stats.by_result">
+              <span class="pledge-label">趋势判定:</span>
+              <span>持续递增 {{ executionResult.stats.by_result['持续递增'] || 0 }}</span>
+              <span>持续递减 {{ executionResult.stats.by_result['持续递减'] || 0 }}</span>
+              <span>无趋势 {{ executionResult.stats.by_result['无趋势'] || 0 }}</span>
+            </div>
+            <div class="pledge-row" style="margin-top:6px;" v-if="executionResult.stats.by_result">
+              <span class="pledge-label">异动分类:</span>
+              <span>小幅转增 {{ executionResult.stats.by_result['小幅转增'] || 0 }}</span>
+              <span>大幅激增 {{ executionResult.stats.by_result['大幅激增'] || 0 }}</span>
+              <span>小幅转减 {{ executionResult.stats.by_result['小幅转减'] || 0 }}</span>
+              <span>大幅骤减 {{ executionResult.stats.by_result['大幅骤减'] || 0 }}</span>
+              <span>无变化 {{ executionResult.stats.by_result['本次质押趋势无变化'] || 0 }}</span>
+              <span>空 {{ executionResult.stats.by_result['空'] || 0 }}</span>
+            </div>
+            <el-collapse v-if="executionResult.fail_samples?.length" style="margin-top:8px;">
+              <el-collapse-item :title="`失败样本 (${executionResult.fail_samples.length})`" name="fail">
+                <div v-for="(s, i) in executionResult.fail_samples" :key="i" class="fail-sample">
+                  <strong>{{ s.symbol }}</strong>: {{ s.error }}
+                </div>
+              </el-collapse-item>
+            </el-collapse>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="警告" v-if="executionResult?.warnings?.length">
+          <el-alert
+            v-for="(w, i) in executionResult.warnings"
+            :key="i"
+            type="warning"
+            :title="w"
+            show-icon
+            :closable="false"
+            style="margin-bottom:4px;"
+          />
         </el-form-item>
         <template v-if="executionComplete && resultData.length">
           <el-form-item label="过滤结果">
@@ -1084,6 +1218,7 @@ const getStepType = (type) => {
     condition_intersection: 'warning',
     export_ma20_trend: 'warning',
     ranking_sort: 'success',
+    pledge_trend_analysis: 'warning',
     pending: 'danger'
   }
   return types[type] || 'info'
@@ -1104,6 +1239,7 @@ const getStepTypeName = (type) => {
     condition_intersection: '合并当日数据',
     export_ma20_trend: '导出趋势Excel',
     ranking_sort: '涨幅排名排序',
+    pledge_trend_analysis: '质押异动和趋势',
     pending: '待定'
   }
   return names[type] || type
@@ -1331,6 +1467,18 @@ const onStepTypeChange = (step, index) => {
     const firstStepDate = form.value.steps[0]?.config?.date_str || new Date().toISOString().split('T')[0]
     step.config.output_filename = `并购重组${firstStepDate}.xlsx`
   }
+  if (step.type === 'pledge_trend_analysis') {
+    step.config = {
+      trend_algo: 'mann_kendall',
+      mk_pvalue: 0.05,
+      b_max_reversals: 2,
+      c_min_r2: 0.7,
+      event_no_change_threshold: 0.5,
+      event_large_threshold: 3.0,
+      window_days: 365,
+      output_filename: ''
+    }
+  }
   // 选择步骤类型后自动加载对应目录的已有文件
   if (['merge_excel', 'match_high_price', 'match_ma20', 'match_soe', 'match_sector'].includes(step.type)) {
     fetchUploadedFiles(step, index)
@@ -1517,12 +1665,18 @@ const startExecution = async () => {
       executionResult.value = {
         type: 'success',
         message: response.message || '工作流执行完成',
-        file_path: response.data.file_path
+        file_path: response.data.file_path,
+        stats: response.data.stats,
+        fail_samples: response.data.fail_samples,
+        warnings: response.data.warnings
       }
     } else {
       executionResult.value = {
         type: 'success',
-        message: response.message || '工作流执行完成'
+        message: response.message || '工作流执行完成',
+        stats: response.data?.stats,
+        fail_samples: response.data?.fail_samples,
+        warnings: response.data?.warnings
       }
     }
     ElMessage.success(response.message || '工作流执行完成')

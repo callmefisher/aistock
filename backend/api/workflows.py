@@ -426,12 +426,16 @@ async def run_workflow(
     input_data = None
     step_results = []
     last_output_file = None
+    last_exec_result = None  # 用于提取 stats/warnings/fail_samples
 
-    # 强制用最新配置的文件名覆盖最后一步（match_sector）的 output_filename
+    # 最后一步（match_sector）：若未指定 output_filename 则用模板；否则尊重用户输入
     if steps and steps[-1].get("type") == "match_sector":
-        final_name = executor.resolver.get_output_filename("match_sector", output_date_str)
-        if final_name:
-            steps[-1].setdefault("config", {})["output_filename"] = final_name
+        cfg = steps[-1].setdefault("config", {})
+        user_specified = (cfg.get("output_filename") or "").strip()
+        if not user_specified:
+            final_name = executor.resolver.get_output_filename("match_sector", output_date_str)
+            if final_name:
+                cfg["output_filename"] = final_name
 
     # 条件交集步骤：注入 workflow_id 到 config
     for step in steps:
@@ -459,6 +463,7 @@ async def run_workflow(
                 last_output_file = output_file
                 # 保存实际输出文件名到步骤配置，供下载端点查找
                 step_config["_actual_output"] = os.path.basename(output_file)
+            last_exec_result = exec_result
             step_results.append({"step": i, "type": step_type, "status": "completed",
                                  "message": exec_result.get("message", "")})
         else:
@@ -502,17 +507,28 @@ async def run_workflow(
     if input_data is not None and hasattr(input_data, 'head'):
         preview_data = clean_df_for_json(input_data)
 
+    data_payload = {
+        "rows": len(input_data) if input_data is not None and hasattr(input_data, '__len__') else 0,
+        "records": preview_data,
+        "file_path": last_output_file,
+    }
+    # 透传最后一步的结构化反馈（pledge_trend_analysis 的 stats/fail_samples；
+    # condition_intersection 的 warnings 等）
+    if last_exec_result is not None:
+        if last_exec_result.get("stats") is not None:
+            data_payload["stats"] = last_exec_result["stats"]
+        if last_exec_result.get("fail_samples") is not None:
+            data_payload["fail_samples"] = last_exec_result["fail_samples"]
+        if last_exec_result.get("warnings") is not None:
+            data_payload["warnings"] = last_exec_result["warnings"]
+
     return {
         "message": f"工作流执行完成，耗时{duration}秒" + (f"，{len(failed)}个步骤失败" if failed else "") + (", 结果已保存到数据库" if db_saved else ""),
         "workflow_id": workflow_id,
         "duration": duration,
         "steps": step_results,
         "output_file": last_output_file,
-        "data": {
-            "rows": len(input_data) if input_data is not None and hasattr(input_data, '__len__') else 0,
-            "records": preview_data,
-            "file_path": last_output_file
-        }
+        "data": data_payload,
     }
 
 
