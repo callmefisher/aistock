@@ -2300,10 +2300,8 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
     form.value.steps.forEach((step) => {
       if (step.type === 'match_sector') {
         const firstStepWithDate = form.value.steps.find(s => s.config?.date_str)
-        const dateStr = firstStepWithDate?.config?.date_str?.replace(/-/g, '') || new Date().toISOString().split('T')[0].replace(/-/g, '')
-        const typeMap = { '股权转让': '2股权转让', '增发实现': '3增发实现', '申报并购重组': '4申报并购重组', '减持叠加质押和大宗交易': '6减持叠加质押和大宗交易', '招投标': '9招投标' }
-        const prefix = typeMap[newType] || '1并购重组'
-        step.config.output_filename = `${prefix}${dateStr}.xlsx`
+        const dateStr = firstStepWithDate?.config?.date_str || new Date().toISOString().split('T')[0]
+        step.config.output_filename = getDefaultFinalFilename(dateStr)
       }
     })
 
