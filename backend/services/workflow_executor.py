@@ -293,6 +293,8 @@ class WorkflowExecutor:
                 return await self._export_ma20_trend(step_config, date_str)
             elif step_type == "ranking_sort":
                 return await self._ranking_sort(step_config, input_data, date_str)
+            elif step_type == "pledge_trend_analysis":
+                return await self._pledge_trend_analysis(step_config, input_data, date_str)
             elif step_type == "pending":
                 return {
                     "success": True,
@@ -1700,6 +1702,151 @@ class WorkflowExecutor:
             "rows": len(result_df),
             "file_path": output_path,
             "_df": result_df,
+        }
+
+    async def _pledge_trend_analysis(
+        self, config: Dict, df: Optional[pd.DataFrame], date_str: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """质押异动和趋势步骤：为每只股票查询东财 1 年质押历史，判定 3 列。
+
+        Required: df 必须含 证券代码 / 最新公告日。锚点缺失任一行 → 整步骤失败。
+        """
+        from services.pledge_data_source import PledgeDataSource
+        from services.pledge_trend import compute_trend
+        from services.pledge_cache_cleanup import cleanup_expired_pledge_cache
+        from core.redis_client import get_redis
+        from utils.stock_code_normalizer import normalize_stock_code
+
+        # 1. 校验输入
+        if df is None or "证券代码" not in df.columns:
+            return {"success": False, "message": "需要包含'证券代码'列的输入数据"}
+        if "最新公告日" not in df.columns:
+            return {"success": False, "message":
+                "质押异动趋势步骤失败：输入数据缺少'最新公告日'列（或前缀'股权质押公告日期'列未被正确映射）"}
+
+        df = df.copy()
+        # 锚点严格校验：任何行缺失即整步骤失败
+        anchor_series = df["最新公告日"].astype(str).str.strip()
+        missing_mask = df["最新公告日"].isna() | (anchor_series == "") | (anchor_series.str.lower() == "nan")
+        if missing_mask.any():
+            missing_cnt = int(missing_mask.sum())
+            sample_cols = [c for c in ["证券代码", "证券简称"] if c in df.columns]
+            sample = df.loc[missing_mask, sample_cols].head(5).to_dict("records")
+            return {"success": False, "message":
+                f"质押异动趋势步骤失败：{missing_cnt} 行缺少'最新公告日'锚点，无法执行。示例: {sample}"}
+
+        # 2. 读取配置
+        trend_algo       = config.get("trend_algo", "mann_kendall")
+        mk_p             = float(config.get("mk_pvalue", 0.05))
+        b_rev            = int(config.get("b_max_reversals", 2))
+        c_r2             = float(config.get("c_min_r2", 0.7))
+        event_no_change  = float(config.get("event_no_change_threshold", 0.5))
+        event_large     = float(config.get("event_large_threshold", 3.0))
+        window_days      = int(config.get("window_days", 365))
+
+        # 3. 初始化数据源
+        redis_cli = get_redis()
+        ds = PledgeDataSource(redis_client=redis_cli, akshare_fallback=True)
+
+        # 4. 逐股处理
+        df["持续递增（一年内）"] = ""
+        df["持续递减（一年内）"] = ""
+        df["质押异动"] = ""
+        stats = {
+            "total": len(df), "ok": 0, "empty": 0, "fail": 0,
+            "by_source": {"eastmoney": 0, "cache": 0, "akshare": 0, "empty": 0},
+            "by_result": {
+                "持续递增": 0, "持续递减": 0, "无趋势": 0,
+                "小幅转增": 0, "小幅转减": 0, "大幅激增": 0, "大幅骤减": 0,
+                "本次质押趋势无变化": 0, "空": 0,
+            },
+        }
+        fail_samples: List[Dict[str, str]] = []
+
+        for idx, row in df.iterrows():
+            raw_code = str(row["证券代码"])
+            symbol = normalize_stock_code(raw_code)
+            # 取纯数字部分（东财 SECURITY_CODE 是 6 位数字）
+            import re
+            m = re.search(r'(\d{6})', symbol)
+            numeric = m.group(1) if m else symbol
+            anchor = str(row["最新公告日"]).strip()[:10]
+            try:
+                records, source = ds.get_history(numeric, anchor, window_days)
+                stats["by_source"][source] = stats["by_source"].get(source, 0) + 1
+                result = compute_trend(
+                    records, anchor, trend_algo, mk_p, b_rev, c_r2,
+                    event_no_change, event_large
+                )
+                df.at[idx, "持续递增（一年内）"] = result["持续递增（一年内）"]
+                df.at[idx, "持续递减（一年内）"] = result["持续递减（一年内）"]
+                df.at[idx, "质押异动"] = result["质押异动"]
+                if records:
+                    stats["ok"] += 1
+                else:
+                    stats["empty"] += 1
+                if result["持续递增（一年内）"] == "Y":
+                    stats["by_result"]["持续递增"] += 1
+                elif result["持续递减（一年内）"] == "Y":
+                    stats["by_result"]["持续递减"] += 1
+                else:
+                    stats["by_result"]["无趋势"] += 1
+                event_key = result["质押异动"] or "空"
+                stats["by_result"][event_key] = stats["by_result"].get(event_key, 0) + 1
+
+                logger.info(
+                    f"[质押异动趋势] {idx+1}/{len(df)} {symbol} {row.get('证券简称','')} "
+                    f"锚点={anchor} 源={source} 历史{len(records)}条 → "
+                    f"递增={result['持续递增（一年内）'] or '-'} "
+                    f"递减={result['持续递减（一年内）'] or '-'} "
+                    f"异动={result['质押异动'] or '-'}"
+                )
+            except Exception as e:
+                stats["fail"] += 1
+                if len(fail_samples) < 10:
+                    fail_samples.append({"symbol": symbol, "error": str(e)[:120]})
+                logger.warning(f"[质押异动趋势] {symbol} 失败: {e}")
+
+        # 5. 覆盖最终输出（复用 match_sector 的文件名）
+        user_filename = config.get("output_filename")
+        output_filename = self.resolver.get_output_filename(
+            "match_sector", date_str, user_filename
+        )
+        output_path = os.path.join(self._get_daily_dir(date_str), output_filename)
+        df.to_excel(output_path, index=False)
+        try:
+            auto_adjust_excel_width(output_path)
+        except Exception as e:
+            logger.warning(f"[质押异动趋势] 设置列宽失败: {e}")
+
+        # 6. 缓存清理兜底
+        try:
+            cleanup_expired_pledge_cache(redis_cli, max_age_days=370)
+        except Exception as e:
+            logger.warning(f"[质押异动趋势] 缓存清理失败（不影响主流程）: {e}")
+
+        summary = (
+            f"质押异动趋势: 共{stats['total']}只, "
+            f"成功{stats['ok']}, 无历史{stats['empty']}, 失败{stats['fail']} | "
+            f"源: 东财{stats['by_source']['eastmoney']}, "
+            f"缓存{stats['by_source']['cache']}, "
+            f"降级AkShare{stats['by_source']['akshare']}, "
+            f"空{stats['by_source']['empty']}"
+        )
+        logger.info(f"[质押异动趋势] {summary}")
+
+        df_clean = df.fillna("").copy()
+        records_preview = df_clean.head(100).to_dict("records")
+        return {
+            "success": True,
+            "message": summary,
+            "stats": stats,
+            "fail_samples": fail_samples,
+            "data": records_preview,
+            "columns": df.columns.tolist(),
+            "rows": len(df),
+            "file_path": output_path,
+            "_df": df,
         }
 
 
