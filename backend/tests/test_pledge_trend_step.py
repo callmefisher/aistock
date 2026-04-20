@@ -135,6 +135,34 @@ async def test_output_file_respects_user_specified(tmpbase):
 
 
 @pytest.mark.asyncio
+async def test_dirty_rows_filtered_before_anchor_check(tmpbase):
+    """脏行（证券代码空/Choice/数据来源）在锚点校验前被过滤，不阻塞步骤。"""
+    df = pd.DataFrame([
+        {"证券代码": "002768.SZ", "证券简称": "国恩",
+         "最新公告日": "2026-04-14", "来源": "小盘"},
+        {"证券代码": None, "证券简称": None, "最新公告日": None, "来源": None},
+        {"证券代码": "数据来源：妙想Choice", "证券简称": None,
+         "最新公告日": None, "来源": None},
+        {"证券代码": "000001.SZ", "证券简称": "平安",
+         "最新公告日": "2026-04-14", "来源": "中大盘"},
+    ])
+
+    class NoNetDS:
+        def __init__(self, *a, **kw): pass
+        def get_history(self, symbol, anchor, window_days=365):
+            return [], "empty"
+
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    with patch("services.pledge_data_source.PledgeDataSource", NoNetDS), \
+         patch("core.redis_client.get_redis", return_value=None):
+        result = await ex._pledge_trend_analysis({}, df, date_str="2026-04-20")
+
+    assert result["success"], result["message"]
+    # 脏行被过滤，总数应为 2
+    assert result["stats"]["total"] == 2
+
+
+@pytest.mark.asyncio
 async def test_skip_preset_row_not_queried(tmpbase):
     """原表 3 列任一非空 → skip，不调用数据源，保持原值。"""
     df = pd.DataFrame([

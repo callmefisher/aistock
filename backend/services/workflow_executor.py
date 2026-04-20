@@ -688,6 +688,25 @@ class WorkflowExecutor:
                 merged_df = _coalesce_rename(merged_df, "持续递减", "持续递减（一年内）")
                 merged_df = _coalesce_rename(merged_df, "质押异动", "质押异动")
 
+                # 过滤脏数据行（Choice 元信息 / 证券代码空 / "数据来源" 脚注）
+                if "证券代码" in merged_df.columns:
+                    _code_str = merged_df["证券代码"].astype(str).str.strip()
+                    _bad_mask = (
+                        merged_df["证券代码"].isna()
+                        | (_code_str == "")
+                        | _code_str.str.lower().eq("nan")
+                        | _code_str.str.contains("数据来源", na=False, regex=False)
+                        | _code_str.str.contains("妙想Choice", na=False, regex=False)
+                        | _code_str.str.contains("Choice", na=False, regex=False)
+                    )
+                    bad_count = int(_bad_mask.sum())
+                    if bad_count > 0:
+                        logger.info(
+                            f"质押：过滤脏数据行 {bad_count} 条（"
+                            f"空/数据来源/Choice 等元信息行）"
+                        )
+                        merged_df = merged_df[~_bad_mask].reset_index(drop=True)
+
             # 删除内部辅助列
             if "_source_file" in merged_df.columns:
                 merged_df = merged_df.drop(columns=["_source_file"])
@@ -1896,6 +1915,22 @@ class WorkflowExecutor:
                 "质押异动趋势步骤失败：输入数据缺少'最新公告日'列（或前缀'股权质押公告日期'列未被正确映射）"}
 
         df = df.copy()
+        # 兜底过滤脏数据行（证券代码为空/数据来源脚注/Choice 元信息等）
+        code_str = df["证券代码"].astype(str).str.strip()
+        dirty_mask = (
+            df["证券代码"].isna()
+            | (code_str == "")
+            | code_str.str.lower().eq("nan")
+            | code_str.str.contains("数据来源", na=False, regex=False)
+            | code_str.str.contains("Choice", na=False, regex=False)
+        )
+        dirty_count = int(dirty_mask.sum())
+        if dirty_count > 0:
+            logger.info(f"[质押异动趋势] 过滤脏数据行 {dirty_count} 条")
+            df = df[~dirty_mask].reset_index(drop=True)
+        if len(df) == 0:
+            return {"success": False, "message": "质押异动趋势：过滤脏数据后无可处理行"}
+
         # 锚点严格校验：任何行缺失即整步骤失败
         anchor_series = df["最新公告日"].astype(str).str.strip()
         missing_mask = df["最新公告日"].isna() | (anchor_series == "") | (anchor_series.str.lower() == "nan")
