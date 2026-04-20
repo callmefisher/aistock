@@ -2329,9 +2329,7 @@ watch(
     if (!dateStr) return
     const lastStep = form.value.steps[form.value.steps.length - 1]
     if (lastType === 'match_sector' && lastStep) {
-      const typeMap = { '股权转让': '2股权转让', '增发实现': '3增发实现', '申报并购重组': '4申报并购重组', '减持叠加质押和大宗交易': '6减持叠加质押和大宗交易', '招投标': '9招投标' }
-      const prefix = typeMap[workflowType] || '1并购重组'
-      lastStep.config.output_filename = `${prefix}${dateStr.replace(/-/g, '')}.xlsx`
+      lastStep.config.output_filename = getDefaultFinalFilename(dateStr)
     }
     // 日期变化时刷新 match 步骤文件列表
     form.value.steps.forEach((step, index) => {
