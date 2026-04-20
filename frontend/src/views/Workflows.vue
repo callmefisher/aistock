@@ -687,14 +687,14 @@
 
                 <el-form-item
                   v-if="step.config.trend_algo === 'mann_kendall'"
-                  label="MK p 值阈值"
+                  label="MK 显著性水平 p (0~1)"
                 >
                   <el-input-number
                     v-model="step.config.mk_pvalue"
                     :min="0.001" :max="0.2" :step="0.01"
                     :precision="3" style="width: 200px"
                   />
-                  <span class="param-hint">&nbsp; p &lt; 阈值 判为趋势显著</span>
+                  <span class="param-hint">&nbsp; 概率值(无量纲)；p &lt; 阈值 判为趋势显著，0.05 ≈ 95% 置信度</span>
                 </el-form-item>
 
                 <el-form-item
@@ -720,22 +720,27 @@
                   <span class="param-hint">&nbsp; ≥ 阈值 判为趋势显著</span>
                 </el-form-item>
 
-                <el-form-item label="异动无变化阈值 (pct)">
+                <el-form-item label="异动无变化 |Δ| < X 百分点">
                   <el-input-number
                     v-model="step.config.event_no_change_threshold"
                     :min="0" :max="5" :step="0.1"
                     :precision="1" style="width: 200px"
                   />
-                  <span class="param-hint">&nbsp; |Δ| &lt; 阈值 判"本次质押趋势无变化"</span>
+                  <span class="param-hint">
+                    &nbsp; Δ = 当日累计质押比例 − 前次累计质押比例（单位：百分点 pct）；
+                    |Δ| &lt; 阈值 判"本次质押趋势无变化"
+                  </span>
                 </el-form-item>
 
-                <el-form-item label="异动大幅阈值 (pct)">
+                <el-form-item label="异动大幅 |Δ| ≥ X 百分点">
                   <el-input-number
                     v-model="step.config.event_large_threshold"
                     :min="0.5" :max="20" :step="0.5"
                     :precision="1" style="width: 200px"
                   />
-                  <span class="param-hint">&nbsp; |Δ| ≥ 阈值 判"大幅激增/大幅骤减"</span>
+                  <span class="param-hint">
+                    &nbsp; |Δ| ≥ 阈值 判"大幅激增/大幅骤减"；介于两阈值之间判"小幅转增/转减"
+                  </span>
                 </el-form-item>
 
                 <el-form-item label="历史窗口 (天)">
@@ -1477,13 +1482,30 @@ const addStep = () => {
   const newStep = defaultStep()
   if (newStep.type === 'match_sector') {
     const firstStepDate = form.value.steps[0]?.config?.date_str || new Date().toISOString().split('T')[0]
-    newStep.config.output_filename = `并购重组${firstStepDate}.xlsx`
+    newStep.config.output_filename = getDefaultFinalFilename(firstStepDate)
   }
   form.value.steps.push(newStep)
 }
 
 const removeStep = (index) => {
   form.value.steps.splice(index, 1)
+}
+
+// 按工作流类型生成 match_sector 默认输出文件名（与后端 output_template 保持一致）
+const getDefaultFinalFilename = (dateStr) => {
+  const d = (dateStr || new Date().toISOString().split('T')[0]).replace(/-/g, '')
+  const wt = form.value.workflow_type || ''
+  const map = {
+    '': `1并购重组${d}.xlsx`,
+    '并购重组': `1并购重组${d}.xlsx`,
+    '股权转让': `2股权转让${d}.xlsx`,
+    '增发实现': `3增发实现${d}.xlsx`,
+    '申报并购重组': `4申报并购重组${d}.xlsx`,
+    '质押': `5质押${d}.xlsx`,
+    '减持叠加质押和大宗交易': `6减持叠加质押和大宗交易${d}.xlsx`,
+    '招投标': `9招投标${d}.xlsx`,
+  }
+  return map[wt] || `1并购重组${d}.xlsx`
 }
 
 const onStepTypeChange = (step, index) => {
@@ -1502,7 +1524,7 @@ const onStepTypeChange = (step, index) => {
   }
   if (step.type === 'match_sector') {
     const firstStepDate = form.value.steps[0]?.config?.date_str || new Date().toISOString().split('T')[0]
-    step.config.output_filename = `并购重组${firstStepDate}.xlsx`
+    step.config.output_filename = getDefaultFinalFilename(firstStepDate)
   }
   if (step.type === 'pledge_trend_analysis') {
     step.config = {
