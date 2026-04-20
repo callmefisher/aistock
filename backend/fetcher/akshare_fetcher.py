@@ -162,23 +162,24 @@ class StockFetcher:
         elif 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'])
 
-        if 'pre_close' not in df.columns:
-            df['pre_close'] = df['close'].shift(1)
+        if 'close' in df.columns:
+            if 'pre_close' not in df.columns:
+                df['pre_close'] = df['close'].shift(1)
 
-        if 'change_pct' not in df.columns:
-            df['change_pct'] = (df['close'] - df['pre_close']) / df['pre_close'] * 100
+            if 'change_pct' not in df.columns:
+                df['change_pct'] = (df['close'] - df['pre_close']) / df['pre_close'] * 100
 
-        if 'change_amount' not in df.columns:
-            df['change_amount'] = df['close'] - df['pre_close']
+            if 'change_amount' not in df.columns:
+                df['change_amount'] = df['close'] - df['pre_close']
 
-        if 'amplitude' not in df.columns:
+            periods = [5, 10, 20, 30, 60, 120, 250]
+            for period in periods:
+                df[f'ma{period}'] = df['close'].rolling(window=period).mean()
+
+        if 'amplitude' not in df.columns and 'high' in df.columns and 'low' in df.columns:
             df['amplitude'] = (df['high'] - df['low']) / df['low'] * 100
 
-        periods = [5, 10, 20, 30, 60, 120, 250]
-        for period in periods:
-            df[f'ma{period}'] = df['close'].rolling(window=period).mean()
-
-        if 'volume_ratio' not in df.columns:
+        if 'volume_ratio' not in df.columns and 'volume' in df.columns:
             df['volume_ratio'] = df['volume'] / df['volume'].shift(1)
 
         return df
