@@ -1964,8 +1964,10 @@ class WorkflowExecutor:
         today = _dt.now().date()
         recency_cutoff = (today - _td(days=row_recency_days)).isoformat()
 
+        # total = 实际要查询的行数（扣除 skip），input_total = 输入行数
         stats = {
-            "total": len(df), "ok": 0, "empty": 0, "fail": 0,
+            "total": 0, "input_total": len(df),
+            "ok": 0, "empty": 0, "fail": 0,
             "skipped_preset": 0, "skipped_old": 0,
             "by_source": {"eastmoney": 0, "cache": 0, "akshare": 0, "empty": 0},
             "by_result": {
@@ -2018,6 +2020,7 @@ class WorkflowExecutor:
                 continue
 
             try:
+                stats["total"] += 1
                 records, source = ds.get_history(numeric, anchor, window_days)
                 stats["by_source"][source] = stats["by_source"].get(source, 0) + 1
                 result = compute_trend(
@@ -2075,14 +2078,15 @@ class WorkflowExecutor:
             logger.warning(f"[质押异动趋势] 缓存清理失败（不影响主流程）: {e}")
 
         summary = (
-            f"质押异动趋势: 共{stats['total']}只, "
-            f"成功{stats['ok']}, 无历史{stats['empty']}, 失败{stats['fail']}, "
-            f"跳过(原表已有){stats['skipped_preset']}, "
-            f"跳过(超出{row_recency_days}天){stats['skipped_old']} | "
-            f"源: 东财{stats['by_source']['eastmoney']}, "
-            f"缓存{stats['by_source']['cache']}, "
-            f"降级AkShare{stats['by_source']['akshare']}, "
-            f"空{stats['by_source']['empty']}"
+            f"质押异动趋势: 输入 {stats['input_total']} 只 · "
+            f"实际查询 {stats['total']} 只 · "
+            f"成功 {stats['ok']} · 无历史 {stats['empty']} · 失败 {stats['fail']} · "
+            f"跳过(原表已有) {stats['skipped_preset']} · "
+            f"跳过(超出{row_recency_days}天) {stats['skipped_old']}   ｜   "
+            f"数据源: 东财 {stats['by_source']['eastmoney']} · "
+            f"缓存 {stats['by_source']['cache']} · "
+            f"降级 AkShare {stats['by_source']['akshare']} · "
+            f"空 {stats['by_source']['empty']}"
         )
         logger.info(f"[质押异动趋势] {summary}")
 

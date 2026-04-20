@@ -910,34 +910,37 @@
         <el-form-item label="质押趋势" v-if="executionResult?.stats && executionResult?.stats?.by_source">
           <div class="pledge-summary-card">
             <div class="pledge-row">
-              <el-tag>总数 {{ executionResult.stats.total }}</el-tag>
+              <el-tag type="info" v-if="executionResult.stats.input_total != null">
+                输入 {{ executionResult.stats.input_total }}
+              </el-tag>
+              <el-tag>实际查询 {{ executionResult.stats.total }}</el-tag>
               <el-tag type="success">成功 {{ executionResult.stats.ok }}</el-tag>
               <el-tag type="warning">无历史 {{ executionResult.stats.empty }}</el-tag>
               <el-tag type="danger" v-if="executionResult.stats.fail > 0">失败 {{ executionResult.stats.fail }}</el-tag>
               <el-tag type="info" v-if="executionResult.stats.skipped_preset > 0">跳过(已有值) {{ executionResult.stats.skipped_preset }}</el-tag>
               <el-tag type="info" v-if="executionResult.stats.skipped_old > 0">跳过(过期) {{ executionResult.stats.skipped_old }}</el-tag>
             </div>
-            <div class="pledge-row" style="margin-top:6px;">
+            <div class="pledge-row pledge-row-stats">
               <span class="pledge-label">数据源:</span>
-              <span>东财 {{ executionResult.stats.by_source.eastmoney }}</span>
-              <span>缓存 {{ executionResult.stats.by_source.cache }}</span>
-              <span>降级 AkShare {{ executionResult.stats.by_source.akshare }}</span>
-              <span>空 {{ executionResult.stats.by_source.empty }}</span>
+              <span class="pledge-stat">东财 <b>{{ executionResult.stats.by_source.eastmoney }}</b></span>
+              <span class="pledge-stat">缓存 <b>{{ executionResult.stats.by_source.cache }}</b></span>
+              <span class="pledge-stat">降级 AkShare <b>{{ executionResult.stats.by_source.akshare }}</b></span>
+              <span class="pledge-stat">空 <b>{{ executionResult.stats.by_source.empty }}</b></span>
             </div>
-            <div class="pledge-row" style="margin-top:6px;" v-if="executionResult.stats.by_result">
+            <div class="pledge-row pledge-row-stats" v-if="executionResult.stats.by_result">
               <span class="pledge-label">趋势判定:</span>
-              <span>持续递增 {{ executionResult.stats.by_result['持续递增'] || 0 }}</span>
-              <span>持续递减 {{ executionResult.stats.by_result['持续递减'] || 0 }}</span>
-              <span>无趋势 {{ executionResult.stats.by_result['无趋势'] || 0 }}</span>
+              <span class="pledge-stat">持续递增 <b>{{ executionResult.stats.by_result['持续递增'] || 0 }}</b></span>
+              <span class="pledge-stat">持续递减 <b>{{ executionResult.stats.by_result['持续递减'] || 0 }}</b></span>
+              <span class="pledge-stat">无趋势 <b>{{ executionResult.stats.by_result['无趋势'] || 0 }}</b></span>
             </div>
-            <div class="pledge-row" style="margin-top:6px;" v-if="executionResult.stats.by_result">
+            <div class="pledge-row pledge-row-stats" v-if="executionResult.stats.by_result">
               <span class="pledge-label">异动分类:</span>
-              <span>小幅转增 {{ executionResult.stats.by_result['小幅转增'] || 0 }}</span>
-              <span>大幅激增 {{ executionResult.stats.by_result['大幅激增'] || 0 }}</span>
-              <span>小幅转减 {{ executionResult.stats.by_result['小幅转减'] || 0 }}</span>
-              <span>大幅骤减 {{ executionResult.stats.by_result['大幅骤减'] || 0 }}</span>
-              <span>无变化 {{ executionResult.stats.by_result['本次质押趋势无变化'] || 0 }}</span>
-              <span>空 {{ executionResult.stats.by_result['空'] || 0 }}</span>
+              <span class="pledge-stat">小幅转增 <b>{{ executionResult.stats.by_result['小幅转增'] || 0 }}</b></span>
+              <span class="pledge-stat">大幅激增 <b>{{ executionResult.stats.by_result['大幅激增'] || 0 }}</b></span>
+              <span class="pledge-stat">小幅转减 <b>{{ executionResult.stats.by_result['小幅转减'] || 0 }}</b></span>
+              <span class="pledge-stat">大幅骤减 <b>{{ executionResult.stats.by_result['大幅骤减'] || 0 }}</b></span>
+              <span class="pledge-stat">无变化 <b>{{ executionResult.stats.by_result['本次质押趋势无变化'] || 0 }}</b></span>
+              <span class="pledge-stat">空 <b>{{ executionResult.stats.by_result['空'] || 0 }}</b></span>
             </div>
             <el-collapse v-if="executionResult.fail_samples?.length" style="margin-top:8px;">
               <el-collapse-item :title="`失败样本 (${executionResult.fail_samples.length})`" name="fail">
@@ -2514,6 +2517,57 @@ watch(
   padding-top: 15px;
   border-top: 1px solid #e4e7ed;
   margin-top: 15px;
+}
+
+.pledge-summary-card {
+  width: 100%;
+  background: #fafbfc;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+.pledge-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+.pledge-row + .pledge-row {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #e4e7ed;
+}
+.pledge-row-stats {
+  font-size: 13px;
+  color: #606266;
+}
+.pledge-row-stats .pledge-label {
+  font-weight: 600;
+  color: #303133;
+  min-width: 72px;
+}
+.pledge-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 8px;
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+}
+.pledge-stat b {
+  color: #409EFF;
+  font-weight: 600;
+}
+.fail-sample {
+  padding: 4px 0;
+  font-size: 12px;
+  color: #606266;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.param-hint {
+  color: #909399;
+  font-size: 12px;
 }
 
 </style>

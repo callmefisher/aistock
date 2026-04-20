@@ -237,6 +237,9 @@ async def test_skip_old_row_beyond_recency_window(tmpbase):
     assert result["stats"]["skipped_old"] == 1
     # 数据源只被调用 1 次（只查最近行）
     assert spy_inst["val"].calls == ["000001"]
+    # input_total=2（输入）、total=1（实际查询）
+    assert result["stats"]["input_total"] == 2
+    assert result["stats"]["total"] == 1
 
 
 @pytest.mark.asyncio
