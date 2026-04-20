@@ -156,9 +156,16 @@
                 <el-button :disabled="!uploadType" @click="$refs.trendFileInput?.click()">选择文件</el-button>
               </el-form-item>
             </el-form>
+            <el-alert
+              v-if="uploadType === '质押(双列并排)'"
+              title="上传图中所示的并排双列格式（日期 | 中大盘数量/占比 | 小盘数量/占比）。每一日期会自动拆成中大盘和小盘两条记录。"
+              type="info" :closable="false" style="margin-top: 6px;"
+            />
             <!-- 上传预览 -->
             <div v-if="uploadPreview.length">
-              <el-table :data="uploadPreview" stripe border max-height="200" size="small" style="margin-top: 8px">
+              <el-table :data="uploadPreview" stripe border max-height="240" size="small" style="margin-top: 8px">
+                <el-table-column prop="workflow_type" label="类型" width="140"
+                  v-if="uploadType === '质押(双列并排)'" />
                 <el-table-column prop="date_str" label="日期" width="120" />
                 <el-table-column prop="count" label="站20均线数量" width="130" />
                 <el-table-column prop="total" label="总量" width="100" />
