@@ -215,7 +215,8 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
     """
     from config.workflow_type_config import WORKFLOW_TYPE_CONFIG
 
-    # 按工作流类型分组；质押子类型先归入 pledge_sub 两个桶（不入 type_groups）
+    # 按工作流类型分组；质押所有变种统一归入 pledge_sub 两个桶（不入 type_groups）
+    # 历史遗留的 '质押' 裸记录会被丢弃（旧版本单线图不再导出，改由下方合并双曲线图覆盖）
     type_groups = {}
     pledge_sub = {"中大盘": [], "小盘": []}
     for d in data:
@@ -225,6 +226,9 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
             continue
         if wt == "质押(小盘)":
             pledge_sub["小盘"].append(d)
+            continue
+        if wt == "质押":
+            # 旧版本的裸 '质押' 记录：由于来源未知，忽略（不画中间那份单线图）
             continue
         if wt not in type_groups:
             type_groups[wt] = []

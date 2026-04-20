@@ -572,6 +572,7 @@ const onDateRangeChange = () => {
 }
 
 // 按 type 分组；质押的两个子类型合并到 "质押" key 下，附带 _source_label
+// 旧版本裸 "质押" 记录（无来源）直接丢弃
 const trendByType = computed(() => {
   const map = {}
   allWorkflowTypes.value.forEach(t => { map[t] = [] })
@@ -581,6 +582,10 @@ const trendByType = computed(() => {
       const sub = wt === '质押(中大盘)' ? '中大盘' : '小盘'
       if (!map['质押']) map['质押'] = []
       map['质押'].push({ ...d, _source_label: sub })
+      return
+    }
+    if (wt === '质押') {
+      // 旧版本遗留数据，来源未知，跳过
       return
     }
     if (!map[wt]) map[wt] = []
