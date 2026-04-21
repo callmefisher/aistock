@@ -776,6 +776,7 @@
                     format="YYYY-MM-DD"
                     value-format="YYYY-MM-DD"
                     style="width: 100%"
+                    @change="onTrendDateStrChange(step)"
                   />
                 </el-form-item>
 
@@ -1334,28 +1335,37 @@ const defaultRankingSteps = () => {
   ]
 }
 
-const computeTrendDateRange = (preset) => {
-  const now = new Date()
+const computeTrendDateRange = (preset, anchorDateStr) => {
+  const anchor = anchorDateStr ? new Date(anchorDateStr) : new Date()
+  if (isNaN(anchor.getTime())) {
+    return { start: '', end: '' }
+  }
   let start
   if (preset === '1m') {
-    start = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate())
+    start = new Date(anchor.getFullYear(), anchor.getMonth() - 1, anchor.getDate())
   } else if (preset === '6m') {
-    start = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate())
+    start = new Date(anchor.getFullYear(), anchor.getMonth() - 6, anchor.getDate())
   } else if (preset === '1y') {
-    start = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate())
+    start = new Date(anchor.getFullYear() - 1, anchor.getMonth(), anchor.getDate())
   } else {
     return { start: '', end: '' }
   }
-  const fmt = (d) => d.toISOString().split('T')[0]
-  return { start: fmt(start), end: fmt(now) }
+  const fmt = (d) => {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  }
+  return { start: fmt(start), end: fmt(anchor) }
 }
 
 const defaultMa20TrendStep = () => {
-  const range = computeTrendDateRange('6m')
+  const today = new Date().toISOString().split('T')[0]
+  const range = computeTrendDateRange('6m', today)
   return {
     type: 'export_ma20_trend',
     config: {
-      date_str: new Date().toISOString().split('T')[0],
+      date_str: today,
       date_preset: '6m',
       date_range_start: range.start,
       date_range_end: range.end,
@@ -1368,7 +1378,16 @@ const defaultMa20TrendStep = () => {
 
 const onTrendPresetChange = (step) => {
   if (step.config.date_preset !== 'custom') {
-    const range = computeTrendDateRange(step.config.date_preset)
+    const range = computeTrendDateRange(step.config.date_preset, step.config.date_str)
+    step.config.date_range_start = range.start
+    step.config.date_range_end = range.end
+    step.config.date_range = null
+  }
+}
+
+const onTrendDateStrChange = (step) => {
+  if (step.config.date_preset && step.config.date_preset !== 'custom') {
+    const range = computeTrendDateRange(step.config.date_preset, step.config.date_str)
     step.config.date_range_start = range.start
     step.config.date_range_end = range.end
     step.config.date_range = null
@@ -1615,6 +1634,16 @@ const handleSave = async () => {
     ElMessage.warning('导入Excel步骤必须选择文件或数据源')
     return
   }
+
+  // 保存前：对 export_ma20_trend 步骤按 preset + date_str 重算范围
+  form.value.steps.forEach(step => {
+    if (step.type === 'export_ma20_trend' && step.config?.date_preset && step.config.date_preset !== 'custom') {
+      const range = computeTrendDateRange(step.config.date_preset, step.config.date_str)
+      step.config.date_range_start = range.start
+      step.config.date_range_end = range.end
+      step.config.date_range = null
+    }
+  })
 
   try {
     const payload = {
@@ -2099,6 +2128,15 @@ const handleEdit = (row) => {
   if (form.value.steps.length === 0) {
     form.value.steps = [defaultStep()]
   }
+  // 对 export_ma20_trend 步骤：非 custom preset 时按 date_str 重算趋势范围
+  form.value.steps.forEach(step => {
+    if (step.type === 'export_ma20_trend' && step.config?.date_preset && step.config.date_preset !== 'custom') {
+      const range = computeTrendDateRange(step.config.date_preset, step.config.date_str)
+      step.config.date_range_start = range.start
+      step.config.date_range_end = range.end
+      step.config.date_range = null
+    }
+  })
   showDialog.value = true
   // loadingEditData 必须在 nextTick 后关闭，否则 workflow_type watcher
   // 在微任务中触发时 loadingEditData 已为 false，会用默认步骤覆盖已保存的数据

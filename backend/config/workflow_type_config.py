@@ -257,11 +257,10 @@ WORKFLOW_TYPE_CONFIG = {
 TYPE_ALIASES = {}
 
 # 条件交集输出列配置
-INTERSECTION_SOURCE_COLUMNS = ["序号", "证券代码", "证券简称", "最新公告日", "百日新高", "20日均线", "国企", "一级板块"]
+INTERSECTION_SOURCE_COLUMNS = ["序号", "证券代码", "证券简称", "最新公告日", "百日新高", "20日均线", "国企", "所属板块"]
 INTERSECTION_COLUMN_RENAME = {
     "20日均线": "站上20日线",
     "国企": "国央企",
-    "一级板块": "所属板块",
 }
 INTERSECTION_DISPLAY_COLUMNS = ["序号", "证券代码", "证券简称", "最新公告日", "百日新高", "站上20日线", "国央企", "所属板块", "资本运作行为"]
 

@@ -1249,7 +1249,7 @@ class WorkflowExecutor:
             }
 
         source_path = config.get("source_dir") or self.resolver.get_match_source_directory("match_sector", date_str)
-        new_column_name = config.get("new_column_name", "一级板块")
+        new_column_name = config.get("new_column_name", "所属板块")
 
         if date_str:
             source_path = self.resolver.ensure_match_source_files("match_sector", date_str)
@@ -1263,7 +1263,7 @@ class WorkflowExecutor:
         all_sector_stocks = self._load_match_source(
             source_path,
             code_col_candidates=['股票代码.1', '股票代码', '证券代码'],
-            name_col_candidates=['所属一级板块', '所属板块', '一级板块', '板块']
+            name_col_candidates=['所属板块', '所属一级板块', '一级板块', '板块', '所属二级板块', '二级板块']
         )
 
         logger.info(f"从{source_path}目录共加载{len(all_sector_stocks)}只股票")
@@ -1312,6 +1312,32 @@ class WorkflowExecutor:
                         )
                         logger.info(
                             f"自动采集MA20趋势: type={sub_wt}, count={sub_count}, total={sub_total}"
+                        )
+                elif (self.workflow_type or '并购重组') in ("并购重组", "股权转让", "招投标"):
+                    from datetime import datetime as _dt_y
+                    parent = self.workflow_type or '并购重组'
+                    year_now = _dt_y.now().year
+                    date_series = pd.to_datetime(df.get("最新公告日"), errors="coerce") \
+                        if "最新公告日" in df.columns else pd.Series([pd.NaT] * len(df))
+                    for year in (year_now, year_now - 1):
+                        mask_year = date_series.dt.year == year
+                        sub_total = int(mask_year.sum())
+                        if sub_total == 0:
+                            continue
+                        sub_count = int(
+                            (df.loc[mask_year, '20日均线'].fillna('').astype(str).str.strip() != '').sum()
+                        )
+                        sub_wt = f"{parent}({year})"
+                        await save_trend_data(
+                            metric_type='ma20',
+                            workflow_type=sub_wt,
+                            date_str=date_str or self.today,
+                            count=sub_count,
+                            total=sub_total,
+                            source='auto',
+                        )
+                        logger.info(
+                            f"自动采集MA20趋势(年度): type={sub_wt}, count={sub_count}, total={sub_total}"
                         )
                 else:
                     ma20_count = int((df['20日均线'].fillna('').astype(str).str.strip() != '').sum())
@@ -1428,10 +1454,14 @@ class WorkflowExecutor:
                 continue
             df = filtered_dfs[wtype]
             # 提取标准列
+            SECTOR_ALIASES = ['所属板块', '一级板块', '所属一级板块', '板块', '二级板块', '所属二级板块']
             extracted = pd.DataFrame()
             for col in INTERSECTION_SOURCE_COLUMNS:
                 if col in df.columns:
                     extracted[col] = df[col]
+                elif col in SECTOR_ALIASES:
+                    found = next((a for a in SECTOR_ALIASES if a in df.columns), None)
+                    extracted[col] = df[found] if found else ""
                 else:
                     extracted[col] = ""
 
@@ -1463,6 +1493,53 @@ class WorkflowExecutor:
             combined_rows.append(extracted)
 
         combined_df = pd.concat(combined_rows, ignore_index=True)
+
+        # 去重合并：同证券代码多行 → 保留"最新公告日"那行，资本运作行为拼接为"A、B"
+        if "证券代码" in combined_df.columns and len(combined_df) > 0:
+            before = len(combined_df)
+            # 原顺序索引，用于"最新公告日"相同时的 tie-breaker（先到先留）
+            combined_df = combined_df.reset_index(drop=True)
+            combined_df["_orig_idx"] = combined_df.index
+            date_parsed = pd.to_datetime(combined_df.get("最新公告日"), errors="coerce")
+            combined_df["_date_sort_key"] = date_parsed
+            # 按 证券代码 分组，聚合"资本运作行为"为去重顿号拼接（保持首次出现顺序）
+            def _merge_behaviors(series):
+                seen = []
+                for v in series:
+                    s = str(v).strip() if v is not None and str(v).strip() != "" else ""
+                    if not s:
+                        continue
+                    # 单个 cell 内已有顿号时分开处理
+                    for part in s.split("、"):
+                        part = part.strip()
+                        if part and part not in seen:
+                            seen.append(part)
+                return "、".join(seen)
+
+            behavior_map = combined_df.groupby("证券代码", sort=False)["资本运作行为"].apply(_merge_behaviors)
+
+            # 选出每个代码的"保留行"：最新公告日最大，平局按 _orig_idx 最小（先到先留）
+            # NaT 在 max 里会排到最末——用 fillna(pd.Timestamp.min) 保证至少能选出一行
+            combined_df["_date_for_rank"] = combined_df["_date_sort_key"].fillna(pd.Timestamp.min)
+            keep_idx = (
+                combined_df.sort_values(
+                    by=["证券代码", "_date_for_rank", "_orig_idx"],
+                    ascending=[True, False, True],
+                )
+                .drop_duplicates(subset="证券代码", keep="first")
+                .index
+            )
+            combined_df = combined_df.loc[keep_idx].copy()
+            # 应用合并后的资本运作行为
+            combined_df["资本运作行为"] = combined_df["证券代码"].map(behavior_map)
+            # 按原顺序恢复
+            combined_df = combined_df.sort_values("_orig_idx").drop(
+                columns=["_orig_idx", "_date_sort_key", "_date_for_rank"]
+            ).reset_index(drop=True)
+            after = len(combined_df)
+            if before != after:
+                logger.info(f"[条件交集] 按证券代码合并: {before}行 → {after}行")
+
         # 重新编号序号
         combined_df["序号"] = range(1, len(combined_df) + 1)
 
@@ -1470,8 +1547,8 @@ class WorkflowExecutor:
 
         # 列名重映射（原始数据不变，只改最终输出的列名）
         combined_display = combined_df.rename(columns=INTERSECTION_COLUMN_RENAME)
-        # 确保列顺序
-        final_columns = [c for c in INTERSECTION_DISPLAY_COLUMNS if c in combined_display.columns]
+        # 确保列顺序；临时屏蔽"序号"列（内部计算逻辑保留，不展示）
+        final_columns = [c for c in INTERSECTION_DISPLAY_COLUMNS if c in combined_display.columns and c != "序号"]
         combined_display = combined_display[final_columns]
 
         # Sheet2（选股池）= Sheet1 数据的完整复制
@@ -1495,6 +1572,25 @@ class WorkflowExecutor:
             pool_df.to_excel(writer, sheet_name=pool_name, index=False)
 
         auto_adjust_excel_width(output_path, all_sheets=True)
+        # 资本运作行为可能是多个类型顿号拼接；统一设宽为 70 保证不换行；全表居中
+        try:
+            from openpyxl import load_workbook as _lw
+            from openpyxl.styles import Alignment
+            center_align = Alignment(horizontal="center", vertical="center", wrap_text=False)
+            wb_w = _lw(output_path)
+            for ws in wb_w.worksheets:
+                header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+                for idx, h in enumerate(header_row, start=1):
+                    if h == "资本运作行为":
+                        ws.column_dimensions[get_column_letter(idx)].width = 70
+                        break
+                for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
+                                        min_col=1, max_col=ws.max_column):
+                    for cell in row:
+                        cell.alignment = center_align
+            wb_w.save(output_path)
+        except Exception as e:
+            logger.warning(f"[条件交集] 资本运作行为列宽/居中设置失败: {e}")
         logger.info(f"[条件交集] 输出文件: {output_path}")
 
         # 6. 保存选股池到 DB
@@ -1535,10 +1631,31 @@ class WorkflowExecutor:
 
         date_str = config.get("date_str") or date_str or self.today
         output_filename = config.get("output_filename") or "10站上20日均线趋势.xlsx"
+        date_preset = config.get("date_preset")
         date_range_start = config.get("date_range_start")
         date_range_end = config.get("date_range_end")
 
-        logger.info(f"[导出MA20趋势] date={date_str}, range={date_range_start}~{date_range_end}")
+        # preset 非 custom 时以 date_str 为锚点重算范围，保证跟数据日期同步（忽略 DB 里旧值）
+        if date_preset and date_preset != "custom":
+            from datetime import datetime as _dt
+            from dateutil.relativedelta import relativedelta
+            try:
+                anchor = _dt.strptime(date_str, "%Y-%m-%d")
+                if date_preset == "1m":
+                    start = anchor - relativedelta(months=1)
+                elif date_preset == "6m":
+                    start = anchor - relativedelta(months=6)
+                elif date_preset == "1y":
+                    start = anchor - relativedelta(years=1)
+                else:
+                    start = None
+                if start is not None:
+                    date_range_start = start.strftime("%Y-%m-%d")
+                    date_range_end = anchor.strftime("%Y-%m-%d")
+            except Exception as e:
+                logger.warning(f"[导出MA20趋势] preset 范围计算失败，回退到 config: {e}")
+
+        logger.info(f"[导出MA20趋势] date={date_str}, preset={date_preset}, range={date_range_start}~{date_range_end}")
 
         # 获取趋势数据（已自动排除条件交集和导出20日均线趋势类型）
         data = await get_trend_data(
@@ -1570,6 +1687,8 @@ class WorkflowExecutor:
 
     def _apply_filters(self, df: pd.DataFrame, filter_conditions: list, filter_logic: str = "AND") -> pd.DataFrame:
         """应用过滤条件：非空即保留"""
+        SECTOR_ALIASES = ['所属板块', '一级板块', '所属一级板块', '板块', '二级板块', '所属二级板块']
+
         enabled = [f for f in filter_conditions if f.get("enabled")]
         if not enabled:
             return df
@@ -1577,8 +1696,16 @@ class WorkflowExecutor:
         masks = []
         for f in enabled:
             col = f["column"]
+            actual_col = None
             if col in df.columns:
-                mask = df[col].fillna("").astype(str).str.strip() != ""
+                actual_col = col
+            elif col in SECTOR_ALIASES:
+                for alias in SECTOR_ALIASES:
+                    if alias in df.columns:
+                        actual_col = alias
+                        break
+            if actual_col is not None:
+                mask = df[actual_col].fillna("").astype(str).str.strip() != ""
                 masks.append(mask)
 
         if not masks:

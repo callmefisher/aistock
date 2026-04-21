@@ -65,41 +65,12 @@
           </div>
         </div>
 
-        <!-- 汇总条 -->
-        <div class="trend-summary" v-if="trendData.length">
-          <div v-for="wt in allWorkflowTypes" :key="wt" class="summary-item">
-            <span class="summary-type">{{ getTypeDisplay(wt) }}</span>
-            <template v-if="wt === '质押' && latestByType[wt]?._sub">
-              <span v-for="(v, sub) in latestByType[wt]._sub" :key="sub"
-                    class="summary-ratio" :class="v.trend"
-                    :title="`${sub}: ${(v.ratio * 100).toFixed(2)}%`">
-                <small>{{ sub }}</small>
-                {{ (v.ratio * 100).toFixed(2) }}%
-                <span v-if="v.trend === 'up'">&#8593;</span>
-                <span v-else-if="v.trend === 'down'">&#8595;</span>
-              </span>
-              <span v-if="!Object.keys(latestByType[wt]._sub).length" class="summary-empty">--</span>
-            </template>
-            <template v-else-if="latestByType[wt]">
-              <span class="summary-ratio" :class="latestByType[wt].trend">
-                {{ (latestByType[wt].ratio * 100).toFixed(2) }}%
-                <span v-if="latestByType[wt].trend === 'up'">&#8593;</span>
-                <span v-else-if="latestByType[wt].trend === 'down'">&#8595;</span>
-              </span>
-            </template>
-            <span v-else class="summary-empty">--</span>
-          </div>
-        </div>
-
         <!-- 图表区域 -->
         <div class="trend-charts" v-loading="trendLoading">
           <el-card v-for="wt in allWorkflowTypes" :key="wt" class="chart-card" shadow="hover">
             <template #header>
               <div class="chart-header">
                 <span class="chart-title">{{ getTypeDisplay(wt) }}</span>
-                <span v-if="latestByType[wt]" class="chart-latest">
-                  最新: {{ (latestByType[wt].ratio * 100).toFixed(2) }}%
-                </span>
                 <el-button size="small" link @click="exportSingleTrend(wt)">
                   <el-icon><Download /></el-icon> 导出
                 </el-button>
@@ -126,15 +97,26 @@
               <el-form-item label="日期">
                 <el-date-picker v-model="manualForm.date_str" type="date" format="YYYY-MM-DD" value-format="YYYY-MM-DD" placeholder="选择日期" style="width: 150px" />
               </el-form-item>
-              <el-form-item label="站20日均线数量">
+              <el-form-item :label="`${isYearlyManual ? CURRENT_YEAR + ' ' : ''}站20日均线数量`">
                 <el-input-number v-model="manualForm.count" :min="0" controls-position="right" style="width: 130px" />
               </el-form-item>
-              <el-form-item label="总量">
+              <el-form-item :label="`${isYearlyManual ? CURRENT_YEAR + ' ' : ''}总量`">
                 <el-input-number v-model="manualForm.total" :min="0" controls-position="right" style="width: 130px" />
               </el-form-item>
-              <el-form-item label="占比">
+              <el-form-item :label="`${isYearlyManual ? CURRENT_YEAR + ' ' : ''}占比`">
                 <el-tag>{{ manualForm.total > 0 ? ((manualForm.count / manualForm.total) * 100).toFixed(2) + '%' : '--' }}</el-tag>
               </el-form-item>
+              <template v-if="isYearlyManual">
+                <el-form-item :label="`${PREV_YEAR} 站20日均线数量`">
+                  <el-input-number v-model="manualForm.count_prev" :min="0" controls-position="right" style="width: 130px" />
+                </el-form-item>
+                <el-form-item :label="`${PREV_YEAR} 总量`">
+                  <el-input-number v-model="manualForm.total_prev" :min="0" controls-position="right" style="width: 130px" />
+                </el-form-item>
+                <el-form-item :label="`${PREV_YEAR} 占比`">
+                  <el-tag>{{ manualForm.total_prev > 0 ? ((manualForm.count_prev / manualForm.total_prev) * 100).toFixed(2) + '%' : '--' }}</el-tag>
+                </el-form-item>
+              </template>
               <el-form-item>
                 <el-button type="primary" @click="submitManual" :loading="submitting">保存</el-button>
               </el-form-item>
@@ -149,6 +131,9 @@
                 <el-select v-model="uploadType" placeholder="先选择类型" style="width: 260px">
                   <el-option v-for="t in INPUT_WORKFLOW_TYPES" :key="t" :label="getTypeDisplay(t)" :value="t" />
                   <el-option label="5质押（并排双列：中大盘+小盘）" value="质押(双列并排)" />
+                  <el-option label="1并购重组（并排双列：本年+上年）" value="年度(并购重组)" />
+                  <el-option label="2股权转让（并排双列：本年+上年）" value="年度(股权转让)" />
+                  <el-option label="9招投标（并排双列：本年+上年）" value="年度(招投标)" />
                 </el-select>
               </el-form-item>
               <el-form-item>
@@ -161,11 +146,16 @@
               title="上传图中所示的并排双列格式（日期 | 中大盘数量/占比 | 小盘数量/占比）。每一日期会自动拆成中大盘和小盘两条记录。"
               type="info" :closable="false" style="margin-top: 6px;"
             />
+            <el-alert
+              v-else-if="isYearlyUpload"
+              :title="`双行表头：Row1 含 ${CURRENT_YEAR}(或 ${CURRENT_YEAR}至今) / ${PREV_YEAR} 标签，Row2 含 占20均线数量 / 占比。每一日期会自动拆成 ${uploadParent}(${CURRENT_YEAR}) 和 ${uploadParent}(${PREV_YEAR}) 两条记录。`"
+              type="info" :closable="false" style="margin-top: 6px;"
+            />
             <!-- 上传预览 -->
             <div v-if="uploadPreview.length">
               <el-table :data="uploadPreview" stripe border max-height="240" size="small" style="margin-top: 8px">
-                <el-table-column prop="workflow_type" label="类型" width="140"
-                  v-if="uploadType === '质押(双列并排)'" />
+                <el-table-column prop="workflow_type" label="类型" width="160"
+                  v-if="uploadType === '质押(双列并排)' || isYearlyUpload" />
                 <el-table-column prop="date_str" label="日期" width="120" />
                 <el-table-column prop="count" label="站20均线数量" width="130" />
                 <el-table-column prop="total" label="总量" width="100" />
@@ -540,6 +530,10 @@ const PLEDGE_SUBTYPES = ['质押(中大盘)', '质押(小盘)']
 // 录入/上传用：直接写入 DB 的 workflow_type 值 —— 质押必须选中大盘或小盘
 const INPUT_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '申报并购重组',
   '质押(中大盘)', '质押(小盘)', '减持叠加质押和大宗交易', '招投标']
+// 年度父类型：录入时需要同时收集本年 + 上年
+const YEARLY_PARENTS = ['并购重组', '股权转让', '招投标']
+const CURRENT_YEAR = new Date().getFullYear()
+const PREV_YEAR = CURRENT_YEAR - 1
 const allWorkflowTypes = ref(ALL_WORKFLOW_TYPES)
 
 const trendLoading = ref(false)
@@ -557,7 +551,13 @@ const manualForm = reactive({
   date_str: '',
   count: 0,
   total: 0,
+  count_prev: 0,
+  total_prev: 0,
 })
+
+const isYearlyManual = computed(() => YEARLY_PARENTS.includes(manualForm.workflow_type))
+const isYearlyUpload = computed(() => typeof uploadType.value === 'string' && uploadType.value.startsWith('年度(') && uploadType.value.endsWith(')'))
+const uploadParent = computed(() => isYearlyUpload.value ? uploadType.value.slice(3, -1) : '')
 
 // 日期快捷
 const setDatePreset = (preset) => {
@@ -582,7 +582,9 @@ const onDateRangeChange = () => {
 }
 
 // 按 type 分组；质押的两个子类型合并到 "质押" key 下，附带 _source_label
+// 年度父类型(并购重组/股权转让/招投标)(YYYY) 折叠到父类型下，附带 _year_label
 // 旧版本裸 "质押" 记录（无来源）直接丢弃
+const YEARLY_RE = /^(并购重组|股权转让|招投标)\((\d{4})\)$/
 const trendByType = computed(() => {
   const map = {}
   allWorkflowTypes.value.forEach(t => { map[t] = [] })
@@ -594,8 +596,12 @@ const trendByType = computed(() => {
       map['质押'].push({ ...d, _source_label: sub })
       return
     }
-    if (wt === '质押') {
-      // 旧版本遗留数据，来源未知，跳过
+    if (wt === '质押') return
+    const ym = YEARLY_RE.exec(wt || '')
+    if (ym) {
+      const parent = ym[1]
+      if (!map[parent]) map[parent] = []
+      map[parent].push({ ...d, _year_label: ym[2] })
       return
     }
     if (!map[wt]) map[wt] = []
@@ -670,6 +676,12 @@ const renderChart = (wt) => {
   // 质押类型：画中大盘 + 小盘双曲线
   if (wt === '质押') {
     renderPledgeChart(chart, data)
+    return
+  }
+
+  // 年度父类型：画本年 + 上年双曲线
+  if (YEARLY_PARENTS.includes(wt) && data.some(d => d._year_label)) {
+    renderYearlyChart(chart, data)
     return
   }
 
@@ -780,6 +792,79 @@ const renderPledgeChart = (chart, data) => {
   })
 }
 
+// 年度父类型：最新 2 个年份双线（例 '2026' vs '2025'）
+const renderYearlyChart = (chart, data) => {
+  const byYear = {}
+  data.forEach(d => {
+    const y = d._year_label
+    if (!y) return
+    if (!byYear[y]) byYear[y] = []
+    byYear[y].push(d)
+  })
+  const years = Object.keys(byYear).sort().reverse().slice(0, 2)
+  if (!years.length) return
+  const [Y, Y1] = years
+  const yArr = (byYear[Y] || []).slice().sort((a, b) => a.date_str.localeCompare(b.date_str))
+  const y1Arr = Y1 ? (byYear[Y1] || []).slice().sort((a, b) => a.date_str.localeCompare(b.date_str)) : []
+
+  const allDatesSet = new Set([...yArr.map(d => d.date_str), ...y1Arr.map(d => d.date_str)])
+  const allDates = [...allDatesSet].sort()
+  const yMap = Object.fromEntries(yArr.map(d => [d.date_str, d]))
+  const y1Map = Object.fromEntries(y1Arr.map(d => [d.date_str, d]))
+  const toRatio = (m, d) => m[d] ? +(m[d].ratio * 100).toFixed(2) : null
+  const yRatios = allDates.map(d => toRatio(yMap, d))
+  const y1Ratios = allDates.map(d => toRatio(y1Map, d))
+
+  const legendData = Y1 ? [Y, Y1] : [Y]
+  chart.setOption({
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        const idx = params[0].dataIndex
+        const fullDate = allDates[idx] || params[0].axisValue
+        let html = `<b>${fullDate}</b><br/>`
+        params.forEach(p => {
+          if (p.value == null) return
+          html += `${p.marker} ${p.seriesName}: ${p.value}%<br/>`
+          const m = p.seriesName === Y ? yMap[fullDate] : y1Map[fullDate]
+          if (m) html += `&nbsp;&nbsp;（站上 ${m.count} / 总量 ${m.total}）<br/>`
+        })
+        return html
+      }
+    },
+    legend: { data: legendData, top: 0 },
+    grid: { left: 50, right: 50, bottom: allDates.length > 30 ? 70 : 40, top: 36 },
+    xAxis: {
+      type: 'category',
+      data: allDates.map(d => { const p = d.split('-'); return `${+p[1]}/${+p[2]}` }),
+      axisLabel: {
+        rotate: allDates.length > 15 ? 45 : 0,
+        fontSize: 11,
+        interval: allDates.length > 60 ? Math.floor(allDates.length / 20) - 1 : allDates.length > 30 ? Math.floor(allDates.length / 15) - 1 : 'auto'
+      }
+    },
+    dataZoom: allDates.length > 30 ? [{ type: 'slider', start: 0, end: 100, height: 20, bottom: 5 }] : [],
+    yAxis: [
+      { type: 'value', name: '占比%', min: 0, splitNumber: 5, axisLabel: { formatter: '{value}%', fontSize: 11 } }
+    ],
+    series: Y1 ? [
+      { name: Y, type: 'line', data: yRatios, smooth: true, connectNulls: true,
+        symbol: 'circle', symbolSize: 6,
+        lineStyle: { width: 2, color: '#409EFF' },
+        itemStyle: { color: '#409EFF' } },
+      { name: Y1, type: 'line', data: y1Ratios, smooth: true, connectNulls: true,
+        symbol: 'circle', symbolSize: 6,
+        lineStyle: { width: 2, color: '#E6A23C' },
+        itemStyle: { color: '#E6A23C' } }
+    ] : [
+      { name: Y, type: 'line', data: yRatios, smooth: true, connectNulls: true,
+        symbol: 'circle', symbolSize: 6,
+        lineStyle: { width: 2, color: '#409EFF' },
+        itemStyle: { color: '#409EFF' } }
+    ]
+  })
+}
+
 const renderAllCharts = async () => {
   await nextTick()
   allWorkflowTypes.value.forEach(wt => renderChart(wt))
@@ -815,13 +900,47 @@ const submitManual = async () => {
   if (!manualForm.workflow_type || !manualForm.date_str) {
     ElMessage.warning('请填写工作流类型和日期'); return
   }
-  if (manualForm.total <= 0) { ElMessage.warning('总量必须大于0'); return }
+  const isYearly = YEARLY_PARENTS.includes(manualForm.workflow_type)
+  const payloads = []
+  if (isYearly) {
+    if (manualForm.count > 0 && manualForm.total > 0) {
+      payloads.push({
+        metric_type: 'ma20',
+        workflow_type: `${manualForm.workflow_type}(${CURRENT_YEAR})`,
+        date_str: manualForm.date_str,
+        count: manualForm.count,
+        total: manualForm.total,
+      })
+    }
+    if (manualForm.count_prev > 0 && manualForm.total_prev > 0) {
+      payloads.push({
+        metric_type: 'ma20',
+        workflow_type: `${manualForm.workflow_type}(${PREV_YEAR})`,
+        date_str: manualForm.date_str,
+        count: manualForm.count_prev,
+        total: manualForm.total_prev,
+      })
+    }
+    if (!payloads.length) {
+      ElMessage.warning(`请至少填一组(${CURRENT_YEAR} 或 ${PREV_YEAR})数量/总量`); return
+    }
+  } else {
+    if (manualForm.total <= 0) { ElMessage.warning('总量必须大于0'); return }
+    payloads.push({
+      metric_type: 'ma20',
+      workflow_type: manualForm.workflow_type,
+      date_str: manualForm.date_str,
+      count: manualForm.count,
+      total: manualForm.total,
+    })
+  }
   submitting.value = true
   try {
-    const res = await api.post('/statistics/trend/trend-data/', {
-      metric_type: 'ma20', ...manualForm
-    })
-    if (res?.success) { ElMessage.success('已保存'); fetchTrendData() }
+    for (const p of payloads) {
+      await api.post('/statistics/trend/trend-data/', p)
+    }
+    ElMessage.success(`已保存${payloads.length}条`)
+    fetchTrendData()
   } catch { ElMessage.error('保存失败') }
   finally { submitting.value = false }
 }
@@ -1192,14 +1311,6 @@ const formatTime = (iso) => { if (!iso) return '-'; return iso.replace('T', ' ')
 /* 趋势 tab */
 .trend-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
 .trend-date-btns { display: flex; align-items: center; }
-
-.trend-summary { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; padding: 12px; background: #f5f7fa; border-radius: 8px; }
-.summary-item { display: flex; align-items: center; gap: 6px; padding: 4px 12px; background: #fff; border-radius: 6px; font-size: 13px; }
-.summary-type { color: #606266; font-weight: 500; }
-.summary-ratio { font-weight: 600; }
-.summary-ratio.up { color: #67c23a; }
-.summary-ratio.down { color: #f56c6c; }
-.summary-empty { color: #c0c4cc; }
 
 .trend-charts { display: flex; flex-direction: column; gap: 16px; }
 .chart-card { }

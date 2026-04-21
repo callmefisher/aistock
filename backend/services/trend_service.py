@@ -99,8 +99,12 @@ async def delete_trend_data(record_id: int) -> bool:
         return False
 
 
-def _find_pledge_side_by_side_sheet(file_path: str) -> Optional[str]:
-    """扫描 Excel 所有可见 sheet，找第一个符合"日期 + 中大盘 + 小盘"双行表头的 sheet。"""
+def _find_dual_columns_sheet(file_path: str, left_keywords: List[str], right_keywords: List[str]) -> Optional[str]:
+    """扫描 Excel 所有可见 sheet，找第一个符合"日期 + 左关键字 + 右关键字"双行表头的 sheet。
+
+    left/right 关键字是 "or" 语义：只要前 3 行里有任一 left_keywords 的词命中、
+    且有任一 right_keywords 的词命中、且出现"日期"或"占比"，即判定为目标 sheet。
+    """
     from openpyxl import load_workbook
     try:
         wb = load_workbook(file_path, read_only=True, data_only=True)
@@ -112,14 +116,15 @@ def _find_pledge_side_by_side_sheet(file_path: str) -> Optional[str]:
             ws = wb[sn]
             if getattr(ws, "sheet_state", "visible") != "visible":
                 continue
-            # 读前 3 行
             head_rows = []
             for row in ws.iter_rows(min_row=1, max_row=3, values_only=True):
                 head_rows.append(row)
                 if len(head_rows) >= 3:
                     break
             flat = "|".join(str(c) for r in head_rows for c in r if c is not None)
-            if "中大盘" in flat and "小盘" in flat and ("日期" in flat or "占比" in flat):
+            has_left = any(k in flat for k in left_keywords)
+            has_right = any(k in flat for k in right_keywords)
+            if has_left and has_right and ("日期" in flat or "占比" in flat):
                 target = sn
                 break
     finally:
@@ -127,58 +132,69 @@ def _find_pledge_side_by_side_sheet(file_path: str) -> Optional[str]:
     return target
 
 
-def _parse_pledge_side_by_side(file_path: str) -> List[Dict[str, Any]]:
-    """解析质押"中大盘 + 小盘"并排双列的 Excel。
+def _find_pledge_side_by_side_sheet(file_path: str) -> Optional[str]:
+    """向后兼容 thin wrapper。"""
+    return _find_dual_columns_sheet(file_path, ["中大盘"], ["小盘"])
 
-    表头为 2 行：
-      Row 1: 日期 | 中大盘 | 中大盘 | 小盘 | 小盘 （日期列可能跨 2 行或只占 Row 1）
-      Row 2:       | 占20均线数量 | 占比 | 占20均线数量 | 占比
-    返回 2 * N 条记录（中大盘一份 + 小盘一份）。
 
-    文件可能含多个 sheet，自动找到匹配"日期 + 中大盘 + 小盘"的那个 sheet。
+def _parse_dual_columns_excel(
+    file_path: str,
+    left_workflow_type: str,
+    right_workflow_type: str,
+    left_keywords: List[str],
+    right_keywords: List[str],
+    log_tag: str = "双列并排",
+) -> List[Dict[str, Any]]:
+    """通用"并排双列"Excel 解析：日期 | 左(数量/占比) | 右(数量/占比)。
+
+    表头两行：Row1 含左/右分组关键字（例 中大盘/小盘 或 2026/2025）；
+    Row2 含 占20均线数量/占比。每行生成 2 条记录（分别标 left/right_workflow_type）。
     """
-    target_sheet = _find_pledge_side_by_side_sheet(file_path)
+    target_sheet = _find_dual_columns_sheet(file_path, left_keywords, right_keywords)
     if target_sheet is None:
         raise ValueError(
-            "未找到符合格式的 sheet（需要双行表头：日期 | 中大盘-数量/占比 | 小盘-数量/占比）"
+            f"未找到符合格式的 sheet（需要双行表头：日期 | {left_keywords[0]}-数量/占比 | {right_keywords[0]}-数量/占比）"
         )
     df = pd.read_excel(file_path, sheet_name=target_sheet, header=[0, 1])
-    logger.info(f"[质押双列并排] 使用 sheet: {target_sheet}")
-    # df.columns 是 MultiIndex[(l0, l1), ...]
-    # 推断日期列、中大盘数量/占比、小盘数量/占比的位置
+    logger.info(f"[{log_tag}] 使用 sheet: {target_sheet}")
+
     date_col = None
-    zdp_count_col = None
-    zdp_ratio_col = None
-    xp_count_col = None
-    xp_ratio_col = None
+    left_count_col = None
+    left_ratio_col = None
+    right_count_col = None
+    right_ratio_col = None
 
     def _norm(s):
         return str(s).replace('\n', '').replace(' ', '').strip()
 
+    def _match_any(s: str, keywords: List[str]) -> bool:
+        return any(k in s for k in keywords)
+
     for c in df.columns:
         l0 = _norm(c[0])
         l1 = _norm(c[1])
-        # 日期列：l0 含"日期"或 l1 含"日期"
         if ("日期" in l0 or "日期" in l1) and date_col is None:
             date_col = c
             continue
-        is_zdp = "中大盘" in l0 or "中大盘" in l1
-        is_xp = "小盘" in l0 or "小盘" in l1
+        is_left = _match_any(l0, left_keywords) or _match_any(l1, left_keywords)
+        is_right = _match_any(l0, right_keywords) or _match_any(l1, right_keywords)
         is_count = "数量" in l1 or "数量" in l0
         is_ratio = "占比" in l1 or "占比" in l0 or "比例" in l1 or "比例" in l0
-        if is_zdp and is_count:
-            zdp_count_col = c
-        elif is_zdp and is_ratio:
-            zdp_ratio_col = c
-        elif is_xp and is_count:
-            xp_count_col = c
-        elif is_xp and is_ratio:
-            xp_ratio_col = c
+        if is_left and is_count:
+            left_count_col = c
+        elif is_left and is_ratio:
+            left_ratio_col = c
+        elif is_right and is_count:
+            right_count_col = c
+        elif is_right and is_ratio:
+            right_ratio_col = c
 
     if not date_col:
         raise ValueError(f"未找到日期列，可用列: {list(df.columns)}")
-    if not (zdp_count_col or xp_count_col):
-        raise ValueError(f"未找到'中大盘'或'小盘'的数量列，可用列: {list(df.columns)}")
+    if not (left_count_col or right_count_col):
+        raise ValueError(
+            f"未找到'{left_keywords[0]}'或'{right_keywords[0]}'的数量列，可用列: {list(df.columns)}"
+        )
 
     def _to_ratio_float(v):
         if pd.isna(v):
@@ -232,48 +248,54 @@ def _parse_pledge_side_by_side(file_path: str) -> List[Dict[str, Any]]:
         except Exception:
             return None
 
+    def _emit(row, cnt_col, ratio_col, wt_label):
+        if cnt_col is None:
+            return None
+        cnt_v = row[cnt_col]
+        if not pd.notna(cnt_v):
+            return None
+        try:
+            cnt = int(float(str(cnt_v).strip()))
+            ratio_f = _to_ratio_float(row[ratio_col]) if ratio_col is not None else None
+            if ratio_f and ratio_f > 0:
+                total = round(cnt / ratio_f)
+                return {
+                    "workflow_type": wt_label,
+                    "date_str": None,
+                    "count": cnt,
+                    "total": int(total),
+                    "ratio": round(cnt / total, 4) if total > 0 else 0.0,
+                }
+        except (ValueError, TypeError):
+            return None
+        return None
+
     records = []
     for _, row in df.iterrows():
         date_str = _parse_date(row[date_col])
         if not date_str:
             continue
-        # 中大盘
-        if zdp_count_col is not None:
-            cnt_v = row[zdp_count_col]
-            if pd.notna(cnt_v):
-                try:
-                    cnt = int(float(str(cnt_v).strip()))
-                    ratio_f = _to_ratio_float(row[zdp_ratio_col]) if zdp_ratio_col is not None else None
-                    if ratio_f and ratio_f > 0:
-                        total = round(cnt / ratio_f)
-                        records.append({
-                            "workflow_type": "质押(中大盘)",
-                            "date_str": date_str,
-                            "count": cnt,
-                            "total": int(total),
-                            "ratio": round(cnt / total, 4) if total > 0 else 0.0,
-                        })
-                except (ValueError, TypeError):
-                    pass
-        # 小盘
-        if xp_count_col is not None:
-            cnt_v = row[xp_count_col]
-            if pd.notna(cnt_v):
-                try:
-                    cnt = int(float(str(cnt_v).strip()))
-                    ratio_f = _to_ratio_float(row[xp_ratio_col]) if xp_ratio_col is not None else None
-                    if ratio_f and ratio_f > 0:
-                        total = round(cnt / ratio_f)
-                        records.append({
-                            "workflow_type": "质押(小盘)",
-                            "date_str": date_str,
-                            "count": cnt,
-                            "total": int(total),
-                            "ratio": round(cnt / total, 4) if total > 0 else 0.0,
-                        })
-                except (ValueError, TypeError):
-                    pass
+        for rec_col_pair, wt_label in (
+            ((left_count_col, left_ratio_col), left_workflow_type),
+            ((right_count_col, right_ratio_col), right_workflow_type),
+        ):
+            rec = _emit(row, rec_col_pair[0], rec_col_pair[1], wt_label)
+            if rec is not None:
+                rec["date_str"] = date_str
+                records.append(rec)
     return records
+
+
+def _parse_pledge_side_by_side(file_path: str) -> List[Dict[str, Any]]:
+    """向后兼容 thin wrapper：解析质押中大盘+小盘双列。"""
+    return _parse_dual_columns_excel(
+        file_path=file_path,
+        left_workflow_type="质押(中大盘)",
+        right_workflow_type="质押(小盘)",
+        left_keywords=["中大盘"],
+        right_keywords=["小盘"],
+        log_tag="质押双列并排",
+    )
 
 
 def parse_excel_for_trend(file_path: str, workflow_type: str) -> List[Dict[str, Any]]:
@@ -281,6 +303,19 @@ def parse_excel_for_trend(file_path: str, workflow_type: str) -> List[Dict[str, 
     # 特殊类型：质押并排双列
     if workflow_type == "质押(双列并排)":
         return _parse_pledge_side_by_side(file_path)
+    # 年度(X)：本年 + 上年 并排双列
+    if isinstance(workflow_type, str) and workflow_type.startswith("年度(") and workflow_type.endswith(")"):
+        parent = workflow_type[len("年度("):-1]
+        from datetime import datetime as _dt_y
+        Y = _dt_y.now().year
+        return _parse_dual_columns_excel(
+            file_path=file_path,
+            left_workflow_type=f"{parent}({Y})",
+            right_workflow_type=f"{parent}({Y - 1})",
+            left_keywords=[str(Y), f"{Y}至今", "本年", "今年"],
+            right_keywords=[str(Y - 1), "上年", "去年"],
+            log_tag=f"年度双列并排({parent})",
+        )
     df = pd.read_excel(file_path)
 
     # 归一化列名：去除空白、换行后缀
@@ -397,9 +432,14 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
     from config.workflow_type_config import WORKFLOW_TYPE_CONFIG
 
     # 按工作流类型分组；质押所有变种统一归入 pledge_sub 两个桶（不入 type_groups）
+    # 年度子类型（并购重组(YYYY) / 股权转让(YYYY) / 招投标(YYYY)）折叠到父类型下，
+    # 带 _year_label=YYYY 字符串，导出时用双线图展示 Y vs Y-1
     # 历史遗留的 '质押' 裸记录会被丢弃（旧版本单线图不再导出，改由下方合并双曲线图覆盖）
     type_groups = {}
     pledge_sub = {"中大盘": [], "小盘": []}
+    yearly_parents = ("并购重组", "股权转让", "招投标")
+    import re as _re_mod
+    _yearly_re = _re_mod.compile(r'^(并购重组|股权转让|招投标)\((\d{4})\)$')
     for d in data:
         wt = d["workflow_type"]
         if wt == "质押(中大盘)":
@@ -409,7 +449,13 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
             pledge_sub["小盘"].append(d)
             continue
         if wt == "质押":
-            # 旧版本的裸 '质押' 记录：由于来源未知，忽略（不画中间那份单线图）
+            continue
+        m = _yearly_re.match(wt or "")
+        if m:
+            parent, year_str = m.group(1), m.group(2)
+            if parent not in type_groups:
+                type_groups[parent] = []
+            type_groups[parent].append({**d, "_year_label": year_str})
             continue
         if wt not in type_groups:
             type_groups[wt] = []
@@ -535,6 +581,110 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
         data_rows_used = len(all_dates) + 2
         return header_row_local - 1 + max(chart_height_rows, data_rows_used) + 2
 
+    def _write_yearly_block(parent: str, items: list, start_row: int) -> int:
+        """写入年度父类型（并购/股权转让/招投标）的双线块：Y vs Y-1"""
+        if not items:
+            return start_row
+        # 按 _year_label 分组 → 取最新 2 个年份（倒序）
+        from collections import defaultdict as _dd
+        by_year = _dd(list)
+        for it in items:
+            by_year[str(it.get("_year_label", ""))].append(it)
+        years_sorted = sorted([y for y in by_year.keys() if y], reverse=True)
+        if not years_sorted:
+            return start_row
+        # 最多画两个年份
+        years_to_draw = years_sorted[:2]
+        Y = years_to_draw[0]
+        Y1 = years_to_draw[1] if len(years_to_draw) > 1 else None
+
+        y_items = sorted(by_year[Y], key=lambda x: x["date_str"])
+        y1_items = sorted(by_year[Y1], key=lambda x: x["date_str"]) if Y1 else []
+        all_dates = sorted(set([d["date_str"] for d in y_items] + [d["date_str"] for d in y1_items]))
+        y_map = {d["date_str"]: d for d in y_items}
+        y1_map = {d["date_str"]: d for d in y1_items}
+
+        prefix = get_type_prefix(parent)
+        table_title = f"【{prefix}{parent}】" if prefix else f"【{parent}】"
+
+        cur = start_row
+        ws.merge_range(cur, 0, cur, 8, table_title, title_fmt)
+        cur += 1
+        if Y1:
+            headers = ["日期",
+                       f"{Y}数量", f"{Y}总量", f"{Y}占比(%)",
+                       f"{Y1}数量", f"{Y1}总量", f"{Y1}占比(%)",
+                       "完整日期"]
+        else:
+            headers = ["日期", f"{Y}数量", f"{Y}总量", f"{Y}占比(%)", "完整日期"]
+        for col_idx, h in enumerate(headers):
+            ws.write(cur, col_idx, h, header_fmt)
+        header_row_local = cur
+        cur += 1
+        data_start_row = cur
+        for ds in all_dates:
+            try:
+                parts = ds.split('-')
+                short_date = f"{int(parts[1])}/{int(parts[2])}"
+            except Exception:
+                short_date = ds
+            yd = y_map.get(ds)
+            yd1 = y1_map.get(ds)
+            ws.write(cur, 0, short_date, data_fmt)
+            if yd:
+                ws.write(cur, 1, yd["count"], data_fmt)
+                ws.write(cur, 2, yd["total"], data_fmt)
+                ws.write(cur, 3, round(yd["ratio"] * 100, 2) if yd.get("ratio") else 0, pct_fmt)
+            else:
+                for c in (1, 2, 3):
+                    ws.write(cur, c, "", data_fmt)
+            if Y1:
+                if yd1:
+                    ws.write(cur, 4, yd1["count"], data_fmt)
+                    ws.write(cur, 5, yd1["total"], data_fmt)
+                    ws.write(cur, 6, round(yd1["ratio"] * 100, 2) if yd1.get("ratio") else 0, pct_fmt)
+                else:
+                    for c in (4, 5, 6):
+                        ws.write(cur, c, "", data_fmt)
+                ws.write(cur, 7, ds, data_fmt)
+            else:
+                ws.write(cur, 4, ds, data_fmt)
+            cur += 1
+        data_end_row = cur - 1
+
+        chart_local = wb.add_chart({'type': 'line'})
+        chart_title_local = f"{prefix}{parent} - 站上20日均线占比趋势（{Y} vs {Y1})" if Y1 else f"{prefix}{parent} - 站上20日均线占比趋势（{Y})"
+        chart_local.set_title({'name': chart_title_local})
+        chart_local.set_size({'width': 720, 'height': 380})
+        chart_local.add_series({
+            'name': str(Y),
+            'categories': ['站上20日均线趋势', data_start_row, 0, data_end_row, 0],
+            'values': ['站上20日均线趋势', data_start_row, 3, data_end_row, 3],
+            'line': {'width': 2.5, 'color': '#409EFF'},
+            'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#409EFF'}},
+        })
+        if Y1:
+            chart_local.add_series({
+                'name': str(Y1),
+                'categories': ['站上20日均线趋势', data_start_row, 0, data_end_row, 0],
+                'values': ['站上20日均线趋势', data_start_row, 6, data_end_row, 6],
+                'line': {'width': 2.5, 'color': '#E6A23C'},
+                'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#E6A23C'}},
+            })
+        chart_local.set_y_axis({'name': '占比(%)', 'num_format': '0.00'})
+        num_points = len(all_dates)
+        x_axis_opts = {'name': '日期', 'label_position': 'low'}
+        if num_points > 15:
+            interval = max(1, num_points // 15)
+            x_axis_opts['interval_unit'] = interval
+            x_axis_opts['num_font'] = {'rotation': -45, 'size': 9}
+        chart_local.set_x_axis(x_axis_opts)
+        ws.insert_chart(header_row_local - 1, 10, chart_local)
+
+        chart_height_rows = 22
+        data_rows_used = len(all_dates) + 2
+        return header_row_local - 1 + max(chart_height_rows, data_rows_used) + 2
+
     for wt in type_names:
         items = sorted(type_groups[wt], key=lambda x: x["date_str"])
         if not items:
@@ -544,6 +694,11 @@ def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type:
         if not pledge_written and get_type_sort_key(wt) > 5:
             current_row = _write_pledge_block(current_row)
             pledge_written = True
+
+        # 年度父类型：折叠后的 items 含 _year_label，走双线块
+        if wt in yearly_parents and items and any("_year_label" in it for it in items):
+            current_row = _write_yearly_block(wt, items, current_row)
+            continue
 
         prefix = get_type_prefix(wt)
         # 表格标题（不含后缀）
