@@ -62,8 +62,8 @@ def invalidate_match_source_cache(dir_path: str = None):
         logger.info("已清除所有匹配源缓存")
 
 
-def auto_adjust_excel_width(output_path: str, fixed_width: int = 20, all_sheets: bool = False):
-    """设置固定列宽（不遍历单元格，极快）"""
+def auto_adjust_excel_width(output_path: str, fixed_width: int = 20, all_sheets: bool = False, center_align: bool = False):
+    """设置固定列宽（不遍历单元格，极快）。可选居中对齐。"""
     try:
         wb = load_workbook(output_path)
         sheets = wb.worksheets if all_sheets else [wb.active]
@@ -71,6 +71,12 @@ def auto_adjust_excel_width(output_path: str, fixed_width: int = 20, all_sheets:
             ws.auto_filter.ref = ws.dimensions
             for col_idx in range(1, ws.max_column + 1):
                 ws.column_dimensions[get_column_letter(col_idx)].width = fixed_width
+            if center_align:
+                from openpyxl.styles import Alignment
+                _center = Alignment(horizontal="center", vertical="center", wrap_text=False)
+                for row in ws.iter_rows():
+                    for cell in row:
+                        cell.alignment = _center
         wb.save(output_path)
     except Exception as e:
         logger.warning(f"设置列宽失败: {output_path}, {e}")
@@ -653,6 +659,8 @@ class WorkflowExecutor:
         if dirname:
             os.makedirs(dirname, exist_ok=True)
         wb.save(output_path)
+        # 统一样式：两 sheet 全部加筛选 / 列宽 / 居中
+        auto_adjust_excel_width(output_path, fixed_width=22, all_sheets=True, center_align=True)
         logger.info(f"[质押 finalize] 已写出 {output_path}")
 
     def _detect_header_and_parse(self, df_all: pd.DataFrame, known_col_names: set, filepath: str) -> pd.DataFrame:

@@ -253,6 +253,36 @@ class TestFinalizeLayout:
         assert "证券代码" in df2.columns
         assert "总市值\n[单位]亿元" in df2.columns
 
+    def test_final_output_styling(self, executor, tmp_path):
+        """最终输出：两 sheet 都含 autofilter、列宽固定、居中对齐。"""
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ", "000002.SZ"],
+            "证券简称": ["A", "B"],
+            "最新公告日": ["2026-04-20", "2026-04-20"],
+            "来源": ["中大盘", "小盘"],
+            "质押比例-20260420": [0.10, 0.20],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        for sn in ("中大盘20260420", "小盘20260420"):
+            ws = wb[sn]
+            # autofilter
+            assert ws.auto_filter.ref is not None, f"{sn} 没有 autofilter"
+            # 列宽
+            from openpyxl.utils import get_column_letter
+            for col_idx in range(1, ws.max_column + 1):
+                col_letter = get_column_letter(col_idx)
+                width = ws.column_dimensions[col_letter].width
+                assert width is not None and width >= 20, f"{sn} col {col_letter} 宽度过小: {width}"
+            # 居中（至少一个数据单元格）
+            if ws.max_row >= 2:
+                cell = ws.cell(2, 2)  # 证券代码列第一行数据
+                assert cell.alignment is not None
+                assert cell.alignment.horizontal == "center", f"{sn} 未居中: {cell.alignment.horizontal}"
+
 
 RED_COLOR = "FFC00000"
 GREEN_COLOR = "FFC6EFCE"
