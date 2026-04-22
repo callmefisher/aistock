@@ -145,17 +145,21 @@ class TestFinalizeLayout:
         assert "重复列_1" in header
 
     def test_drops_source_info_cols_exact(self, executor, tmp_path):
-        """源表带 4 类信息列（精确名）：不复制到剩余列，前 7 列由 match 值或空填充。"""
+        """精确权威名（百日新高/站上20日线/国央企/所属板块）在 finalize 阶段**保留**——
+        因为 merge 已经过滤源表的原始值，finalize 看到的权威名列都是 match_* 的产出。
+        即使 match_* 未跑（值为空字符串），列仍保留。
+        """
         df = pd.DataFrame({
             "证券代码": ["000001.SZ"],
             "证券简称": ["A"],
             "最新公告日": ["2026-04-20"],
             "来源": ["中大盘"],
-            # 源表已带 4 类信息列（可能是用户历史数据残留）
-            "百日新高": ["源表值-不该保留"],
-            "站上20日线": ["源表值-不该保留"],
-            "国央企": ["源表值-不该保留"],
-            "所属板块": ["源表值-不该保留"],
+            # 模拟 merge 后、match_* 未跑：权威名列为空（由 _extract_columns_pledge 或
+            # _reorder_pledge_columns prefix fill 补的）
+            "百日新高": [""],
+            "站上20日线": [""],
+            "国央企": [""],
+            "所属板块": [""],
             "质押比例-20260420": [0.10],
         })
         output_path = tmp_path / "out.xlsx"
@@ -165,16 +169,9 @@ class TestFinalizeLayout:
         wb = load_workbook(str(output_path))
         ws = wb["中大盘20260420"]
         header = [c.value for c in ws[1]]
-        # 前 7 列仍在（固定），但对应单元格值应为空（源表值被丢弃，match 未跑）
         for col_name in ("百日新高", "站上20日线", "国央企", "所属板块"):
-            idx = header.index(col_name) + 1
-            val = ws.cell(2, idx).value
-            assert val in (None, "", 0), f"{col_name} 应空，实际={val!r}"
-        # 剩余列中不应再出现这 4 列（及其 _N 副本）
-        rest_cols = header[8:]  # 序号 + 7 固定 = 前 8 项
-        for forbidden in ("百日新高", "站上20日线", "国央企", "所属板块"):
-            assert forbidden not in rest_cols
-        # 质押比例列应保留
+            assert col_name in header  # 固定前 7 列保留
+        # 质押比例列也应保留
         assert "质押比例-20260420" in header
 
     def test_drops_source_info_cols_synonyms(self, executor, tmp_path):
@@ -233,6 +230,28 @@ class TestFinalizeLayout:
         for c in ("股权质押公告日期-20260420", "质押比例-20260118", "质押比例-20260304",
                   "质押比例-20260420", "大股东名称", "质押方", "备注"):
             assert c in header, f"{c} 应保留"
+
+    def test_flatten_multiheader_with_newline(self, executor, tmp_path):
+        """源表列名含 \\n（如'质押比例\\n[截止日期]2025-04-01'）应被规整为'质押比例2025-04-01'。"""
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"],
+            "证券名称": ["A"],
+            "股权质押公告日期\n[截止日期]最新": ["2026-04-18"],
+            "质押比例\n[截止日期]2025-04-01": [10.56],
+            "质押比例\n[截止日期]2025-05-01": [12.57],
+            "质押比例\n[截止日期]2026-04-01": [11.58],
+            "质押比例\n[截止日期]最新": [12.59],
+            "总市值\n[单位]亿元": [153.09],
+        })
+        # 调展平方法（fake filepath，不会走 openpyxl 分支因为单行表头已含日期）
+        df2 = executor._maybe_flatten_pledge_multiheader(df, "fake.xlsx", "fake_sheet")
+        assert "质押比例2025-04-01" in df2.columns
+        assert "质押比例2025-05-01" in df2.columns
+        assert "质押比例2026-04-01" in df2.columns
+        assert "质押比例最新" in df2.columns
+        # 非质押比例列原样保留
+        assert "证券代码" in df2.columns
+        assert "总市值\n[单位]亿元" in df2.columns
 
 
 RED_COLOR = "FFC00000"

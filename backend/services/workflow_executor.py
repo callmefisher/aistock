@@ -198,20 +198,51 @@ class WorkflowExecutor:
         filepath: str,
         sheet_name: str,
     ) -> pd.DataFrame:
-        """若质押 sheet 存在"质押比例"多行表头，用 openpyxl 读前两行原始单元格，
-        将第 1 行"质押比例"与第 2 行"[截止日期]YYYY-MM-DD"拼接为"质押比例YYYY-MM-DD"。
+        """质押 sheet 的列名标准化：
 
-        触发条件：df.columns 中存在 >=2 个以"质押比例"开头的列（含 pandas 自动加的 .1/.2）。
-        若条件不满足 → 原样返回（单行表头场景）。
+        情况 A（单行表头含换行）：列名是"质押比例\n[截止日期]2025-04-01"
+          → 提取日期，改为"质押比例2025-04-01"
+
+        情况 B（双行表头）：列名只有"质押比例"（pandas .1/.2 后缀或 Unnamed 兄弟列），
+          用 openpyxl 读前两行原始单元格拼接。
+
+        只改"质押比例"前缀列；其他列原样保留。
         """
+        import re
+        _date_re = re.compile(r"(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})")
+
         try:
+            new_cols = list(df.columns)
+            changed = False
+            # 情况 A：单行表头含 \n 或 含日期
+            for i, c in enumerate(new_cols):
+                if not isinstance(c, str):
+                    continue
+                # 以"质押比例"开头（忽略空白 / 换行）
+                stripped = c.lstrip()
+                if stripped.startswith("质押比例"):
+                    m = _date_re.search(c)
+                    if m:
+                        new_cols[i] = f"质押比例{m.group(1)}"
+                        changed = True
+                    elif "最新" in c and c != "质押比例":
+                        new_cols[i] = "质押比例最新"
+                        changed = True
+
+            if changed:
+                df = df.copy()
+                df.columns = new_cols
+                ratio_count = sum(1 for c in new_cols if isinstance(c, str) and c.startswith("质押比例"))
+                logger.info(f"质押：列名规整 {filepath}#{sheet_name}, 质押比例列数={ratio_count}")
+                return df
+
+            # 情况 B：双行表头（需要 openpyxl 读前两行拼接）
             ratio_like = [
                 c for c in df.columns
                 if isinstance(c, str) and c.split(".")[0].strip() == "质押比例"
             ]
             if len(ratio_like) < 2:
                 return df
-            # 读前两行原始单元格（openpyxl 保留合并前的每个 cell 的 value）
             from openpyxl import load_workbook as _lwb
             wb = _lwb(filepath, read_only=True, data_only=True)
             try:
@@ -231,9 +262,7 @@ class WorkflowExecutor:
                 wb.close()
             if not row1 or not row2:
                 return df
-            # 对齐列数：以 df.columns 列数为准
             ncols = len(df.columns)
-            # row1 / row2 可能 None 值，需要 fill-forward（合并单元格的效果）
             def _fill_forward(arr):
                 out = []
                 last = ""
@@ -245,35 +274,27 @@ class WorkflowExecutor:
                 return out
             row1_ff = _fill_forward(row1)[:ncols]
             row2_ff = _fill_forward(row2)[:ncols]
-            # 对齐长度（填空）
             while len(row1_ff) < ncols:
                 row1_ff.append("")
             while len(row2_ff) < ncols:
                 row2_ff.append("")
-
-            import re
-            _date_re = re.compile(r"(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})")
-
-            new_cols = []
+            new_cols2 = []
             for i, col in enumerate(df.columns):
-                base = str(col).split(".")[0].strip() if isinstance(col, str) else str(col)
                 r1 = row1_ff[i]
                 r2 = row2_ff[i]
-                # 质押比例列：若 r2 含日期，拼接为"质押比例YYYY-MM-DD"
-                if base == "质押比例" or r1 == "质押比例":
+                if r1 == "质押比例":
                     m = _date_re.search(r2 or "")
                     if m:
-                        new_cols.append(f"质押比例{m.group(1)}")
+                        new_cols2.append(f"质押比例{m.group(1)}")
                         continue
-                new_cols.append(col)
-            # 仅当实际产生了变化时才赋值（避免破坏其他场景）
-            if new_cols != list(df.columns):
+                new_cols2.append(col)
+            if new_cols2 != list(df.columns):
                 df = df.copy()
-                df.columns = new_cols
-                logger.info(f"质押：双行表头展平 (filepath={filepath}#{sheet_name}), 质押比例列={sum(1 for c in new_cols if isinstance(c,str) and c.startswith('质押比例'))}")
+                df.columns = new_cols2
+                logger.info(f"质押：双行表头展平 {filepath}#{sheet_name}")
             return df
         except Exception as e:
-            logger.warning(f"质押：展平多行表头失败，继续使用原列名: {filepath}#{sheet_name}, {e}")
+            logger.warning(f"质押：列名规整失败，继续使用原列名 {filepath}#{sheet_name}: {e}")
             return df
 
     def _sync_pledge_final_to_public(self, final_file_path: str, date_str: Optional[str] = None) -> bool:
@@ -347,10 +368,13 @@ class WorkflowExecutor:
                     new_cols.append(c)
             df.columns = new_cols
 
-        # 丢弃源表的 4 类信息列（含同义词变体）——后续由 match_* 或空列填充
+        # 丢弃源表的 4 类信息列的**同义词变体**——但保留权威名（match_* 步骤的产出列）
+        # 即：drop "20日均线"/"国企" 等变体，但保留 "站上20日线"/"国央企"（由 match_* 填充）
         info_synonyms_set = set()
         for canonical, variants in self._PLEDGE_INFO_COL_SYNONYMS.items():
             for v in variants:
+                if v == canonical:
+                    continue  # 权威名不丢
                 info_synonyms_set.add(v)
         info_cols_present = [c for c in df.columns if c in info_synonyms_set]
         if info_cols_present:
@@ -1609,7 +1633,9 @@ class WorkflowExecutor:
             }
 
         source_path = config.get("source_dir") or self.resolver.get_match_source_directory("match_ma20", date_str)
-        new_column_name = config.get("new_column_name", "20日均线")
+        # 质押类型：统一使用"站上20日线"作为最终列名（和 finalize 前 7 列对齐）
+        default_col = "站上20日线" if self.workflow_type == "质押" else "20日均线"
+        new_column_name = config.get("new_column_name", default_col)
 
         if date_str:
             source_path = self.resolver.ensure_match_source_files("match_ma20", date_str)
@@ -1673,7 +1699,9 @@ class WorkflowExecutor:
             }
 
         source_path = config.get("source_dir") or self.resolver.get_match_source_directory("match_soe", date_str)
-        new_column_name = config.get("new_column_name", "国企")
+        # 质押类型：统一使用"国央企"作为最终列名（和 finalize 前 7 列对齐）
+        default_col = "国央企" if self.workflow_type == "质押" else "国企"
+        new_column_name = config.get("new_column_name", default_col)
 
         if date_str:
             source_path = self.resolver.ensure_match_source_files("match_soe", date_str)
@@ -1761,8 +1789,13 @@ class WorkflowExecutor:
         auto_adjust_excel_width(output_path)
         logger.info(f"结果已保存到: {output_path}")
 
-        # 自动采集20日均线趋势数据
-        if '20日均线' in df.columns:
+        # 自动采集20日均线趋势数据（质押类型列名为"站上20日线"，其他为"20日均线"）
+        ma20_col = None
+        for candidate in ("站上20日线", "20日均线"):
+            if candidate in df.columns:
+                ma20_col = candidate
+                break
+        if ma20_col:
             try:
                 from services.trend_service import save_trend_data
                 # 质押类型：按"来源"(中大盘/小盘)拆成两个子类型独立存储
@@ -1774,7 +1807,7 @@ class WorkflowExecutor:
                         if sub_total == 0:
                             continue
                         sub_count = int(
-                            (df.loc[mask, '20日均线'].fillna('').astype(str).str.strip() != '').sum()
+                            (df.loc[mask, ma20_col].fillna('').astype(str).str.strip() != '').sum()
                         )
                         sub_wt = f"质押({src_label})"
                         await save_trend_data(
@@ -1800,7 +1833,7 @@ class WorkflowExecutor:
                         if sub_total == 0:
                             continue
                         sub_count = int(
-                            (df.loc[mask_year, '20日均线'].fillna('').astype(str).str.strip() != '').sum()
+                            (df.loc[mask_year, ma20_col].fillna('').astype(str).str.strip() != '').sum()
                         )
                         sub_wt = f"{parent}({year})"
                         await save_trend_data(
@@ -1815,7 +1848,7 @@ class WorkflowExecutor:
                             f"自动采集MA20趋势(年度): type={sub_wt}, count={sub_count}, total={sub_total}"
                         )
                 else:
-                    ma20_count = int((df['20日均线'].fillna('').astype(str).str.strip() != '').sum())
+                    ma20_count = int((df[ma20_col].fillna('').astype(str).str.strip() != '').sum())
                     ma20_total = len(df)
                     await save_trend_data(
                         metric_type='ma20',
