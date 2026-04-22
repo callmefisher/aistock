@@ -463,10 +463,10 @@ class TestFinalizePledgeIfNeeded:
             "证券代码": ["000001.SZ"], "证券简称": ["A"],
             "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
         })
-        last_output = daily_dir / "output_5.xlsx"
+        # 用最终文件名命名（模拟 match_sector 老代码已写出的 final 文件）
+        last_output = daily_dir / "5质押20260420.xlsx"
         df.to_excel(str(last_output), index=False)
 
-        # monkeypatch resolver 以返回可控路径
         monkeypatch.setattr(ex.resolver, "get_daily_dir", lambda d=None: str(daily_dir))
         monkeypatch.setattr(ex.resolver, "get_public_directory", lambda d=None: str(public_dir))
 
@@ -475,6 +475,70 @@ class TestFinalizePledgeIfNeeded:
             date_str="20260420",
         )
         assert result is True
-        final = daily_dir / "5质押20260420.xlsx"
-        assert final.exists()
+        # finalize 必须覆盖 last_output_path 本身（而非另起新文件），
+        # 这样 run_workflow 的 DB 保存、前端下载看到的就是 finalize 后的 2 sheet 文件
+        assert last_output.exists()
+        from openpyxl import load_workbook as _lwb
+        wb = _lwb(str(last_output))
+        assert wb.sheetnames == ["中大盘20260420", "小盘20260420"]
+        # public 同步（保持同名）
         assert (public_dir / "5质押20260420.xlsx").exists()
+
+    def test_finalize_overwrites_match_sector_single_sheet_output(self, tmp_path, monkeypatch):
+        """match_sector 写出的单 sheet final 文件，含来源列 + 原始列 + 未权威填充的信息列，
+        finalize 必须：读全部 sheet 合并；覆盖原文件为双 sheet；去来源列；保留质押比例；丢 4 类信息列。"""
+        ex = WorkflowExecutor(base_dir=str(tmp_path), workflow_type="质押")
+        daily_dir = tmp_path / "data" / "excel" / "质押" / "20260420"
+        daily_dir.mkdir(parents=True)
+        public_dir = tmp_path / "data" / "excel" / "质押" / "public"
+        public_dir.mkdir(parents=True)
+        df = pd.DataFrame({
+            "序号": [1, 2],
+            "证券代码": ["000001.SZ", "600000.SH"],
+            "证券简称": ["A", "B"],
+            "最新公告日": ["2026-04-20", "2026-04-19"],
+            "来源": ["中大盘", "小盘"],
+            "百日新高": ["是", ""],
+            "20日均线": ["是", "否"],           # 同义词变体 → 应丢弃
+            "国企": ["否", "是"],                # 同义词变体 → 应丢弃
+            "所属板块": ["金融", "银行"],
+            "质押比例-20260118": [0.10, 0.15],
+            "质押比例-20260420": [0.12, 0.10],
+            "股权质押公告日期-20260420": ["2026-04-20", "2026-04-19"],
+            "额外业务列": ["x", "y"],
+        })
+        last_output = daily_dir / "5质押20260420.xlsx"
+        df.to_excel(str(last_output), index=False)
+
+        monkeypatch.setattr(ex.resolver, "get_daily_dir", lambda d=None: str(daily_dir))
+        monkeypatch.setattr(ex.resolver, "get_public_directory", lambda d=None: str(public_dir))
+
+        result = ex.finalize_pledge_if_needed(
+            last_output_path=str(last_output),
+            date_str="20260420",
+        )
+        assert result is True
+
+        from openpyxl import load_workbook as _lwb
+        wb = _lwb(str(last_output))
+        # Bug 1 修：双 sheet
+        assert wb.sheetnames == ["中大盘20260420", "小盘20260420"]
+        ws_big = wb["中大盘20260420"]
+        header_big = [c.value for c in ws_big[1]]
+        # Bug 2 修：来源列不出现
+        assert "来源" not in header_big
+        # Bug 3 修：质押比例列保留
+        assert "质押比例-20260118" in header_big
+        assert "质押比例-20260420" in header_big
+        assert "股权质押公告日期-20260420" in header_big
+        assert "额外业务列" in header_big
+        # 4 类信息列同义词变体已丢弃
+        assert "20日均线" not in header_big
+        assert "国企" not in header_big
+        # 中大盘 sheet 只含中大盘来源的行
+        assert ws_big.max_row == 2
+        assert ws_big.cell(2, 2).value == "000001.SZ"
+        # 小盘 sheet 只含小盘来源的行
+        ws_small = wb["小盘20260420"]
+        assert ws_small.max_row == 2
+        assert ws_small.cell(2, 2).value == "600000.SH"

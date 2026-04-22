@@ -398,7 +398,7 @@ class WorkflowExecutor:
         """质押工作流 run_workflow 循环末尾调用一次。
 
         - 非质押类型 → return False
-        - 读 last_output_path 为 DataFrame → finalize → 同步 public
+        - 读 last_output_path 为 DataFrame → finalize → 覆盖 last_output_path 并同步 public
         - 失败仅 warning，不抛
         """
         if self.workflow_type != "质押":
@@ -407,11 +407,19 @@ class WorkflowExecutor:
             logger.warning(f"[质押 finalize] last output 不存在，跳过: {last_output_path}")
             return False
         try:
-            df = pd.read_excel(last_output_path)
-            daily_dir = self.resolver.get_daily_dir(date_str)
+            # 读所有 sheet 合并，兜底历史 match_sector 可能已分 sheet 的情况
+            try:
+                sheet_map = pd.read_excel(last_output_path, sheet_name=None)
+                if isinstance(sheet_map, dict) and sheet_map:
+                    df = pd.concat(list(sheet_map.values()), ignore_index=True)
+                else:
+                    df = pd.read_excel(last_output_path)
+            except Exception:
+                df = pd.read_excel(last_output_path)
             public_dir = self.resolver.get_public_directory(date_str)
-            output_name = f"5质押{date_str}.xlsx"
-            output_path = os.path.join(daily_dir, output_name)
+            # 关键：finalize 输出路径必须与 last_output_path 一致，
+            # 这样 run_workflow 的 DB 保存和前端下载读到的是 finalize 后的文件
+            output_path = last_output_path
             self._finalize_pledge_output(df, date_str, output_path, public_dir)
             self._sync_pledge_final_to_public(output_path, date_str)
             return True
