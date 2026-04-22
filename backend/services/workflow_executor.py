@@ -968,6 +968,8 @@ class WorkflowExecutor:
                                                  if isinstance(c, str) and "质押异动" in c]
                             df_parsed["来源"] = self._derive_pledge_source(filename, sheet_name)
                             df_parsed["_source_file"] = filename
+                            # 质押：标记数据来源（public or 当日上传），smart_dedup 按此优先级去重
+                            df_parsed["_is_public"] = 1 if is_public_file else 0
                             # 提前列过滤（质押白名单）
                             target_cols_pledge = (
                                 ["序号", "证券代码", "证券简称", "证券名称",
@@ -1321,9 +1323,13 @@ class WorkflowExecutor:
         except Exception:
             pass
 
-        # 质押类型：优先保留"3列(持续递增/递减/质押异动)任一非空"的行 → 再按最新公告日
+        # 质押类型：优先保留"本次上传"的行（_is_public=0），再"3 预判列任一非空"，再按最新公告日
         # 其他类型：保持原逻辑（按日期降序 + keep=first）
         if self.workflow_type == "质押":
+            df = df.copy()
+            # 保证 _is_public 列存在（来自 merge_excel 阶段，public=1 / 上传=0）
+            if "_is_public" not in df.columns:
+                df["_is_public"] = 0
             preset_cols = ["持续递增（一年内）", "持续递减（一年内）", "质押异动"]
             existing_preset = [c for c in preset_cols if c in df.columns]
             if existing_preset:
@@ -1336,19 +1342,25 @@ class WorkflowExecutor:
                         if s != "" and s.lower() != "nan":
                             return 1
                     return 0
-                df = df.copy()
                 df["_has_preset"] = df.apply(_has_preset, axis=1)
-                # 先按 _has_preset 降序（1 在前），再按 date_col 降序
+                # 优先级：_is_public 升序（上传=0 在前）→ _has_preset 降序 → date_col 降序
                 df_sorted = df.sort_values(
-                    by=["_has_preset", date_col], ascending=[False, False]
+                    by=["_is_public", "_has_preset", date_col],
+                    ascending=[True, False, False],
+                    kind="mergesort",  # 稳定排序
                 )
                 df_deduped = df_sorted.drop_duplicates(
                     subset=[stock_code_col], keep="first"
                 )
-                df_deduped = df_deduped.drop(columns=["_has_preset"])
+                df_deduped = df_deduped.drop(columns=["_has_preset", "_is_public"])
             else:
-                df_sorted = df.sort_values(date_col, ascending=False)
+                df_sorted = df.sort_values(
+                    by=["_is_public", date_col],
+                    ascending=[True, False],
+                    kind="mergesort",
+                )
                 df_deduped = df_sorted.drop_duplicates(subset=[stock_code_col], keep="first")
+                df_deduped = df_deduped.drop(columns=["_is_public"])
         else:
             df_sorted = df.sort_values(date_col, ascending=False)
             df_deduped = df_sorted.drop_duplicates(subset=[stock_code_col], keep="first")

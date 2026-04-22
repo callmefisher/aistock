@@ -17,6 +17,49 @@ def tmpbase():
 
 
 @pytest.mark.asyncio
+async def test_smart_dedup_upload_beats_public_same_date(tmpbase):
+    """关键规则：同一股票同日期同时出现在上传和 public → 保留上传那行（来源取上传的）。"""
+    df = pd.DataFrame([
+        # 上传小盘（_is_public=0）
+        {"证券代码": "300133.SZ", "证券简称": "华策影视", "最新公告日": "2026-03-23",
+         "来源": "小盘", "_is_public": 0,
+         "持续递增（一年内）": "", "持续递减（一年内）": "", "质押异动": ""},
+        # public 中大盘（_is_public=1）同日期
+        {"证券代码": "300133.SZ", "证券简称": "华策影视", "最新公告日": "2026-03-23",
+         "来源": "中大盘", "_is_public": 1,
+         "持续递增（一年内）": "", "持续递减（一年内）": "", "质押异动": ""},
+    ])
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    result = await ex._smart_dedup({}, df, date_str="2026-04-20")
+    assert result["success"]
+    kept = result["_df"].iloc[0]
+    # 来源应为"小盘"（上传那行）
+    assert kept["来源"] == "小盘", f"应保留上传的小盘行，实际={kept['来源']}"
+    # _is_public 辅助列应被删
+    assert "_is_public" not in result["_df"].columns
+
+
+@pytest.mark.asyncio
+async def test_smart_dedup_upload_only_when_conflict(tmpbase):
+    """public 有而上传没有的股票 → 保留 public 那行（作为历史基座）。"""
+    df = pd.DataFrame([
+        # 上传：股票 A
+        {"证券代码": "000001.SZ", "证券简称": "A", "最新公告日": "2026-04-20",
+         "来源": "中大盘", "_is_public": 0,
+         "持续递增（一年内）": "", "持续递减（一年内）": "", "质押异动": ""},
+        # public：股票 B（上传没有）
+        {"证券代码": "000723.SZ", "证券简称": "美锦能源", "最新公告日": "2026-04-18",
+         "来源": "中大盘", "_is_public": 1,
+         "持续递增（一年内）": "", "持续递减（一年内）": "", "质押异动": ""},
+    ])
+    ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")
+    result = await ex._smart_dedup({}, df, date_str="2026-04-20")
+    codes = set(result["_df"]["证券代码"].astype(str))
+    assert "000001.SZ" in codes
+    assert "000723.SZ" in codes  # public 基座保留
+
+
+@pytest.mark.asyncio
 async def test_smart_dedup_prefers_row_with_preset(tmpbase):
     """4 行重复：其中 1 行 3 列任一非空 → 保留该行。"""
     df = pd.DataFrame([
