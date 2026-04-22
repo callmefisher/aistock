@@ -471,6 +471,13 @@ async def run_workflow(
                                  "error": exec_result.get("message", "")})
             logger.warning(f"[单工作流] {workflow_id} 步骤{i}({step_type})失败: {exec_result.get('message')}")
 
+    # 质押工作流 finalize：列重排 + 分 sheet + 条件格式 + 同步 public
+    try:
+        if last_output_file:
+            executor.finalize_pledge_if_needed(last_output_file, output_date_str)
+    except Exception as _e:
+        logger.warning(f"[质押 finalize] run_workflow 末尾调用失败: {_e}")
+
     duration = round((datetime.now() - start_time).total_seconds(), 2)
 
     workflow.status = "active"

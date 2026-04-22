@@ -370,6 +370,35 @@ class WorkflowExecutor:
         logger.info(f"[质押 baseline] 构建完成，共 {len(baseline)} 条代码")
         return baseline
 
+    def finalize_pledge_if_needed(
+        self,
+        last_output_path: Optional[str],
+        date_str: Optional[str] = None,
+    ) -> bool:
+        """质押工作流 run_workflow 循环末尾调用一次。
+
+        - 非质押类型 → return False
+        - 读 last_output_path 为 DataFrame → finalize → 同步 public
+        - 失败仅 warning，不抛
+        """
+        if self.workflow_type != "质押":
+            return False
+        if not last_output_path or not os.path.exists(last_output_path):
+            logger.warning(f"[质押 finalize] last output 不存在，跳过: {last_output_path}")
+            return False
+        try:
+            df = pd.read_excel(last_output_path)
+            daily_dir = self.resolver.get_daily_dir(date_str)
+            public_dir = self.resolver.get_public_directory(date_str)
+            output_name = f"5质押{date_str}.xlsx"
+            output_path = os.path.join(daily_dir, output_name)
+            self._finalize_pledge_output(df, date_str, output_path, public_dir)
+            self._sync_pledge_final_to_public(output_path, date_str)
+            return True
+        except Exception as e:
+            logger.error(f"[质押 finalize] 失败: {e}")
+            return False
+
     def _finalize_pledge_output(
         self,
         df: pd.DataFrame,
@@ -1582,11 +1611,6 @@ class WorkflowExecutor:
         auto_adjust_excel_width(output_path)
         logger.info(f"结果已保存到: {output_path}")
 
-        # 质押类型：match_sector 作为最后一步时，同步到 public
-        # （若后续还有 pledge_trend_analysis 步骤，那里会再次覆盖 public）
-        if self.workflow_type == "质押":
-            self._sync_pledge_final_to_public(output_path, date_str)
-
         # 自动采集20日均线趋势数据
         if '20日均线' in df.columns:
             try:
@@ -2666,9 +2690,6 @@ class WorkflowExecutor:
             auto_adjust_excel_width(output_path)
         except Exception as e:
             logger.warning(f"[质押异动趋势] 设置列宽失败: {e}")
-
-        # 6. 同步最终输出到 public（质押类型专用；失败不阻塞）
-        self._sync_pledge_final_to_public(output_path, date_str)
 
         # 7. 缓存清理兜底
         try:

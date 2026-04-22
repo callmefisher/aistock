@@ -352,3 +352,39 @@ class TestPledgeFirstAppearance:
         col_date = header.index("最新公告日") + 1
         fill = _get_fill(ws, 2, col_date)
         assert GREEN_COLOR not in fill
+
+
+class TestFinalizePledgeIfNeeded:
+    def test_non_pledge_noop(self, tmp_path):
+        ex = WorkflowExecutor(base_dir=str(tmp_path), workflow_type="并购重组")
+        result = ex.finalize_pledge_if_needed(
+            last_output_path=str(tmp_path / "nonexistent.xlsx"),
+            date_str="20260420",
+        )
+        assert result is False
+
+    def test_pledge_runs_finalize_and_syncs(self, tmp_path, monkeypatch):
+        ex = WorkflowExecutor(base_dir=str(tmp_path), workflow_type="质押")
+        daily_dir = tmp_path / "data" / "excel" / "质押" / "20260420"
+        daily_dir.mkdir(parents=True)
+        public_dir = tmp_path / "data" / "excel" / "质押" / "public"
+        public_dir.mkdir(parents=True)
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"], "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
+        })
+        last_output = daily_dir / "output_5.xlsx"
+        df.to_excel(str(last_output), index=False)
+
+        # monkeypatch resolver 以返回可控路径
+        monkeypatch.setattr(ex.resolver, "get_daily_dir", lambda d=None: str(daily_dir))
+        monkeypatch.setattr(ex.resolver, "get_public_directory", lambda d=None: str(public_dir))
+
+        result = ex.finalize_pledge_if_needed(
+            last_output_path=str(last_output),
+            date_str="20260420",
+        )
+        assert result is True
+        final = daily_dir / "5质押20260420.xlsx"
+        assert final.exists()
+        assert (public_dir / "5质押20260420.xlsx").exists()
