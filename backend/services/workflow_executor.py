@@ -192,6 +192,90 @@ class WorkflowExecutor:
             return "中大盘"
         return "小盘"
 
+    def _maybe_flatten_pledge_multiheader(
+        self,
+        df: pd.DataFrame,
+        filepath: str,
+        sheet_name: str,
+    ) -> pd.DataFrame:
+        """若质押 sheet 存在"质押比例"多行表头，用 openpyxl 读前两行原始单元格，
+        将第 1 行"质押比例"与第 2 行"[截止日期]YYYY-MM-DD"拼接为"质押比例YYYY-MM-DD"。
+
+        触发条件：df.columns 中存在 >=2 个以"质押比例"开头的列（含 pandas 自动加的 .1/.2）。
+        若条件不满足 → 原样返回（单行表头场景）。
+        """
+        try:
+            ratio_like = [
+                c for c in df.columns
+                if isinstance(c, str) and c.split(".")[0].strip() == "质押比例"
+            ]
+            if len(ratio_like) < 2:
+                return df
+            # 读前两行原始单元格（openpyxl 保留合并前的每个 cell 的 value）
+            from openpyxl import load_workbook as _lwb
+            wb = _lwb(filepath, read_only=True, data_only=True)
+            try:
+                if sheet_name not in wb.sheetnames:
+                    return df
+                ws = wb[sheet_name]
+                row1 = []
+                row2 = []
+                for i, row in enumerate(ws.iter_rows(max_row=2, values_only=True)):
+                    if i == 0:
+                        row1 = list(row)
+                    elif i == 1:
+                        row2 = list(row)
+                    else:
+                        break
+            finally:
+                wb.close()
+            if not row1 or not row2:
+                return df
+            # 对齐列数：以 df.columns 列数为准
+            ncols = len(df.columns)
+            # row1 / row2 可能 None 值，需要 fill-forward（合并单元格的效果）
+            def _fill_forward(arr):
+                out = []
+                last = ""
+                for v in arr:
+                    s = str(v).strip() if v is not None else ""
+                    if s:
+                        last = s
+                    out.append(last)
+                return out
+            row1_ff = _fill_forward(row1)[:ncols]
+            row2_ff = _fill_forward(row2)[:ncols]
+            # 对齐长度（填空）
+            while len(row1_ff) < ncols:
+                row1_ff.append("")
+            while len(row2_ff) < ncols:
+                row2_ff.append("")
+
+            import re
+            _date_re = re.compile(r"(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})")
+
+            new_cols = []
+            for i, col in enumerate(df.columns):
+                base = str(col).split(".")[0].strip() if isinstance(col, str) else str(col)
+                r1 = row1_ff[i]
+                r2 = row2_ff[i]
+                # 质押比例列：若 r2 含日期，拼接为"质押比例YYYY-MM-DD"
+                if base == "质押比例" or r1 == "质押比例":
+                    m = _date_re.search(r2 or "")
+                    if m:
+                        new_cols.append(f"质押比例{m.group(1)}")
+                        continue
+                new_cols.append(col)
+            # 仅当实际产生了变化时才赋值（避免破坏其他场景）
+            if new_cols != list(df.columns):
+                df = df.copy()
+                df.columns = new_cols
+                logger.info(f"质押：双行表头展平 (filepath={filepath}#{sheet_name}), 质押比例列={sum(1 for c in new_cols if isinstance(c,str) and c.startswith('质押比例'))}")
+            return df
+        except Exception as e:
+            logger.warning(f"质押：展平多行表头失败，继续使用原列名: {filepath}#{sheet_name}, {e}")
+            return df
+
     def _sync_pledge_final_to_public(self, final_file_path: str, date_str: Optional[str] = None) -> bool:
         """把最终输出文件同步到 质押/public 目录。
 
@@ -281,16 +365,22 @@ class WorkflowExecutor:
         return df[prefix + rest]
 
     def _load_pledge_baseline(self, public_dir: str) -> Dict[str, Any]:
-        """读 public 目录所有 xlsx + stock_pools 表，构建 baseline。
-        返回 {normalize_stock_code(证券代码): 已见过的最大日期}
-        失败时返回空 dict，不抛。
-        """
-        baseline: Dict[str, Any] = {}
+        """读 public 目录所有 xlsx + stock_pools 表，返回**按来源分的**最大日期基准。
 
-        def _update(nc: str, ts) -> None:
-            prev = baseline.get(nc)
-            if prev is None or ts > prev:
-                baseline[nc] = ts
+        返回结构：{"中大盘": Timestamp or None, "小盘": Timestamp or None}
+        规则：public xlsx 中 sheet 名以"中大盘"开头 → 贡献"中大盘"基准；以"小盘"开头 → 贡献"小盘"基准。
+        stock_pools 表的 data 记录按其"来源"字段分类；无"来源"时归入两者（不确定分类，做保守 fallback）。
+        新文件某行 `最新公告日 > 对应来源的 baseline` → 绿标。
+        失败时对应 key 返回 None。
+        """
+        baseline: Dict[str, Any] = {"中大盘": None, "小盘": None}
+
+        def _update(source_key: str, ts) -> None:
+            if source_key not in baseline:
+                return
+            cur = baseline[source_key]
+            if cur is None or ts > cur:
+                baseline[source_key] = ts
 
         # 1) public 目录下所有 xlsx
         try:
@@ -304,6 +394,15 @@ class WorkflowExecutor:
                         wb = _lwb(fpath, read_only=True, data_only=True)
                         try:
                             for sheet_name in wb.sheetnames:
+                                # sheet 名前缀决定来源（中大盘YYYYMMDD / 小盘YYYYMMDD）
+                                sn = str(sheet_name or "").strip()
+                                if sn.startswith("中大盘"):
+                                    src_key = "中大盘"
+                                elif sn.startswith("小盘"):
+                                    src_key = "小盘"
+                                else:
+                                    # 未知 sheet 名 → 两边都不记入，跳过
+                                    continue
                                 ws = wb[sheet_name]
                                 rows = ws.iter_rows(values_only=True)
                                 try:
@@ -311,23 +410,14 @@ class WorkflowExecutor:
                                 except StopIteration:
                                     continue
                                 header = [str(h) if h is not None else "" for h in header]
-                                code_idx = None
-                                date_idxs = []
-                                for i, h in enumerate(header):
-                                    if h == "证券代码":
-                                        code_idx = i
-                                    elif h == "最新公告日" or "股权质押公告日期" in h:
-                                        date_idxs.append(i)
-                                if code_idx is None or not date_idxs:
+                                date_idxs = [
+                                    i for i, h in enumerate(header)
+                                    if h == "最新公告日" or "股权质押公告日期" in h
+                                ]
+                                if not date_idxs:
                                     continue
                                 for row in rows:
                                     if not row:
-                                        continue
-                                    code = row[code_idx] if code_idx < len(row) else None
-                                    if not code:
-                                        continue
-                                    nc = normalize_stock_code(str(code).strip())
-                                    if not nc:
                                         continue
                                     for di in date_idxs:
                                         if di >= len(row):
@@ -341,7 +431,7 @@ class WorkflowExecutor:
                                                 continue
                                         except Exception:
                                             continue
-                                        _update(nc, ts)
+                                        _update(src_key, ts)
                         finally:
                             wb.close()
                     except Exception as e:
@@ -350,7 +440,7 @@ class WorkflowExecutor:
         except Exception as e:
             logger.warning(f"[质押 baseline] 扫描 public 目录失败: {e}")
 
-        # 2) stock_pools 表 — data 字段是 [{证券代码, 最新公告日, ...}, ...]
+        # 2) stock_pools 表 — data 字段是 [{证券代码, 最新公告日, 来源?, ...}, ...]
         try:
             from core.database import SessionLocal
             from models.models import StockPool
@@ -368,12 +458,8 @@ class WorkflowExecutor:
                     for rec in records:
                         if not isinstance(rec, dict):
                             continue
-                        code = rec.get("证券代码")
                         dv = rec.get("最新公告日")
-                        if not code or not dv:
-                            continue
-                        nc = normalize_stock_code(str(code).strip())
-                        if not nc:
+                        if not dv:
                             continue
                         try:
                             ts = pd.to_datetime(dv, errors="coerce")
@@ -381,13 +467,21 @@ class WorkflowExecutor:
                                 continue
                         except Exception:
                             continue
-                        _update(nc, ts)
+                        src = str(rec.get("来源") or "").strip()
+                        if src.startswith("中大盘"):
+                            _update("中大盘", ts)
+                        elif src.startswith("小盘"):
+                            _update("小盘", ts)
+                        else:
+                            # 来源未知 → 两者都更新（保守，避免漏标）
+                            _update("中大盘", ts)
+                            _update("小盘", ts)
             finally:
                 db.close()
         except Exception as e:
             logger.warning(f"[质押 baseline] 读取 stock_pools 失败: {e}")
 
-        logger.info(f"[质押 baseline] 构建完成，共 {len(baseline)} 条代码")
+        logger.info(f"[质押 baseline] 中大盘={baseline['中大盘']}, 小盘={baseline['小盘']}")
         return baseline
 
     def finalize_pledge_if_needed(
@@ -500,21 +594,24 @@ class WorkflowExecutor:
                     elif a < b:
                         right.fill = green_fill
 
-        # 最新公告日首次出现绿标
+        # 最新公告日首次出现绿标（按 sheet 分基准：中大盘 sheet 用中大盘 baseline；小盘亦然）
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
             header = [c.value for c in ws[1]]
-            if "证券代码" not in header or "最新公告日" not in header:
+            if "最新公告日" not in header:
                 continue
-            code_col = header.index("证券代码") + 1
+            # 按 sheet 名前缀选对应 baseline
+            sn = str(sheet_name or "").strip()
+            if sn.startswith("中大盘"):
+                sheet_baseline = baseline.get("中大盘") if isinstance(baseline, dict) else None
+            elif sn.startswith("小盘"):
+                sheet_baseline = baseline.get("小盘") if isinstance(baseline, dict) else None
+            else:
+                sheet_baseline = None
             date_col = header.index("最新公告日") + 1
             for row in range(2, ws.max_row + 1):
-                code_val = ws.cell(row, code_col).value
                 date_val = ws.cell(row, date_col).value
-                if not code_val or not date_val:
-                    continue
-                nc = normalize_stock_code(str(code_val).strip())
-                if not nc:
+                if not date_val:
                     continue
                 try:
                     ts = pd.to_datetime(date_val, errors="coerce")
@@ -522,8 +619,7 @@ class WorkflowExecutor:
                         continue
                 except Exception:
                     continue
-                prev = baseline.get(nc)
-                if prev is None or ts > prev:
+                if sheet_baseline is None or ts > sheet_baseline:
                     ws.cell(row, date_col).fill = green_fill
 
         dirname = os.path.dirname(output_path)
@@ -803,12 +899,25 @@ class WorkflowExecutor:
                             "证券代码", "证券简称", "证券名称", "最新公告日",
                             "股权质押公告日期",
                         }
+                        # 需要从源表彻底剔除的 4 类信息列（及其同义词变体）——
+                        # 这些由 match_* 步骤权威填充，源表原始值一概不取
+                        pledge_info_cols_to_drop = {
+                            "百日新高", "百日最高价", "百日最高",
+                            "站上20日线", "20日线", "20日均线", "20日均价",
+                            "国央企", "国企", "国有企业",
+                            "所属板块", "一级板块", "板块",
+                        }
                         for sheet_name, df_sheet in sheet_map.items():
                             if df_sheet is None or len(df_sheet) == 0:
                                 continue
                             df_parsed = self._detect_header_and_parse(
                                 df_sheet, known_col_names_pledge,
                                 f"{filepath}#{sheet_name}"
+                            )
+                            # 双行表头检测：若存在"质押比例"列且紧邻列名为空或重复后缀，
+                            # 尝试用 openpyxl 读前两行单元格拼接列名（列名日期格式）
+                            df_parsed = self._maybe_flatten_pledge_multiheader(
+                                df_parsed, filepath, sheet_name
                             )
                             # 动态匹配"股权质押公告日期"前缀列（sheet 粒度，保证每个 sheet 独立生效）
                             pledge_date_cols = [
@@ -831,11 +940,15 @@ class WorkflowExecutor:
                                 + pledge_date_cols
                                 + preset_inc_cols + preset_dec_cols + preset_event_cols
                             )
-                            # 质押重构：保留源表全部原始列（含质押比例-*等），
-                            # 仅清理 pandas 产生的 Unnamed: 空列，避免噪音
+                            # 质押重构：
+                            # 1) 移除 4 类信息列（及同义词变体），由 match_* 权威填充
+                            # 2) 清理 pandas 产生的 Unnamed: 空列
+                            # 3) 其余全部保留（含质押比例-xxx、股权质押公告日期-xxx 等）
                             cols_to_keep = [
                                 c for c in df_parsed.columns
-                                if not (isinstance(c, str) and c.startswith("Unnamed"))
+                                if not (isinstance(c, str) and (
+                                    c.startswith("Unnamed") or c in pledge_info_cols_to_drop
+                                ))
                             ]
                             if cols_to_keep and len(cols_to_keep) < len(df_parsed.columns):
                                 df_parsed = df_parsed[cols_to_keep]

@@ -418,6 +418,8 @@ class TestPledgeFirstAppearance:
         assert GREEN_COLOR not in fill
 
     def test_baseline_merges_both_sheets(self, executor, tmp_path):
+        """按 sheet 分基准：public 小盘 sheet 为空 → 小盘 baseline=None → 所有小盘行绿；
+        中大盘 sheet 的数据不影响小盘的判定。"""
         public_dir = tmp_path / "public"
         public_dir.mkdir()
         from openpyxl import Workbook
@@ -425,11 +427,11 @@ class TestPledgeFirstAppearance:
         wb_pub.remove(wb_pub.active)
         ws_big = wb_pub.create_sheet("中大盘20260301")
         ws_big.append(["序号", "证券代码", "证券简称", "最新公告日"])
-        ws_big.append([1, "000002.SZ", "B", "2026-04-20"])
+        ws_big.append([1, "000002.SZ", "B", "2026-04-20"])  # 中大盘 baseline=2026-04-20
         ws_small = wb_pub.create_sheet("小盘20260301")
-        ws_small.append(["序号", "证券代码", "证券简称", "最新公告日"])
+        ws_small.append(["序号", "证券代码", "证券简称", "最新公告日"])  # 小盘 baseline=None
         wb_pub.save(str(public_dir / "5质押20260301.xlsx"))
-        # 新文件：小盘 sheet 里有 000002.SZ @ 2026-04-20（同日期，不该绿）
+        # 新文件：小盘行 @ 2026-04-20。按新规则：小盘 baseline=None → 应绿
         df = pd.DataFrame({
             "证券代码": ["000002.SZ"], "证券简称": ["B"],
             "最新公告日": ["2026-04-20"], "来源": ["小盘"],
@@ -440,8 +442,84 @@ class TestPledgeFirstAppearance:
         ws = wb["小盘20260421"]
         header = [c.value for c in ws[1]]
         col_date = header.index("最新公告日") + 1
-        fill = _get_fill(ws, 2, col_date)
-        assert GREEN_COLOR not in fill
+        # 小盘 baseline=None（public 小盘 sheet 无数据）→ 该行应绿
+        assert GREEN_COLOR in _get_fill(ws, 2, col_date)
+
+    def test_global_baseline_only_newer_dates_green(self, executor, tmp_path):
+        """中大盘 baseline 仅对中大盘行生效：公告日 > baseline 才绿，= 不绿，< 不绿。"""
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        # public 中大盘最大日期 = 2026-04-10
+        from openpyxl import Workbook
+        wb_pub = Workbook()
+        wb_pub.remove(wb_pub.active)
+        ws = wb_pub.create_sheet("中大盘20260410")
+        ws.append(["序号", "证券代码", "证券简称", "最新公告日"])
+        ws.append([1, "000001.SZ", "A", "2026-04-10"])
+        ws.append([2, "000002.SZ", "B", "2026-04-05"])
+        ws2 = wb_pub.create_sheet("小盘20260410")
+        ws2.append(["序号", "证券代码", "证券简称", "最新公告日"])
+        wb_pub.save(str(public_dir / "5质押20260410.xlsx"))
+
+        # 新文件：3 行，只有 > 2026-04-10 的该绿
+        df = pd.DataFrame({
+            "证券代码": ["000003.SZ", "000001.SZ", "000004.SZ"],
+            "证券简称": ["C", "A", "D"],
+            "最新公告日": ["2026-04-21", "2026-04-09", "2026-04-10"],
+            "来源": ["中大盘", "中大盘", "中大盘"],
+        })
+        output_path = tmp_path / "out.xlsx"
+        executor._finalize_pledge_output(df, "20260421", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws_big = wb["中大盘20260421"]
+        header = [c.value for c in ws_big[1]]
+        col_date = header.index("最新公告日") + 1
+        # 000003.SZ @ 2026-04-21 > baseline 2026-04-10 → 绿
+        assert GREEN_COLOR in _get_fill(ws_big, 2, col_date)
+        # 000001.SZ @ 2026-04-09 < baseline → 不绿
+        assert GREEN_COLOR not in _get_fill(ws_big, 3, col_date)
+        # 000004.SZ @ 2026-04-10 == baseline → 不绿（只看 > 不看 >=）
+        assert GREEN_COLOR not in _get_fill(ws_big, 4, col_date)
+
+    def test_per_sheet_baseline_isolation(self, executor, tmp_path):
+        """中大盘和小盘基准独立：小盘行用小盘 baseline，不受中大盘 baseline 影响。"""
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        from openpyxl import Workbook
+        wb_pub = Workbook()
+        wb_pub.remove(wb_pub.active)
+        # public 中大盘最大日期 = 2026-04-20
+        ws_big = wb_pub.create_sheet("中大盘20260420")
+        ws_big.append(["序号", "证券代码", "证券简称", "最新公告日"])
+        ws_big.append([1, "000001.SZ", "A", "2026-04-20"])
+        # public 小盘最大日期 = 2026-04-05（故意不同）
+        ws_small = wb_pub.create_sheet("小盘20260420")
+        ws_small.append(["序号", "证券代码", "证券简称", "最新公告日"])
+        ws_small.append([1, "000099.SZ", "X", "2026-04-05"])
+        wb_pub.save(str(public_dir / "5质押20260420.xlsx"))
+
+        # 新文件：两 sheet 各 2 行，同一个 2026-04-10 日期
+        # 中大盘 baseline=2026-04-20，2026-04-10 < baseline → 不绿
+        # 小盘 baseline=2026-04-05，2026-04-10 > baseline → 绿
+        df = pd.DataFrame({
+            "证券代码": ["000010.SZ", "000020.SZ"],
+            "证券简称": ["M", "S"],
+            "最新公告日": ["2026-04-10", "2026-04-10"],
+            "来源": ["中大盘", "小盘"],
+        })
+        output_path = tmp_path / "out.xlsx"
+        executor._finalize_pledge_output(df, "20260421", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        # 中大盘 sheet 的行：2026-04-10 < 中大盘 baseline 2026-04-20 → 不绿
+        ws_big_new = wb["中大盘20260421"]
+        h_big = [c.value for c in ws_big_new[1]]
+        dc_big = h_big.index("最新公告日") + 1
+        assert GREEN_COLOR not in _get_fill(ws_big_new, 2, dc_big), "中大盘行不该绿（同日期 > 小盘基准但 < 中大盘基准）"
+        # 小盘 sheet 的行：2026-04-10 > 小盘 baseline 2026-04-05 → 绿
+        ws_small_new = wb["小盘20260421"]
+        h_small = [c.value for c in ws_small_new[1]]
+        dc_small = h_small.index("最新公告日") + 1
+        assert GREEN_COLOR in _get_fill(ws_small_new, 2, dc_small), "小盘行该绿（公告日 > 小盘基准）"
 
 
 class TestFinalizePledgeIfNeeded:
