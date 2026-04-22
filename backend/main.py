@@ -112,12 +112,24 @@ async def lifespan(app: FastAPI):
     
     scheduler.start()
     logger.info("数据库表创建完成，调度器已启动")
-    
+
+    # 启动 pool_cache 后台刷新（首次加载 + 每 10 分钟刷新）
+    try:
+        from services.pool_cache import start_background_refresh
+        start_background_refresh()
+    except Exception as e:
+        logger.warning(f"pool_cache 启动失败: {e}")
+
     yield
-    
+
     logger.info("正在关闭应用...")
     await scheduler_service.stop()
     scheduler.shutdown()
+    try:
+        from services.pool_cache import stop_background_refresh
+        stop_background_refresh()
+    except Exception:
+        pass
     logger.info("应用已关闭")
 
 

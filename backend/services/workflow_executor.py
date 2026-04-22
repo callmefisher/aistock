@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 import glob
+import json
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 from openpyxl import load_workbook
@@ -1540,6 +1541,14 @@ class WorkflowExecutor:
             if before != after:
                 logger.info(f"[条件交集] 按证券代码合并: {before}行 → {after}行")
 
+        # 按"最新公告日"降序排序后再重新编号（NaT 排到最末）
+        if "最新公告日" in combined_df.columns and len(combined_df) > 0:
+            _date_key = pd.to_datetime(combined_df["最新公告日"], errors="coerce")
+            combined_df = combined_df.assign(_date_key=_date_key.fillna(pd.Timestamp.min)) \
+                .sort_values("_date_key", ascending=False, kind="stable") \
+                .drop(columns="_date_key") \
+                .reset_index(drop=True)
+
         # 重新编号序号
         combined_df["序号"] = range(1, len(combined_df) + 1)
 
@@ -1550,6 +1559,50 @@ class WorkflowExecutor:
         # 确保列顺序；临时屏蔽"序号"列（内部计算逻辑保留，不展示）
         final_columns = [c for c in INTERSECTION_DISPLAY_COLUMNS if c in combined_display.columns and c != "序号"]
         combined_display = combined_display[final_columns]
+
+        # === 标注百日新高：按配置的每个周期，输出 2 列（次数 + 日期列表）===
+        high_price_periods = config.get("high_price_periods", []) or []
+        if high_price_periods and "证券代码" in combined_display.columns:
+            today_codes = set(combined_display["证券代码"].astype(str).str.strip()) if date_str else set()
+            period_new_columns = []
+            from services.pool_cache import get_date_codes_map as _get_map
+            for p in high_price_periods:
+                p_start = (p.get("start") or "").strip()
+                p_end = (p.get("end") or "").strip()
+                if not p_start or not p_end or p_start > p_end:
+                    continue
+                # DB 查 [start, min(end, today-1)]；今天用 combined_df 自身补
+                db_end = p_end
+                if date_str and p_start <= date_str <= p_end:
+                    try:
+                        from datetime import datetime as _dt, timedelta as _td
+                        db_end = (_dt.strptime(date_str, "%Y-%m-%d").date() - _td(days=1)).strftime("%Y-%m-%d")
+                    except Exception:
+                        db_end = p_end
+
+                code_dates: Dict[str, List[str]] = {}
+                if p_start <= db_end:
+                    date_codes_map = await _get_map(p_start, db_end)
+                    for ds, codes in date_codes_map.items():
+                        for code in codes:
+                            code_dates.setdefault(code, []).append(ds)
+                # 当天加入
+                if date_str and p_start <= date_str <= p_end:
+                    for code in today_codes:
+                        code_dates.setdefault(code, []).append(date_str)
+
+                col_count = f"{p_start}至{p_end}期间百日新高次数"
+                col_dates = f"{p_start}至{p_end}期间百日新高的日期"
+                count_values = []
+                date_values = []
+                for code in combined_display["证券代码"].astype(str).str.strip():
+                    dates = sorted(set(code_dates.get(code, [])), reverse=True)
+                    count_values.append(len(dates))
+                    date_values.append(",".join(dates) if dates else "")
+                combined_display[col_count] = count_values
+                combined_display[col_dates] = date_values
+                period_new_columns.extend([col_count, col_dates])
+                logger.info(f"[条件交集] 标注百日新高周期 {p_start}至{p_end}: 历史 pool 命中代码 {len(code_dates)} 个 (via cache)")
 
         # Sheet2（选股池）= Sheet1 数据的完整复制
         pool_df = combined_display.copy()
@@ -1572,25 +1625,71 @@ class WorkflowExecutor:
             pool_df.to_excel(writer, sheet_name=pool_name, index=False)
 
         auto_adjust_excel_width(output_path, all_sheets=True)
+
+        # 窗口基线：优先取首个"标注百日新高周期"的 [start, end]；否则默认最近 100 天
+        first_period = None
+        if high_price_periods:
+            for p in high_price_periods:
+                s = (p.get("start") or "").strip()
+                e = (p.get("end") or "").strip()
+                if s and e and s <= e:
+                    first_period = (s, e)
+                    break
+        baseline_codes = await self._find_baseline_codes_in_window(
+            pool_name=pool_name,
+            current_date_str=date_str,
+            window=first_period,  # None → 默认 100 天
+        )
+
         # 资本运作行为可能是多个类型顿号拼接；统一设宽为 70 保证不换行；全表居中
+        # 同时对 Sheet2 "选股池" 的新增行高亮（证券代码/证券简称/最新公告日 3 列绿底）
         try:
             from openpyxl import load_workbook as _lw
-            from openpyxl.styles import Alignment
+            from openpyxl.styles import Alignment, PatternFill
             center_align = Alignment(horizontal="center", vertical="center", wrap_text=False)
+            green_fill = PatternFill(fill_type="solid", start_color="FFC6EFCE", end_color="FFC6EFCE")
+            highlight_cols = {"证券代码", "证券简称", "最新公告日"}
             wb_w = _lw(output_path)
             for ws in wb_w.worksheets:
                 header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
-                for idx, h in enumerate(header_row, start=1):
+                header_list = list(header_row)
+                # 列宽
+                for idx, h in enumerate(header_list, start=1):
+                    if not isinstance(h, str):
+                        continue
                     if h == "资本运作行为":
                         ws.column_dimensions[get_column_letter(idx)].width = 70
-                        break
+                    elif "期间百日新高的日期" in h:
+                        # 日期列最长可能含 30+ 个日期（YYYY-MM-DD,）
+                        ws.column_dimensions[get_column_letter(idx)].width = 80
+                    elif "期间百日新高次数" in h:
+                        ws.column_dimensions[get_column_letter(idx)].width = 30
+                # 居中
                 for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
                                         min_col=1, max_col=ws.max_column):
                     for cell in row:
                         cell.alignment = center_align
+                # Sheet1 "条件交集" 和 Sheet2 "选股池" 都做新增高亮
+                if baseline_codes is not None and ws.title in ("条件交集", pool_name):
+                    try:
+                        code_col_idx = header_list.index("证券代码") + 1
+                    except ValueError:
+                        code_col_idx = None
+                    if code_col_idx:
+                        target_col_indices = [
+                            header_list.index(c) + 1 for c in header_list
+                            if c in highlight_cols
+                        ]
+                        for r_idx in range(2, ws.max_row + 1):
+                            code_val = ws.cell(row=r_idx, column=code_col_idx).value
+                            if code_val is None:
+                                continue
+                            if str(code_val).strip() not in baseline_codes:
+                                for c_idx in target_col_indices:
+                                    ws.cell(row=r_idx, column=c_idx).fill = green_fill
             wb_w.save(output_path)
         except Exception as e:
-            logger.warning(f"[条件交集] 资本运作行为列宽/居中设置失败: {e}")
+            logger.warning(f"[条件交集] 列宽/居中/高亮设置失败: {e}")
         logger.info(f"[条件交集] 输出文件: {output_path}")
 
         # 6. 保存选股池到 DB
@@ -1722,6 +1821,46 @@ class WorkflowExecutor:
 
         return df[combined].copy()
 
+    async def _find_baseline_codes_in_window(
+        self,
+        pool_name: str,
+        current_date_str: str,
+        window: Optional[tuple] = None,
+    ) -> Optional[set]:
+        """返回窗口期内所有历史 pool 的证券代码并集，用于"新增"高亮基线。
+
+        走 pool_cache 进程内缓存（10 分钟刷新，入库时失效）。
+        window: (start_str, end_str) 闭区间；None → 默认最近 100 天
+        窗口严格 < current_date_str（排除当天）。
+        找不到任何历史记录 → 返回 None（跳过高亮）。
+        """
+        from datetime import datetime as _dt, timedelta as _td
+        from services.pool_cache import get_codes_union
+
+        try:
+            base_date = _dt.strptime(current_date_str, "%Y-%m-%d").date()
+        except Exception as e:
+            logger.warning(f"[条件交集-高亮] 解析 current_date_str 失败: {e}")
+            return None
+
+        yesterday = (base_date - _td(days=1)).strftime("%Y-%m-%d")
+        if window is None:
+            start_str = (base_date - _td(days=100)).strftime("%Y-%m-%d")
+            end_str = yesterday
+        else:
+            start_str, end_str = window
+            if end_str >= current_date_str:
+                end_str = yesterday
+        if start_str > end_str:
+            logger.info(f"[条件交集-高亮] 窗口无效 ({start_str}~{end_str})，跳过高亮")
+            return None
+
+        codes_union = await get_codes_union(start_str, end_str)
+        logger.info(
+            f"[条件交集-高亮] baseline 窗口 {start_str}~{end_str} 代码 {len(codes_union)} 个 (via cache)"
+        )
+        return codes_union if codes_union else None
+
     async def _save_stock_pool(self, name: str, date_str: str, file_path: str,
                                 data: list, total_stocks: int,
                                 filter_conditions: list, source_types: list,
@@ -1760,6 +1899,12 @@ class WorkflowExecutor:
                     updated_at = NOW()
             """), params)
             await session.commit()
+        # 失效缓存
+        try:
+            from services.pool_cache import invalidate as _inv
+            _inv()
+        except Exception:
+            pass
 
     async def _ranking_sort(self, config: Dict, input_data: Optional[pd.DataFrame] = None,
                             date_str: Optional[str] = None) -> Dict[str, Any]:

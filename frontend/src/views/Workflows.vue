@@ -674,6 +674,42 @@
                 <el-form-item label="输出文件名">
                   <el-input v-model="step.config.output_filename" placeholder="7条件交集{date}.xlsx" />
                 </el-form-item>
+
+                <el-form-item label="标注百日新高周期">
+                  <div style="width: 100%">
+                    <div style="font-size: 12px; color: #909399; margin-bottom: 6px;">
+                      为每个周期生成 2 个输出列："YYYY-MM-DD至YYYY-MM-DD期间百日新高次数" 和 "…期间百日新高的日期"。对比历史选股池里该股票的数据日期。
+                    </div>
+                    <div v-for="(p, pIdx) in (step.config.high_price_periods || [])" :key="pIdx"
+                         style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                      <span style="color: #909399; width: 16px;">{{ pIdx + 1 }}.</span>
+                      <el-date-picker
+                        v-model="p.start"
+                        type="date"
+                        placeholder="开始日期"
+                        format="YYYY-MM-DD"
+                        value-format="YYYY-MM-DD"
+                        style="width: 160px"
+                      />
+                      <span>~</span>
+                      <el-date-picker
+                        v-model="p.end"
+                        type="date"
+                        placeholder="结束日期"
+                        format="YYYY-MM-DD"
+                        value-format="YYYY-MM-DD"
+                        style="width: 160px"
+                      />
+                      <el-button link type="danger" size="small" @click="removeHighPricePeriod(step, pIdx)">
+                        <el-icon><Delete /></el-icon>
+                      </el-button>
+                    </div>
+                    <el-button size="small" @click="addHighPricePeriod(step)">
+                      <el-icon><Plus /></el-icon>
+                      添加周期
+                    </el-button>
+                  </div>
+                </el-form-item>
               </template>
 
               <template v-if="step.type === 'pledge_trend_analysis'">
@@ -1298,17 +1334,21 @@ const isAggregationType = computed(() => AGGREGATION_TYPES.includes(form.value.w
 const FILTER_COLUMNS = ['百日新高', '20日均线', '国企', '一级板块']
 const DEFAULT_TYPE_ORDER = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '质押', '招投标']
 
-const defaultIntersectionStep = () => ({
-  type: 'condition_intersection',
-  config: {
-    date_str: new Date().toISOString().split('T')[0],
-    filter_conditions: [{ column: '百日新高', enabled: true }],
-    filter_logic: 'AND',
-    type_order: [...DEFAULT_TYPE_ORDER],
-    output_filename: `7条件交集${new Date().toISOString().split('T')[0].replace(/-/g, '')}.xlsx`
-  },
-  status: 'pending'
-})
+const defaultIntersectionStep = () => {
+  const today = new Date().toISOString().split('T')[0]
+  return {
+    type: 'condition_intersection',
+    config: {
+      date_str: today,
+      filter_conditions: [{ column: '百日新高', enabled: true }],
+      filter_logic: 'AND',
+      type_order: [...DEFAULT_TYPE_ORDER],
+      output_filename: `7条件交集${today.replace(/-/g, '')}.xlsx`,
+      high_price_periods: [{ start: '2026-03-18', end: today }]
+    },
+    status: 'pending'
+  }
+}
 
 const defaultRankingSteps = () => {
   const today = new Date().toISOString().split('T')[0]
@@ -1426,9 +1466,24 @@ const moveTypeOrder = (step, idx, direction) => {
   arr[newIdx] = temp
 }
 
+const addHighPricePeriod = (step) => {
+  if (!step.config.high_price_periods) step.config.high_price_periods = []
+  const today = step.config.date_str || new Date().toISOString().split('T')[0]
+  step.config.high_price_periods.push({ start: '2026-03-18', end: today })
+}
+
+const removeHighPricePeriod = (step, idx) => {
+  step.config.high_price_periods.splice(idx, 1)
+}
+
 const onIntersectionDateChange = (step) => {
   const date = step.config.date_str || new Date().toISOString().split('T')[0]
   step.config.output_filename = `7条件交集${date.replace(/-/g, '')}.xlsx`
+  // 只有 1 条周期时自动同步 end 到数据日期
+  const periods = step.config.high_price_periods || []
+  if (periods.length === 1) {
+    periods[0].end = date
+  }
 }
 
 const onMergeDateChange = (step, index) => {
@@ -2135,6 +2190,13 @@ const handleEdit = (row) => {
       step.config.date_range_start = range.start
       step.config.date_range_end = range.end
       step.config.date_range = null
+    }
+    // 对 condition_intersection 步骤：仅 1 条高价周期时自动同步 end 到 date_str
+    if (step.type === 'condition_intersection' && step.config?.date_str) {
+      const periods = step.config.high_price_periods || []
+      if (periods.length === 1) {
+        periods[0].end = step.config.date_str
+      }
     }
   })
   showDialog.value = true
