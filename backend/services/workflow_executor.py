@@ -932,7 +932,65 @@ class WorkflowExecutor:
             "_df": df_deduped
         }
 
+    async def _extract_columns_pledge(self, df: pd.DataFrame, output_path: str) -> Dict[str, Any]:
+        """质押类型的 extract_columns：保留全部原始列，补齐必须列。
+
+        - 不做白名单过滤
+        - 保证 证券代码/证券简称/最新公告日/来源 四列存在（缺则补空列或从别名映射）
+        - 最新公告日：缺失时找前缀含"股权质押公告日期"的第一列复制值（不删原列）
+        - 证券简称：缺失时尝试 名称 / 证券名称
+        - 不追加 持续递增/递减/质押异动（由 pledge_trend_analysis 负责）
+        - 写出无样式 xlsx
+        """
+        if df is None:
+            df = pd.DataFrame()
+        df = df.copy()
+
+        if "证券代码" not in df.columns:
+            df["证券代码"] = ""
+
+        if "证券简称" not in df.columns:
+            for alias in ("名称", "证券名称"):
+                if alias in df.columns:
+                    df["证券简称"] = df[alias]
+                    break
+            else:
+                df["证券简称"] = ""
+
+        if "最新公告日" not in df.columns:
+            pledge_date_cols = [c for c in df.columns if "股权质押公告日期" in str(c)]
+            if pledge_date_cols:
+                df["最新公告日"] = df[pledge_date_cols[0]]
+            else:
+                df["最新公告日"] = ""
+
+        if "来源" not in df.columns:
+            df["来源"] = "小盘"
+
+        dirname = os.path.dirname(output_path)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+        df.to_excel(output_path, index=False)
+        return {
+            "success": True,
+            "message": f"质押 extract_columns 完成，保留 {len(df.columns)} 列",
+            "data": clean_df_for_json(df),
+            "columns": list(df.columns),
+            "rows": len(df),
+            "file_path": output_path,
+            "_df": df,
+        }
+
     async def _extract_columns(self, config: Dict, df: Optional[pd.DataFrame], date_str: Optional[str] = None) -> Dict[str, Any]:
+        if self.workflow_type == "质押":
+            # 重构：质押分支保留全列，不走白名单过滤
+            if df is None:
+                return {"success": False, "message": "没有可处理的数据"}
+            daily_dir = self.resolver.get_upload_directory(date_str)
+            output_name = self.resolver.get_output_filename("extract_columns", date_str) or "output_2.xlsx"
+            output_path = os.path.join(daily_dir, output_name)
+            return await self._extract_columns_pledge(df, output_path)
+
         if df is None:
             return {
                 "success": False,
@@ -955,22 +1013,8 @@ class WorkflowExecutor:
                         "success": False,
                         "message": f"未找到列: {col_name}，可用列: {available_columns}"
                     }
-            # 质押类型：即便用户传了自定义 columns，也强制追加存在的"来源"及 3 个预判列
-            # （避免用户在 UI 仅选择 4 标准列时，原表的预判信息被意外丢弃）
-            if self.workflow_type == "质押":
-                extras = ["来源", "持续递增（一年内）", "持续递减（一年内）", "质押异动"]
-                for extra in extras:
-                    if extra in available_columns and extra not in selected_columns:
-                        selected_columns.append(extra)
         else:
             fixed_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
-            # 质押类型额外保留"来源"列和 3 个预判列（若已存在）
-            if self.workflow_type == "质押":
-                fixed_columns = fixed_columns + ["来源"]
-                # 只把原表已存在的预判列加入，否则跳过（extract 不会要求"缺少"）
-                for preset in ["持续递增（一年内）", "持续递减（一年内）", "质押异动"]:
-                    if preset in available_columns:
-                        fixed_columns.append(preset)
             for fixed_col in fixed_columns:
                 found = False
                 for avail_col in available_columns:

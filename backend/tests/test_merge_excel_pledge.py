@@ -257,7 +257,7 @@ async def test_merge_skips_previous_final_output_in_public(tmpbase):
 
 @pytest.mark.asyncio
 async def test_extract_columns_keeps_source_for_pledge(tmpbase):
-    """extract_columns 默认提取列针对质押类型保留"来源"列。"""
+    """质押 extract_columns 保留全列，包括来源列。"""
     upload_dir = os.path.join(tmpbase, "质押", "2026-04-20")
     _make_pledge_excel(os.path.join(upload_dir, "f.xlsx"), {
         "中大盘": [{"证券代码": "000001.SZ", "证券简称": "平安", "最新公告日": "2026-04-10"}],
@@ -267,13 +267,14 @@ async def test_extract_columns_keeps_source_for_pledge(tmpbase):
     merge_result = await ex._merge_excel({}, date_str="2026-04-20")
     extract_result = await ex._extract_columns({}, merge_result["_df"], date_str="2026-04-20")
     assert extract_result["success"], extract_result["message"]
-    cols = extract_result["columns"]
-    assert "来源" in cols
+    # 新实现保留全列，通过 _df 检查列名
+    out_cols = list(extract_result["_df"].columns)
+    assert "来源" in out_cols
 
 
 @pytest.mark.asyncio
 async def test_extract_columns_preserves_preset_even_with_custom_config(tmpbase):
-    """质押类型：即便用户传入 columns 只有 4 列，后端仍兜底保留 来源+3 预判列。"""
+    """质押类型：保留全列，来源和预判列均不丢失（config 中的 columns 字段被忽略）。"""
     import pandas as pd
     df = pd.DataFrame([{
         "序号": 1, "证券代码": "002768.SZ", "证券简称": "国恩",
@@ -286,15 +287,15 @@ async def test_extract_columns_preserves_preset_even_with_custom_config(tmpbase)
         df, date_str="2026-04-20"
     )
     assert result["success"]
-    cols = result["columns"]
-    # 用户仅传了 4 列，但质押类型兜底补入"来源"+3 预判列（原表存在时）
-    assert "来源" in cols
-    assert "持续递减（一年内）" in cols
-    assert "质押异动" in cols
-    # 且这 3 列的值未丢
-    row = result["data"][0]
-    assert row["持续递减（一年内）"] == "Y"
-    assert row["质押异动"] == "小幅转减"
+    out_df = result["_df"]
+    out_cols = list(out_df.columns)
+    # 质押全列保留：来源 + 预判列均存在
+    assert "来源" in out_cols
+    assert "持续递减（一年内）" in out_cols
+    assert "质押异动" in out_cols
+    # 值未丢
+    assert out_df.iloc[0]["持续递减（一年内）"] == "Y"
+    assert out_df.iloc[0]["质押异动"] == "小幅转减"
 
 
 @pytest.mark.asyncio
