@@ -177,9 +177,20 @@ class WorkflowExecutor:
         files.extend(glob.glob(pattern))
         return sorted(files)
 
-    def _derive_pledge_source(self, sheet_name: str) -> str:
-        """质押类型：Sheet 名以"中大盘"开头 → "中大盘"，否则 → "小盘"。"""
-        return "中大盘" if str(sheet_name).strip().startswith("中大盘") else "小盘"
+    def _derive_pledge_source(self, file_name: str, sheet_name: str) -> str:
+        """质押类型来源识别：文件名前缀优先（中大盘 / 小盘），sheet 名前缀回退。
+
+        命名约定：中大盘{date}.xlsx / 小盘{date}.xlsx；文件名不匹配时尝试 sheet 名。
+        """
+        fn = str(file_name or "").strip()
+        if fn.startswith("中大盘"):
+            return "中大盘"
+        if fn.startswith("小盘"):
+            return "小盘"
+        sn = str(sheet_name or "").strip()
+        if sn.startswith("中大盘"):
+            return "中大盘"
+        return "小盘"
 
     def _sync_pledge_final_to_public(self, final_file_path: str, date_str: Optional[str] = None) -> bool:
         """把最终输出文件同步到 质押/public 目录。
@@ -509,7 +520,7 @@ class WorkflowExecutor:
                                                if isinstance(c, str) and "持续递减" in c]
                             preset_event_cols = [c for c in df_parsed.columns
                                                  if isinstance(c, str) and "质押异动" in c]
-                            df_parsed["来源"] = self._derive_pledge_source(sheet_name)
+                            df_parsed["来源"] = self._derive_pledge_source(filename, sheet_name)
                             df_parsed["_source_file"] = filename
                             # 提前列过滤（质押白名单）
                             target_cols_pledge = (

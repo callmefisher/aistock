@@ -25,18 +25,18 @@ def tmpbase():
 
 
 def test_source_derive_zhongdapan():
-    """中大盘开头的 sheet 名 → 来源=中大盘。"""
+    """中大盘开头的 sheet 名 → 来源=中大盘（文件名不含关键字时回退到 sheet 名）。"""
     ex = WorkflowExecutor(base_dir="/tmp", workflow_type="质押")
-    assert ex._derive_pledge_source("中大盘Sheet1") == "中大盘"
-    assert ex._derive_pledge_source("中大盘") == "中大盘"
+    assert ex._derive_pledge_source("", "中大盘Sheet1") == "中大盘"
+    assert ex._derive_pledge_source("", "中大盘") == "中大盘"
 
 
 def test_source_derive_xiaopan():
-    """非中大盘开头 → 来源=小盘。"""
+    """非中大盘开头 → 来源=小盘（文件名不含关键字时回退到 sheet 名）。"""
     ex = WorkflowExecutor(base_dir="/tmp", workflow_type="质押")
-    assert ex._derive_pledge_source("小盘A") == "小盘"
-    assert ex._derive_pledge_source("Sheet1") == "小盘"
-    assert ex._derive_pledge_source("其他") == "小盘"
+    assert ex._derive_pledge_source("", "小盘A") == "小盘"
+    assert ex._derive_pledge_source("", "Sheet1") == "小盘"
+    assert ex._derive_pledge_source("", "其他") == "小盘"
 
 
 @pytest.mark.asyncio
