@@ -264,3 +264,91 @@ class TestPledgeRatioColoring:
         header = [c.value for c in ws[1]]
         col_right = header.index("质押比例-20260304") + 1
         assert RED_COLOR in _get_fill(ws, 2, col_right)
+
+
+class TestPledgeFirstAppearance:
+    def _write_public_baseline(self, public_dir, code, date_val, date_str):
+        """写一份历史 public 文件，含某代码的某公告日。"""
+        from openpyxl import Workbook
+        wb = Workbook()
+        wb.remove(wb.active)
+        ws = wb.create_sheet(f"中大盘{date_str}")
+        ws.append(["序号", "证券代码", "证券简称", "最新公告日"])
+        ws.append([1, code, "A", date_val])
+        ws2 = wb.create_sheet(f"小盘{date_str}")
+        ws2.append(["序号", "证券代码", "证券简称", "最新公告日"])
+        wb.save(str(public_dir / f"5质押{date_str}.xlsx"))
+
+    def test_new_code_green(self, executor, tmp_path):
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"], "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
+        })
+        output_path = tmp_path / "out.xlsx"
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        col_date = header.index("最新公告日") + 1
+        assert GREEN_COLOR in _get_fill(ws, 2, col_date)
+
+    def test_existing_code_newer_date_green(self, executor, tmp_path):
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        self._write_public_baseline(public_dir, "000001.SZ", "2026-03-01", "20260301")
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"], "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
+        })
+        output_path = tmp_path / "out.xlsx"
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        col_date = header.index("最新公告日") + 1
+        assert GREEN_COLOR in _get_fill(ws, 2, col_date)
+
+    def test_existing_code_same_or_older_not_green(self, executor, tmp_path):
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        self._write_public_baseline(public_dir, "000001.SZ", "2026-04-20", "20260420")
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"], "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
+        })
+        output_path = tmp_path / "out.xlsx"
+        executor._finalize_pledge_output(df, "20260421", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260421"]
+        header = [c.value for c in ws[1]]
+        col_date = header.index("最新公告日") + 1
+        fill = _get_fill(ws, 2, col_date)
+        assert GREEN_COLOR not in fill
+
+    def test_baseline_merges_both_sheets(self, executor, tmp_path):
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        from openpyxl import Workbook
+        wb_pub = Workbook()
+        wb_pub.remove(wb_pub.active)
+        ws_big = wb_pub.create_sheet("中大盘20260301")
+        ws_big.append(["序号", "证券代码", "证券简称", "最新公告日"])
+        ws_big.append([1, "000002.SZ", "B", "2026-04-20"])
+        ws_small = wb_pub.create_sheet("小盘20260301")
+        ws_small.append(["序号", "证券代码", "证券简称", "最新公告日"])
+        wb_pub.save(str(public_dir / "5质押20260301.xlsx"))
+        # 新文件：小盘 sheet 里有 000002.SZ @ 2026-04-20（同日期，不该绿）
+        df = pd.DataFrame({
+            "证券代码": ["000002.SZ"], "证券简称": ["B"],
+            "最新公告日": ["2026-04-20"], "来源": ["小盘"],
+        })
+        output_path = tmp_path / "out.xlsx"
+        executor._finalize_pledge_output(df, "20260421", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["小盘20260421"]
+        header = [c.value for c in ws[1]]
+        col_date = header.index("最新公告日") + 1
+        fill = _get_fill(ws, 2, col_date)
+        assert GREEN_COLOR not in fill

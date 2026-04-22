@@ -260,6 +260,116 @@ class WorkflowExecutor:
         rest = [c for c in df.columns if c not in prefix and c not in drop_cols]
         return df[prefix + rest]
 
+    def _load_pledge_baseline(self, public_dir: str) -> Dict[str, Any]:
+        """读 public 目录所有 xlsx + stock_pools 表，构建 baseline。
+        返回 {normalize_stock_code(证券代码): 已见过的最大日期}
+        失败时返回空 dict，不抛。
+        """
+        baseline: Dict[str, Any] = {}
+
+        def _update(nc: str, ts) -> None:
+            prev = baseline.get(nc)
+            if prev is None or ts > prev:
+                baseline[nc] = ts
+
+        # 1) public 目录下所有 xlsx
+        try:
+            if public_dir and os.path.isdir(public_dir):
+                from openpyxl import load_workbook as _lwb
+                for fname in os.listdir(public_dir):
+                    if not fname.lower().endswith(".xlsx"):
+                        continue
+                    fpath = os.path.join(public_dir, fname)
+                    try:
+                        wb = _lwb(fpath, read_only=True, data_only=True)
+                        try:
+                            for sheet_name in wb.sheetnames:
+                                ws = wb[sheet_name]
+                                rows = ws.iter_rows(values_only=True)
+                                try:
+                                    header = next(rows)
+                                except StopIteration:
+                                    continue
+                                header = [str(h) if h is not None else "" for h in header]
+                                code_idx = None
+                                date_idxs = []
+                                for i, h in enumerate(header):
+                                    if h == "证券代码":
+                                        code_idx = i
+                                    elif h == "最新公告日" or "股权质押公告日期" in h:
+                                        date_idxs.append(i)
+                                if code_idx is None or not date_idxs:
+                                    continue
+                                for row in rows:
+                                    if not row:
+                                        continue
+                                    code = row[code_idx] if code_idx < len(row) else None
+                                    if not code:
+                                        continue
+                                    nc = normalize_stock_code(str(code).strip())
+                                    if not nc:
+                                        continue
+                                    for di in date_idxs:
+                                        if di >= len(row):
+                                            continue
+                                        dv = row[di]
+                                        if dv is None or dv == "":
+                                            continue
+                                        try:
+                                            ts = pd.to_datetime(dv, errors="coerce")
+                                            if pd.isna(ts):
+                                                continue
+                                        except Exception:
+                                            continue
+                                        _update(nc, ts)
+                        finally:
+                            wb.close()
+                    except Exception as e:
+                        logger.warning(f"[质押 baseline] 读取 public 文件失败 {fname}: {e}")
+                        continue
+        except Exception as e:
+            logger.warning(f"[质押 baseline] 扫描 public 目录失败: {e}")
+
+        # 2) stock_pools 表 — data 字段是 [{证券代码, 最新公告日, ...}, ...]
+        try:
+            from core.database import SessionLocal
+            from models.models import StockPool
+            import json as _json
+            db = SessionLocal()
+            try:
+                rows = db.query(StockPool).filter(StockPool.is_active.is_(True)).all()
+                for pool in rows:
+                    raw = pool.data
+                    if not raw:
+                        continue
+                    records = raw if isinstance(raw, list) else _json.loads(raw) if isinstance(raw, str) else []
+                    if not isinstance(records, list):
+                        continue
+                    for rec in records:
+                        if not isinstance(rec, dict):
+                            continue
+                        code = rec.get("证券代码")
+                        dv = rec.get("最新公告日")
+                        if not code or not dv:
+                            continue
+                        nc = normalize_stock_code(str(code).strip())
+                        if not nc:
+                            continue
+                        try:
+                            ts = pd.to_datetime(dv, errors="coerce")
+                            if pd.isna(ts):
+                                continue
+                        except Exception:
+                            continue
+                        _update(nc, ts)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"[质押 baseline] 读取 stock_pools 失败: {e}")
+
+        logger.info(f"[质押 baseline] 构建完成，共 {len(baseline)} 条代码")
+        return baseline
+
     def _finalize_pledge_output(
         self,
         df: pd.DataFrame,
@@ -267,11 +377,18 @@ class WorkflowExecutor:
         output_path: str,
         public_dir: str,
     ) -> None:
-        """质押最终输出：列重排 + 分 sheet。
+        """质押最终输出：列重排 + 分 sheet + 质押比例红绿对比 + 最新公告日首次出现绿标。
 
-        Task 3：仅布局。Task 4/5 会在此方法中追加条件格式和绿标。
+        Sheet1 = 中大盘{date_str}, Sheet2 = 小盘{date_str}；两者固定存在（空则仅表头）。
+        Baseline（从 public_dir 所有 xlsx + stock_pools 表）用于判定最新公告日是否首次出现。
+        所有样式（红/绿）仅在此方法一次性施加，避免被 openpyxl 中间步骤写入清除。
         """
         from openpyxl import Workbook
+        from openpyxl.styles import PatternFill
+
+        baseline = self._load_pledge_baseline(public_dir)
+        red_fill = PatternFill(start_color="FFC00000", end_color="FFC00000", fill_type="solid")
+        green_fill = PatternFill(start_color="FFC6EFCE", end_color="FFC6EFCE", fill_type="solid")
 
         if df is None:
             df = pd.DataFrame()
@@ -296,10 +413,6 @@ class WorkflowExecutor:
                 ws.append([i] + [row[c] for c in sub_df.columns])
 
         # 质押比例相邻红绿条件格式
-        from openpyxl.styles import PatternFill
-        red_fill = PatternFill(start_color="FFC00000", end_color="FFC00000", fill_type="solid")
-        green_fill = PatternFill(start_color="FFC6EFCE", end_color="FFC6EFCE", fill_type="solid")
-
         def _to_float(val):
             if val is None:
                 return None
@@ -329,6 +442,32 @@ class WorkflowExecutor:
                         right.fill = red_fill
                     elif a < b:
                         right.fill = green_fill
+
+        # 最新公告日首次出现绿标
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            header = [c.value for c in ws[1]]
+            if "证券代码" not in header or "最新公告日" not in header:
+                continue
+            code_col = header.index("证券代码") + 1
+            date_col = header.index("最新公告日") + 1
+            for row in range(2, ws.max_row + 1):
+                code_val = ws.cell(row, code_col).value
+                date_val = ws.cell(row, date_col).value
+                if not code_val or not date_val:
+                    continue
+                nc = normalize_stock_code(str(code_val).strip())
+                if not nc:
+                    continue
+                try:
+                    ts = pd.to_datetime(date_val, errors="coerce")
+                    if pd.isna(ts):
+                        continue
+                except Exception:
+                    continue
+                prev = baseline.get(nc)
+                if prev is None or ts > prev:
+                    ws.cell(row, date_col).fill = green_fill
 
         dirname = os.path.dirname(output_path)
         if dirname:
