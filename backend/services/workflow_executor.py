@@ -230,6 +230,77 @@ class WorkflowExecutor:
             logger.warning(f"[质押 public 同步] 失败（不影响主流程）: {e}")
             return False
 
+    _PLEDGE_FIXED_PREFIX_COLS = (
+        "证券代码", "证券简称", "最新公告日",
+        "百日新高", "站上20日线", "国央企", "所属板块",
+    )
+
+    def _reorder_pledge_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """按固定前 7 列 + 原始剩余列（源序、去重）返回新 DataFrame。
+        丢弃 来源 / 序号 列；缺失的前 7 列补空列；重复列名自动去重。
+        """
+        df = df.copy()
+        if df.columns.duplicated().any():
+            # 重复列追加 _1, _2 后缀
+            seen = {}
+            new_cols = []
+            for c in df.columns:
+                if c in seen:
+                    seen[c] += 1
+                    new_cols.append(f"{c}_{seen[c]}")
+                else:
+                    seen[c] = 0
+                    new_cols.append(c)
+            df.columns = new_cols
+        for col in self._PLEDGE_FIXED_PREFIX_COLS:
+            if col not in df.columns:
+                df[col] = ""
+        drop_cols = {"来源", "序号"}
+        prefix = list(self._PLEDGE_FIXED_PREFIX_COLS)
+        rest = [c for c in df.columns if c not in prefix and c not in drop_cols]
+        return df[prefix + rest]
+
+    def _finalize_pledge_output(
+        self,
+        df: pd.DataFrame,
+        date_str: str,
+        output_path: str,
+        public_dir: str,
+    ) -> None:
+        """质押最终输出：列重排 + 分 sheet。
+
+        Task 3：仅布局。Task 4/5 会在此方法中追加条件格式和绿标。
+        """
+        from openpyxl import Workbook
+
+        if df is None:
+            df = pd.DataFrame()
+
+        src_col = df["来源"] if "来源" in df.columns else pd.Series(["小盘"] * len(df), index=df.index)
+        df_big = df[src_col == "中大盘"].copy()
+        df_small = df[src_col != "中大盘"].copy()
+
+        df_big = self._reorder_pledge_columns(df_big)
+        df_small = self._reorder_pledge_columns(df_small)
+
+        wb = Workbook()
+        wb.remove(wb.active)
+        for sheet_name, sub_df in (
+            (f"中大盘{date_str}", df_big),
+            (f"小盘{date_str}", df_small),
+        ):
+            ws = wb.create_sheet(sheet_name)
+            header = ["序号"] + list(sub_df.columns)
+            ws.append(header)
+            for i, (_, row) in enumerate(sub_df.iterrows(), start=1):
+                ws.append([i] + [row[c] for c in sub_df.columns])
+
+        dirname = os.path.dirname(output_path)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+        wb.save(output_path)
+        logger.info(f"[质押 finalize] 已写出 {output_path}")
+
     def _detect_header_and_parse(self, df_all: pd.DataFrame, known_col_names: set, filepath: str) -> pd.DataFrame:
         """统一处理单行表头、双行表头、分组头三种情况。
 
