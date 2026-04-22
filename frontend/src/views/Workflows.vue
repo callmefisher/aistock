@@ -337,7 +337,7 @@
                 <el-form-item label="选择模式">
                   <el-radio-group v-model="step.config.use_fixed_columns" @change="onColumnModeChange(step)">
                     <el-radio :value="true">
-                      {{ form.workflow_type === '质押' ? '固定列（含来源+3预判列）' : '固定4列' }}
+                      {{ form.workflow_type === '质押' ? '保留全部原始列' : '固定4列' }}
                     </el-radio>
                     <el-radio :value="false">自定义列</el-radio>
                   </el-radio-group>
@@ -346,7 +346,7 @@
                 <template v-if="step.config.use_fixed_columns !== false">
                   <el-alert
                     v-if="form.workflow_type === '质押'"
-                    title="提取: 序号、证券代码、证券简称、最新公告日、来源、持续递增（一年内）、持续递减（一年内）、质押异动"
+                    title="质押类型：保留源表格全部原始列（含质押比例-*、股权质押公告日期-*、持续递增/递减等）；自动补齐 证券代码/证券简称/最新公告日/来源；最终输出时忽略源表的 百日新高/站上20日线/国央企/所属板块 这 4 类信息列（由后续 match 步骤权威填充）"
                     type="success" :closable="false"
                   />
                   <el-alert
@@ -373,7 +373,7 @@
                   </el-form-item>
                   <el-alert
                     v-if="form.workflow_type === '质押'"
-                    title="质押类型：即便未显式勾选，后端仍会自动保留已存在的「来源/持续递增/持续递减/质押异动」以免信息丢失"
+                    title="质押类型：此自定义配置仅作记录；后端实际行为是保留源表全部原始列（与“保留全部原始列”模式相同）"
                     type="info" :closable="false"
                   />
                   <el-alert

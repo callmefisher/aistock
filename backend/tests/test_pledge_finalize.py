@@ -144,6 +144,96 @@ class TestFinalizeLayout:
         assert header.count("重复列") == 1
         assert "重复列_1" in header
 
+    def test_drops_source_info_cols_exact(self, executor, tmp_path):
+        """源表带 4 类信息列（精确名）：不复制到剩余列，前 7 列由 match 值或空填充。"""
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"],
+            "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"],
+            "来源": ["中大盘"],
+            # 源表已带 4 类信息列（可能是用户历史数据残留）
+            "百日新高": ["源表值-不该保留"],
+            "站上20日线": ["源表值-不该保留"],
+            "国央企": ["源表值-不该保留"],
+            "所属板块": ["源表值-不该保留"],
+            "质押比例-20260420": [0.10],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        # 前 7 列仍在（固定），但对应单元格值应为空（源表值被丢弃，match 未跑）
+        for col_name in ("百日新高", "站上20日线", "国央企", "所属板块"):
+            idx = header.index(col_name) + 1
+            val = ws.cell(2, idx).value
+            assert val in (None, "", 0), f"{col_name} 应空，实际={val!r}"
+        # 剩余列中不应再出现这 4 列（及其 _N 副本）
+        rest_cols = header[8:]  # 序号 + 7 固定 = 前 8 项
+        for forbidden in ("百日新高", "站上20日线", "国央企", "所属板块"):
+            assert forbidden not in rest_cols
+        # 质押比例列应保留
+        assert "质押比例-20260420" in header
+
+    def test_drops_source_info_cols_synonyms(self, executor, tmp_path):
+        """源表带 4 类信息列的同义词变体：也应被丢弃，不出现在剩余列里。"""
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"],
+            "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"],
+            "来源": ["中大盘"],
+            # 同义词变体
+            "百日最高价": ["源值"],       # → 百日新高
+            "20日均线": ["源值"],         # → 站上20日线
+            "20日线": ["源值2"],          # → 站上20日线（另一个变体）
+            "国企": ["源值"],             # → 国央企
+            "一级板块": ["源值"],         # → 所属板块
+            "板块": ["源值2"],            # → 所属板块（另一个变体）
+            # 非 4 类信息列：应保留
+            "质押比例-20260420": [0.10],
+            "额外业务列": ["保留"],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        for forbidden in ("百日最高价", "20日均线", "20日线", "国企", "一级板块", "板块"):
+            assert forbidden not in header, f"{forbidden} 应被丢弃"
+        # 质押比例和额外业务列应保留
+        assert "质押比例-20260420" in header
+        assert "额外业务列" in header
+
+    def test_keeps_non_info_columns_intact(self, executor, tmp_path):
+        """源表大量业务列（非 4 类信息）：应全部保留在剩余列区域，按源序。"""
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"],
+            "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"],
+            "来源": ["中大盘"],
+            "股权质押公告日期-20260420": ["2026-04-20"],
+            "质押比例-20260118": [0.08],
+            "质押比例-20260304": [0.10],
+            "质押比例-20260420": [0.12],
+            "大股东名称": ["张三"],
+            "质押方": ["某证券"],
+            "备注": ["..."],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        for c in ("股权质押公告日期-20260420", "质押比例-20260118", "质押比例-20260304",
+                  "质押比例-20260420", "大股东名称", "质押方", "备注"):
+            assert c in header, f"{c} 应保留"
+
 
 RED_COLOR = "FFC00000"
 GREEN_COLOR = "FFC6EFCE"

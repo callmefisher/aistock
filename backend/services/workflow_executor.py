@@ -235,9 +235,19 @@ class WorkflowExecutor:
         "百日新高", "站上20日线", "国央企", "所属板块",
     )
 
+    # 源表里这 4 类信息列（含同义词变体）应被丢弃，由 match_* 步骤权威填充
+    _PLEDGE_INFO_COL_SYNONYMS = {
+        "百日新高": ("百日新高", "百日最高价", "百日最高"),
+        "站上20日线": ("站上20日线", "20日线", "20日均线", "20日均价"),
+        "国央企": ("国央企", "国企", "国有企业"),
+        "所属板块": ("所属板块", "一级板块", "板块"),
+    }
+
     def _reorder_pledge_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """按固定前 7 列 + 原始剩余列（源序、去重）返回新 DataFrame。
         丢弃 来源 / 序号 列；缺失的前 7 列补空列；重复列名自动去重。
+        源表里"百日新高/站上20日线/国央企/所属板块"的原始值及同义词变体一律丢弃，
+        由后续 match_* 步骤权威填充；match 未跑时留空列。
         """
         df = df.copy()
         if df.columns.duplicated().any():
@@ -252,6 +262,16 @@ class WorkflowExecutor:
                     seen[c] = 0
                     new_cols.append(c)
             df.columns = new_cols
+
+        # 丢弃源表的 4 类信息列（含同义词变体）——后续由 match_* 或空列填充
+        info_synonyms_set = set()
+        for canonical, variants in self._PLEDGE_INFO_COL_SYNONYMS.items():
+            for v in variants:
+                info_synonyms_set.add(v)
+        info_cols_present = [c for c in df.columns if c in info_synonyms_set]
+        if info_cols_present:
+            df = df.drop(columns=info_cols_present)
+
         for col in self._PLEDGE_FIXED_PREFIX_COLS:
             if col not in df.columns:
                 df[col] = ""
@@ -803,11 +823,20 @@ class WorkflowExecutor:
                                 + pledge_date_cols
                                 + preset_inc_cols + preset_dec_cols + preset_event_cols
                             )
-                            available_p = [c for c in target_cols_pledge if c in df_parsed.columns]
-                            if available_p:
-                                df_parsed = df_parsed[available_p]
+                            # 质押重构：保留源表全部原始列（含质押比例-*等），
+                            # 仅清理 pandas 产生的 Unnamed: 空列，避免噪音
+                            cols_to_keep = [
+                                c for c in df_parsed.columns
+                                if not (isinstance(c, str) and c.startswith("Unnamed"))
+                            ]
+                            if cols_to_keep and len(cols_to_keep) < len(df_parsed.columns):
+                                df_parsed = df_parsed[cols_to_keep]
+                            # target_cols_pledge 仅作为"必需列存在性"参考日志
+                            missing_required = [c for c in target_cols_pledge if c not in df_parsed.columns]
+                            if missing_required:
+                                logger.debug(f"质押 sheet 缺少部分标准列（不阻塞）: {filepath}#{sheet_name} 缺={missing_required}")
                             dfs.append(df_parsed)
-                            logger.info(f"读取 sheet: {filepath}#{sheet_name}, 行数: {len(df_parsed)}, 来源: {df_parsed['来源'].iloc[0] if len(df_parsed) else '-'}")
+                            logger.info(f"读取 sheet: {filepath}#{sheet_name}, 行数: {len(df_parsed)}, 列数: {len(df_parsed.columns)}, 来源: {df_parsed['来源'].iloc[0] if len(df_parsed) else '-'}")
                         continue
 
                     if is_public_file:
