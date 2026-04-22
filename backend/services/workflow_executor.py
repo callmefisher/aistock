@@ -295,6 +295,41 @@ class WorkflowExecutor:
             for i, (_, row) in enumerate(sub_df.iterrows(), start=1):
                 ws.append([i] + [row[c] for c in sub_df.columns])
 
+        # 质押比例相邻红绿条件格式
+        from openpyxl.styles import PatternFill
+        red_fill = PatternFill(start_color="FFC00000", end_color="FFC00000", fill_type="solid")
+        green_fill = PatternFill(start_color="FFC6EFCE", end_color="FFC6EFCE", fill_type="solid")
+
+        def _to_float(val):
+            if val is None:
+                return None
+            try:
+                s = str(val).strip().replace("%", "")
+                if s == "" or s.lower() == "nan":
+                    return None
+                return float(s)
+            except (ValueError, TypeError):
+                return None
+
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            header = [c.value for c in ws[1]]
+            ratio_col_idx = [i + 1 for i, h in enumerate(header) if str(h or "").startswith("质押比例")]
+            if len(ratio_col_idx) < 2:
+                continue
+            for row in range(2, ws.max_row + 1):
+                for k in range(1, len(ratio_col_idx)):
+                    right = ws.cell(row, ratio_col_idx[k])
+                    left = ws.cell(row, ratio_col_idx[k - 1])
+                    a = _to_float(right.value)
+                    b = _to_float(left.value)
+                    if a is None or b is None:
+                        continue
+                    if a > b:
+                        right.fill = red_fill
+                    elif a < b:
+                        right.fill = green_fill
+
         dirname = os.path.dirname(output_path)
         if dirname:
             os.makedirs(dirname, exist_ok=True)

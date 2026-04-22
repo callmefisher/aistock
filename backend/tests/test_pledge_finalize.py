@@ -143,3 +143,124 @@ class TestFinalizeLayout:
         # 两个"重复列"都保留（一个原名一个带后缀）
         assert header.count("重复列") == 1
         assert "重复列_1" in header
+
+
+RED_COLOR = "FFC00000"
+GREEN_COLOR = "FFC6EFCE"
+
+
+def _get_fill(ws, row, col):
+    c = ws.cell(row, col)
+    if c.fill and c.fill.start_color:
+        return (c.fill.start_color.rgb or "").upper()
+    return ""
+
+
+class TestPledgeRatioColoring:
+    def test_ratio_increase_red(self, executor, tmp_path):
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"], "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
+            "质押比例-20260118": [0.10],
+            "质押比例-20260304": [0.15],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        col_right = header.index("质押比例-20260304") + 1
+        assert RED_COLOR in _get_fill(ws, 2, col_right)
+
+    def test_ratio_decrease_green(self, executor, tmp_path):
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"], "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
+            "质押比例-20260118": [0.15],
+            "质押比例-20260304": [0.10],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        col_right = header.index("质押比例-20260304") + 1
+        assert GREEN_COLOR in _get_fill(ws, 2, col_right)
+
+    def test_ratio_equal_no_color(self, executor, tmp_path):
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"], "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
+            "质押比例-20260118": [0.10],
+            "质押比例-20260304": [0.10],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        col_right = header.index("质押比例-20260304") + 1
+        fill = _get_fill(ws, 2, col_right)
+        assert RED_COLOR not in fill and GREEN_COLOR not in fill
+
+    def test_ratio_either_empty_skipped(self, executor, tmp_path):
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ", "000002.SZ"],
+            "证券简称": ["A", "B"],
+            "最新公告日": ["2026-04-20", "2026-04-20"],
+            "来源": ["中大盘", "中大盘"],
+            "质押比例-20260118": [None, 0.10],
+            "质押比例-20260304": [0.15, None],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        col_right = header.index("质押比例-20260304") + 1
+        for row in (2, 3):
+            fill = _get_fill(ws, row, col_right)
+            assert RED_COLOR not in fill and GREEN_COLOR not in fill
+
+    def test_ratio_leftmost_never_colored(self, executor, tmp_path):
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"], "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
+            "质押比例-20260118": [0.10],
+            "质押比例-20260304": [0.15],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        col_left = header.index("质押比例-20260118") + 1
+        fill = _get_fill(ws, 2, col_left)
+        assert RED_COLOR not in fill and GREEN_COLOR not in fill
+
+    def test_ratio_with_percent_string(self, executor, tmp_path):
+        df = pd.DataFrame({
+            "证券代码": ["000001.SZ"], "证券简称": ["A"],
+            "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
+            "质押比例-20260118": ["10.0%"],
+            "质押比例-20260304": ["15.0%"],
+        })
+        output_path = tmp_path / "out.xlsx"
+        public_dir = tmp_path / "public"
+        public_dir.mkdir()
+        executor._finalize_pledge_output(df, "20260420", str(output_path), str(public_dir))
+        wb = load_workbook(str(output_path))
+        ws = wb["中大盘20260420"]
+        header = [c.value for c in ws[1]]
+        col_right = header.index("质押比例-20260304") + 1
+        assert RED_COLOR in _get_fill(ws, 2, col_right)
