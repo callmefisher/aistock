@@ -178,18 +178,21 @@ class WorkflowExecutor:
         return sorted(files)
 
     def _derive_pledge_source(self, file_name: str, sheet_name: str) -> str:
-        """质押类型来源识别：文件名前缀优先（中大盘 / 小盘），sheet 名前缀回退。
+        """质押类型来源识别：文件名含关键字优先（中大盘 / 小盘），sheet 名含关键字兜底。
 
-        命名约定：中大盘{date}.xlsx / 小盘{date}.xlsx；文件名不匹配时尝试 sheet 名。
+        真实命名形如 '质押和大宗交易 中大盘0421.xlsx' / '质押和大宗交易 小盘 0421.xlsx'，
+        关键字可能在字符串中部。必须先判"中大盘"（"小盘"是"中大盘"的子串，若先判小盘会误归）。
         """
         fn = str(file_name or "").strip()
-        if fn.startswith("中大盘"):
+        if "中大盘" in fn:
             return "中大盘"
-        if fn.startswith("小盘"):
+        if "小盘" in fn:
             return "小盘"
         sn = str(sheet_name or "").strip()
-        if sn.startswith("中大盘"):
+        if "中大盘" in sn:
             return "中大盘"
+        if "小盘" in sn:
+            return "小盘"
         return "小盘"
 
     def _maybe_flatten_pledge_multiheader(
@@ -418,11 +421,11 @@ class WorkflowExecutor:
                         wb = _lwb(fpath, read_only=True, data_only=True)
                         try:
                             for sheet_name in wb.sheetnames:
-                                # sheet 名前缀决定来源（中大盘YYYYMMDD / 小盘YYYYMMDD）
+                                # sheet 名含关键字决定来源（"中大盘" 必须先判，避免被 "小盘" 子串误归）
                                 sn = str(sheet_name or "").strip()
-                                if sn.startswith("中大盘"):
+                                if "中大盘" in sn:
                                     src_key = "中大盘"
-                                elif sn.startswith("小盘"):
+                                elif "小盘" in sn:
                                     src_key = "小盘"
                                 else:
                                     # 未知 sheet 名 → 两边都不记入，跳过
@@ -466,10 +469,10 @@ class WorkflowExecutor:
 
         # 2) stock_pools 表 — data 字段是 [{证券代码, 最新公告日, 来源?, ...}, ...]
         try:
-            from core.database import SessionLocal
+            from core.database import SyncSessionLocal
             from models.models import StockPool
             import json as _json
-            db = SessionLocal()
+            db = SyncSessionLocal()
             try:
                 rows = db.query(StockPool).filter(StockPool.is_active.is_(True)).all()
                 for pool in rows:
@@ -492,9 +495,9 @@ class WorkflowExecutor:
                         except Exception:
                             continue
                         src = str(rec.get("来源") or "").strip()
-                        if src.startswith("中大盘"):
+                        if "中大盘" in src:
                             _update("中大盘", ts)
-                        elif src.startswith("小盘"):
+                        elif "小盘" in src:
                             _update("小盘", ts)
                         else:
                             # 来源未知 → 两者都更新（保守，避免漏标）
@@ -1174,19 +1177,16 @@ class WorkflowExecutor:
             # skip_public_in_merge (涨幅排名): 跳过标准列提取、日期排序、序号处理，
             # 保留原始列结构供后续 ranking_sort 步骤使用
             if not self.resolver.config.get("skip_public_in_merge"):
-                keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
-                # 质押类型额外保留"来源"及 3 个预判列
                 if self.workflow_type == "质押":
-                    keep_columns += [
-                        "来源",
-                        "持续递增（一年内）",
-                        "持续递减（一年内）",
-                        "质押异动",
-                    ]
-                existing_columns = [col for col in keep_columns if col in merged_df.columns]
-                merged_df = merged_df[existing_columns]
-                # 去除重复列名（concat 不同格式文件 + rename 可能产生重复列）
-                merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
+                    # 质押类型：保留源表全部业务列（质押比例-*/股权质押公告日期-*/大宗交易/总市值 等），
+                    # 仅去除重复列名；4 类信息列已在 sheet 粒度提前过滤
+                    merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
+                else:
+                    keep_columns = ["序号", "证券代码", "证券简称", "最新公告日"]
+                    existing_columns = [col for col in keep_columns if col in merged_df.columns]
+                    merged_df = merged_df[existing_columns]
+                    # 去除重复列名（concat 不同格式文件 + rename 可能产生重复列）
+                    merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
 
                 date_col = None
                 for col in ["最新公告日", "公告日", "日期", "date"]:

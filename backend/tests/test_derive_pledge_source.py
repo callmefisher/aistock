@@ -29,10 +29,16 @@ class TestDerivePledgeSource:
     def test_none_args(self, executor):
         assert executor._derive_pledge_source(None, None) == "小盘"
 
-    def test_file_name_not_prefix_falls_back_to_sheet(self, executor):
-        """文件名含中大盘但不是前缀 → 不匹配，回退到 sheet 名。"""
-        assert executor._derive_pledge_source("2026中大盘汇总.xlsx", "Sheet1") == "小盘"
+    def test_file_name_substring_in_middle_matches(self, executor):
+        """文件名中部含"中大盘" → 匹配（真实命名 '质押和大宗交易 中大盘0421.xlsx'）。"""
+        assert executor._derive_pledge_source("质押和大宗交易 中大盘0421.xlsx", "Sheet1") == "中大盘"
+        assert executor._derive_pledge_source("2026中大盘汇总.xlsx", "Sheet1") == "中大盘"
 
-    def test_file_name_substring_xiaopan_not_matched(self, executor):
-        """文件名含小盘但不是前缀 → 不匹配，回退默认。"""
-        assert executor._derive_pledge_source("非小盘.xlsx", "Sheet1") == "小盘"
+    def test_file_name_substring_xiaopan_in_middle_matches(self, executor):
+        """文件名中部含"小盘" → 匹配。"""
+        assert executor._derive_pledge_source("质押和大宗交易 小盘 0421.xlsx", "Sheet1") == "小盘"
+
+    def test_priority_zhongdapan_over_xiaopan(self, executor):
+        """文件名同时含"中大盘"和"小盘" → 中大盘优先（因"小盘"是"中大盘"子串）。"""
+        # 实际上"中大盘"必然含"小盘"，所以任何含"中大盘"的都先被判中大盘
+        assert executor._derive_pledge_source("中大盘.xlsx", "Sheet1") == "中大盘"
