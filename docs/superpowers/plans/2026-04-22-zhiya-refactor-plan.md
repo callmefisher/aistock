@@ -1303,6 +1303,18 @@ cd /Users/xiayanji/qbox/aistock && ./deploy.sh build && ./deploy.sh restart
 - 打开统计分析页 → 站上20日均线趋势 → 图表加载正常
 - 若有"上传"按钮，尝试上传新的 `5质押20260422.xlsx`（workflow_type=质押(双列并排)），确认两条子类型记录入库
 
+- [ ] **Step 6.5: 第 2 次运行同一工作流验证（重要幂等性 + baseline 回读测试）**
+
+这一步检测"上次运行写入 public 的文件能否被下次运行正确读作 baseline，以及重复运行不产生数据合并/绿标异常"。
+
+1. 不改任何输入文件，再次在 UI 上触发同一个 `20260422` 质押工作流
+2. 等待执行完毕后，重新打开 `data/excel/质押/20260422/5质押20260422.xlsx`：
+   - [ ] 两 sheet 依然存在，数据行数与第 1 次相同（无合并重复、无丢失）
+   - [ ] **原来首次出现绿标的最新公告日单元格现在应该不再绿**（因为第 1 次写 public 后，这些公告日已成为 baseline）
+   - [ ] 质押比例红/绿对比与第 1 次一致（着色逻辑不依赖 baseline）
+   - [ ] `data/excel/质押/public/` 仍然只有 `5质押20260422.xlsx` 一个文件（未叠加）
+3. 若某行绿标仍在 → 说明 baseline 回读逻辑有 bug（可能 `_load_pledge_baseline` 没扫到公共文件或日期解析失败），排查 logs `[质押 baseline]` warning
+
 - [ ] **Step 7: 更新 codebase.md / CLAUDE.md 经验教训**
 
 在 `CLAUDE.md` 的 "经验教训" 末尾追加：
