@@ -16,6 +16,9 @@
 3. 双行表头子列名可能重复（如受让方/转让方各有"名称"列），重映射后必须去重列名（追加 `_1` 后缀），否则 `pd.concat` 报 Reindexing 错误。
 4. Mann-Kendall 在 n=4 严格单调时 p≈0.089 > 0.05 会漏判（002768.SZ 实测：4 点递减序列）。`_detect_trend_mk` 必须增加"小样本严格单调兜底"：3≤n<10 且 diffs 全同向 → 直接判 up/down。
 5. 质押数据源：东方财富 `datacenter-web/api/data/v1/get` 用 `reportName=RPTA_APP_ACCUMDETAILS + filter=(SECURITY_CODE="xxx")` 可单股拉全量历史（含 `ACCUM_PLEDGE_TSR` 本次/前次累计质押比例），0.18s 返回。AkShare `stock_gpzy_pledge_ratio_detail_em` 拉全市场要 3.5 分钟——不适合单股查询，只作降级用（且缺少 ACCUM/PRE_ACCUM 字段）。
+6. 质押工作流最终输出样式（质押比例红绿、最新公告日首次出现绿标）必须仅在 `_finalize_pledge_output` 一次性施加——中间步骤（match_* 等）的 `to_excel` 会清除 openpyxl 样式，早施加的样式会消失。finalize 由 `api/workflows.py::run_workflow` 循环末尾的 `executor.finalize_pledge_if_needed(last_output_file, date_str)` 统一触发，`_match_sector` / `_pledge_trend_analysis` 末尾**不再**调用 `_sync_pledge_final_to_public`（否则双写）。
+7. 质押来源识别：文件名**前缀**优先（`中大盘{date}.xlsx` / `小盘{date}.xlsx`），sheet 名前缀兜底。用 `startswith` 而非 `in`——`"2026小盘汇总.xlsx"` 这类含子串但非前缀的不应误判。`_derive_pledge_source(file_name, sheet_name)` 签名两者必须都接。
+8. 质押首次出现绿标基准：`_load_pledge_baseline(public_dir)` 合并两源——`/质押/public/` 目录下所有 xlsx（遍历每 sheet，按列名抽 `证券代码` + `最新公告日` / `股权质押公告日期*`）+ `stock_pools` 表 `is_active=True` 记录的 `data` JSON（列表形如 `[{证券代码, 最新公告日, ...}]`）。判定时只看 `证券代码` 键（不分 sheet/来源），若新行 `最新公告日 > baseline` 或 code 未见过 → 绿标。
 
 ## 命令
 
