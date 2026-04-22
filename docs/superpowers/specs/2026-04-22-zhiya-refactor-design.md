@@ -208,6 +208,14 @@ def _maybe_finalize_pledge(self, context, current_step_name):
 | `match_*` 读取更宽的 DataFrame | 已核实为列追加逻辑，无白名单假设，兼容 |
 | `来源` 字段缺失 | 按 sheet 名回退；仍无 → 默认 "小盘" |
 
+### 6.1 对"站上20日均线趋势"统计分析的影响
+
+**结论**：不影响图表与导出（它们完全依赖 DB 表 `trend_statistics`，不读质押 xlsx 文件结构）。
+
+**唯一接触点**：`backend/services/trend_service.py` 的 `_parse_pledge_side_by_side`（L289-298）会在用户上传质押 xlsx 到"趋势统计"时解析双 sheet。新设计的 sheet 命名为 `中大盘{date}` / `小盘{date}`，该解析器**以 sheet 名前缀 "中大盘" / "小盘" 识别**，新命名兼容，无需改动。
+
+**实施约束**：Sheet1 命名必须以 `中大盘` 开头，Sheet2 必须以 `小盘` 开头（即使当期无数据也沿用此命名，保持解析器兼容）。
+
 ## 7. 测试点（TDD 阶段覆盖）
 
 **单元测试**：
