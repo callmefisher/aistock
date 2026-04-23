@@ -207,6 +207,62 @@ async def get_workflow(
     return workflow
 
 
+class BulkSetDateRequest(BaseModel):
+    date_str: str
+
+
+@router.put("/bulk-set-date")
+async def bulk_set_date(
+    payload: BulkSetDateRequest,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user),
+):
+    """批量同步所有工作流的数据日期 (Workflow.date_str + steps[].config.date_str)"""
+    date_str = (payload.date_str or "").strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        raise HTTPException(status_code=422, detail="date_str 必须为 YYYY-MM-DD 格式")
+
+    result = await db.execute(select(Workflow))
+    workflows = result.scalars().all()
+    updated = 0
+
+    for wf in workflows:
+        changed = False
+        if wf.date_str != date_str:
+            wf.date_str = date_str
+            changed = True
+
+        steps = wf.steps or []
+        new_steps = []
+        steps_changed = False
+        for s in steps:
+            if isinstance(s, dict):
+                s_copy = copy.deepcopy(s)
+                cfg = s_copy.get("config") or {}
+                if cfg.get("date_str") != date_str:
+                    cfg["date_str"] = date_str
+                    s_copy["config"] = cfg
+                    steps_changed = True
+                new_steps.append(s_copy)
+            else:
+                new_steps.append(s)
+        if steps_changed:
+            wf.steps = new_steps
+            changed = True
+
+        if changed:
+            updated += 1
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"[bulk-set-date] commit 失败: {e}")
+        raise HTTPException(status_code=500, detail=f"提交失败: {str(e)}")
+
+    return {"success": True, "updated_count": updated}
+
+
 @router.put("/{workflow_id}", response_model=WorkflowResponse)
 async def update_workflow(
     workflow_id: int,
