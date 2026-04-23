@@ -53,11 +53,23 @@ function buildTargetDir(workflow_type, sub_dir, date_str) {
 }
 
 export function resolveTarget(filename, date_str = '{date}') {
+  if (!filename) {
+    return {
+      filename,
+      workflow_type: null,
+      step_type: null,
+      sub_dir: null,
+      target_dir: '',
+      status: 'unresolved',
+      reason: '文件名为空',
+    }
+  }
   const base = stripExt(filename)
 
   // 优先级 1: 子目录关键字
   for (const { keywords, step_type, sub_dir } of SUBDIR_KEYWORDS) {
-    if (keywords.some(k => base.includes(k))) {
+    const matchedKeyword = keywords.find(k => base.includes(k))
+    if (matchedKeyword) {
       return {
         filename,
         workflow_type: '并购重组',
@@ -65,7 +77,7 @@ export function resolveTarget(filename, date_str = '{date}') {
         sub_dir,
         target_dir: buildTargetDir('并购重组', sub_dir, date_str),
         status: 'resolved',
-        reason: `命中关键字 "${keywords[0]}"`,
+        reason: `命中关键字 "${matchedKeyword}"`,
       }
     }
   }

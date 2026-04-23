@@ -110,3 +110,44 @@ describe('resolveTarget - 目标路径展示字符串', () => {
     expect(r.target_dir).toBe('data/excel/2026-04-23/百日新高/')
   })
 })
+
+describe('resolveTarget - 无效输入', () => {
+  it('null 不抛异常，返回 unresolved', () => {
+    expect(() => resolveTarget(null)).not.toThrow()
+    expect(resolveTarget(null).status).toBe('unresolved')
+  })
+  it('undefined 不抛异常，返回 unresolved', () => {
+    expect(() => resolveTarget(undefined)).not.toThrow()
+    expect(resolveTarget(undefined).status).toBe('unresolved')
+  })
+  it('空字符串 → unresolved', () => {
+    expect(resolveTarget('').status).toBe('unresolved')
+  })
+})
+
+describe('isAcceptableFile - 无效输入', () => {
+  it('null/undefined/空字符串 → false', () => {
+    expect(isAcceptableFile(null)).toBe(false)
+    expect(isAcceptableFile(undefined)).toBe(false)
+    expect(isAcceptableFile('')).toBe(false)
+  })
+})
+
+describe('resolveTarget - synonym reason 准确性', () => {
+  it('"20日线" 匹配时 reason 字段准确反映命中关键字', () => {
+    const r = resolveTarget('站上20日线0422.xlsx')
+    expect(r.reason).toContain('20日线')
+    expect(r.reason).not.toContain('20日均线')
+  })
+})
+
+describe('target_dir 映射完整性', () => {
+  const prefixes = ['1', '2', '3', '4', '5', '6', '8', '9']
+  prefixes.forEach(p => {
+    it(`${p} 开头有对应的 target_dir 映射`, () => {
+      const r = resolveTarget(`${p}test0422.xlsx`, '2026-04-23')
+      expect(r.status).toBe('resolved')
+      expect(r.target_dir).toMatch(/^data\/excel\/(.+\/)?2026-04-23\/$/)
+    })
+  })
+})
