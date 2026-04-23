@@ -484,8 +484,9 @@ const loadFull = async () => {
 const exportExcel = async () => {
   exporting.value = true
   try {
-    // 涨幅排名使用后端格式化下载
-    if (previewData.value?.workflow_type === '涨幅排名') {
+    // 涨幅排名 / 质押：使用后端格式化下载（含双 sheet / 条件格式 / 列宽 / 筛选）
+    const wt = previewData.value?.workflow_type
+    if (wt === '涨幅排名' || wt === '质押') {
       await api.download(`/statistics/results/${currentResultId.value}/download`)
       ElMessage.success('已导出（含格式化）')
       return
