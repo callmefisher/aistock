@@ -20,7 +20,34 @@ async def save_workflow_result(
 ) -> bool:
     """读取最终 Excel，压缩为 JSON 写入 DB。"""
     try:
-        df = pd.read_excel(file_path)
+        # 质押类型：final 文件是双 sheet（中大盘{date} / 小盘{date}），需合并读入，
+        # 并根据 sheet 名注入"来源"列（供条件交集区分"质押中大盘"/"质押小盘"）
+        if workflow_type == "质押":
+            try:
+                sheet_map = pd.read_excel(file_path, sheet_name=None)
+            except Exception as e:
+                logger.warning(f"质押：一次性读多 sheet 失败 ({e})，降级为单 sheet 读取")
+                sheet_map = {"_default": pd.read_excel(file_path)}
+            parts = []
+            for sn, sub_df in (sheet_map or {}).items():
+                if sub_df is None or len(sub_df) == 0:
+                    continue
+                sn_str = str(sn or "").strip()
+                if "中大盘" in sn_str:
+                    src = "中大盘"
+                elif "小盘" in sn_str:
+                    src = "小盘"
+                else:
+                    src = ""  # 未知 sheet → 留空；条件交集会兜底
+                sub_df = sub_df.copy()
+                sub_df["来源"] = src
+                parts.append(sub_df)
+            if parts:
+                df = pd.concat(parts, ignore_index=True)
+            else:
+                df = pd.read_excel(file_path)
+        else:
+            df = pd.read_excel(file_path)
         # 列名可能含 datetime 对象（如涨幅排名的日期表头），转为 "X月X日" 格式
         from datetime import datetime as dt_datetime
         def _normalize_col(c):
