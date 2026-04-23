@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveTarget, isAcceptableFile } from '@/utils/quickUploadRules'
+import { resolveTarget, isAcceptableFile, isSilentlyIgnored } from '@/utils/quickUploadRules'
 
 describe('resolveTarget - 子目录关键字（优先级 1）', () => {
   it('含"百日新高" → 并购重组/match_high_price', () => {
@@ -149,5 +149,33 @@ describe('target_dir 映射完整性', () => {
       expect(r.status).toBe('resolved')
       expect(r.target_dir).toMatch(/^data\/excel\/(.+\/)?2026-04-23\/$/)
     })
+  })
+})
+
+describe('isSilentlyIgnored - 应静默忽略的文件', () => {
+  it('.DS_Store → 忽略', () => {
+    expect(isSilentlyIgnored('.DS_Store')).toBe(true)
+  })
+  it('其它 . 开头文件 → 忽略', () => {
+    expect(isSilentlyIgnored('.hidden.xlsx')).toBe(true)
+    expect(isSilentlyIgnored('.gitignore')).toBe(true)
+  })
+  it('Office 锁文件 (~$ 前缀) → 忽略', () => {
+    expect(isSilentlyIgnored('~$temp.xlsx')).toBe(true)
+  })
+  it('Thumbs.db / desktop.ini 大小写容忍 → 忽略', () => {
+    expect(isSilentlyIgnored('Thumbs.db')).toBe(true)
+    expect(isSilentlyIgnored('thumbs.db')).toBe(true)
+    expect(isSilentlyIgnored('desktop.ini')).toBe(true)
+  })
+  it('普通文件 → 不忽略', () => {
+    expect(isSilentlyIgnored('abc.xlsx')).toBe(false)
+    expect(isSilentlyIgnored('readme.txt')).toBe(false)
+    expect(isSilentlyIgnored('国央企0422.xlsx')).toBe(false)
+  })
+  it('空/null/undefined → 忽略', () => {
+    expect(isSilentlyIgnored('')).toBe(true)
+    expect(isSilentlyIgnored(null)).toBe(true)
+    expect(isSilentlyIgnored(undefined)).toBe(true)
   })
 })

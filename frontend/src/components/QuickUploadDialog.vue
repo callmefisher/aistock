@@ -100,7 +100,7 @@
 import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
-import { resolveTarget, isAcceptableFile } from '@/utils/quickUploadRules'
+import { resolveTarget, isAcceptableFile, isSilentlyIgnored } from '@/utils/quickUploadRules'
 
 const props = defineProps({ modelValue: Boolean })
 const emit = defineEmits(['update:modelValue', 'finish'])
@@ -165,9 +165,11 @@ const uploadStatus = computed(() => {
 
 function onFilesPicked(e) {
   const all = Array.from(e.target.files || [])
-  const accepted = all.filter(f => isAcceptableFile(f.name))
+  // Drop hidden/OS/Office-lock files first — they never count as "非 Excel"
+  const visible = all.filter(f => !isSilentlyIgnored(f.name))
+  const accepted = visible.filter(f => isAcceptableFile(f.name))
   acceptedFiles.value = accepted
-  skippedCount.value = all.length - accepted.length
+  skippedCount.value = visible.length - accepted.length
 }
 
 async function goPreview() {

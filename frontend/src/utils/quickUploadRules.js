@@ -1,9 +1,20 @@
 const ACCEPT_EXTS = ['.xlsx', '.xls']
 
+// Files that should be silently ignored (hidden, OS metadata, Office lock files).
+// These are filtered out BEFORE counting, so the user sees a clean "已选 N 个 / 过滤 K 个非 Excel"
+// without .DS_Store / Thumbs.db / ~$temp inflating the "过滤" count.
+export function isSilentlyIgnored(filename) {
+  if (!filename) return true
+  if (filename.startsWith('.')) return true
+  if (filename.startsWith('~$')) return true
+  const lower = filename.toLowerCase()
+  if (lower === 'thumbs.db' || lower === 'desktop.ini') return true
+  return false
+}
+
 export function isAcceptableFile(filename) {
   if (!filename) return false
-  if (filename.startsWith('.')) return false
-  if (filename.startsWith('~$')) return false
+  if (isSilentlyIgnored(filename)) return false
   const lower = filename.toLowerCase()
   return ACCEPT_EXTS.some(ext => lower.endsWith(ext))
 }
