@@ -220,7 +220,7 @@ async def bulk_set_date(
     """批量同步所有工作流的数据日期 (Workflow.date_str + steps[].config.date_str)"""
     date_str = (payload.date_str or "").strip()
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
-        raise HTTPException(status_code=422, detail="date_str 必须为 YYYY-MM-DD 格式")
+        raise HTTPException(status_code=400, detail="date_str 必须为 YYYY-MM-DD 格式")
 
     result = await db.execute(select(Workflow))
     workflows = result.scalars().all()

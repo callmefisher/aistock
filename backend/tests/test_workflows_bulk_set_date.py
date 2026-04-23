@@ -58,7 +58,7 @@ class TestBulkSetDate:
                 headers=auth_headers,
                 json={"date_str": bad},
             )
-            assert response.status_code in (400, 422), f"{bad!r} 应被拒绝，实际 {response.status_code}"
+            assert response.status_code == 400, f"{bad!r} 应被拒绝，实际 {response.status_code}"
 
     @pytest.mark.asyncio
     async def test_requires_auth(self, client: AsyncClient):
