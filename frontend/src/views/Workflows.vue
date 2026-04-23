@@ -5,6 +5,10 @@
         <div class="card-header">
           <span>工作流列表</span>
           <div class="header-actions">
+            <el-button type="success" @click="openQuickUpload">
+              <el-icon><Upload /></el-icon>
+              快捷批量上传
+            </el-button>
             <el-button type="warning" @click="handleBatchRun" :disabled="selectedWorkflows.length === 0 || batchExecuting">
               <el-icon><Promotion /></el-icon>
               一键并行执行 ({{ selectedWorkflows.length }})
@@ -1154,6 +1158,8 @@
         </div>
       </div>
     </el-drawer>
+
+    <QuickUploadDialog v-model="quickUploadVisible" @finish="onQuickUploadFinish" />
   </div>
 </template>
 
@@ -1162,6 +1168,7 @@ import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus } from '@element-plus/icons-vue'
+import QuickUploadDialog from '@/components/QuickUploadDialog.vue'
 
 const formatBeijingTime = (dateStr) => {
   if (!dateStr) return '-'
@@ -2413,6 +2420,42 @@ const stopBatchTimer = () => {
   if (batchTimerInterval.value) {
     clearInterval(batchTimerInterval.value)
     batchTimerInterval.value = null
+  }
+}
+
+const quickUploadVisible = ref(false)
+
+const openQuickUpload = () => {
+  quickUploadVisible.value = true
+}
+
+// After quick-upload finishes: refresh workflows, auto-select executable ones,
+// trigger the existing batch-run confirmation flow.
+// (AGGREGATION_TYPES is declared above and reused here.)
+
+const onQuickUploadFinish = async (dateStr) => {
+  // 1. Reload workflow list (dates already synced by backend)
+  await fetchWorkflows()
+
+  // 2. Wait for el-table to render new data
+  await nextTick()
+
+  // 3. Select all non-aggregation, non-export-only workflows in the table
+  const tableRef = workflowTableRef.value
+  if (tableRef) {
+    tableRef.clearSelection()
+    const toSelect = workflows.value.filter(w => !AGGREGATION_TYPES.includes(w.workflow_type))
+    for (const row of toSelect) {
+      tableRef.toggleRowSelection(row, true)
+    }
+  }
+
+  // 4. Let selection-change event fire and update selectedWorkflows, then trigger batch-run
+  await nextTick()
+  if (selectedWorkflows.value.length > 0) {
+    await handleBatchRun()
+  } else {
+    ElMessage.info('没有可执行的工作流（已排除聚合类/导出类）')
   }
 }
 
