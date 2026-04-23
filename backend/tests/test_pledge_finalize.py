@@ -284,7 +284,7 @@ class TestFinalizeLayout:
                 assert cell.alignment.horizontal == "center", f"{sn} 未居中: {cell.alignment.horizontal}"
 
 
-RED_COLOR = "FFC00000"
+RED_COLOR = "FFFFA7A7"
 GREEN_COLOR = "FFC6EFCE"
 NEW_ROW_RED = "FFFFC7CE"  # 最新公告日"新行"浅红标记
 
