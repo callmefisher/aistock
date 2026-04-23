@@ -7,6 +7,7 @@ from models.models import User
 from services import workflow_result_service as svc
 import tempfile
 import os
+import json
 
 router = APIRouter()
 
@@ -132,36 +133,49 @@ async def download_result(
 
         shutil.copy2(src_path, tmp_path)
 
-        # 用 stock_pools 表最大公告日重做"最新公告日"红标
+        # baseline：查 workflow_results 表中质押类型、date_str < 当前结果 date_str 的
+        # 所有 final 记录，解压 data_compressed，取所有行"最新公告日"的最大值。
+        # stock_pools 表不参与（它是条件交集的选股池，不含纯质押历史）。
+        import zlib
+        from sqlalchemy import text
+        max_ts = None
         try:
             from core.database import SyncSessionLocal
-            from models.models import StockPool
-            import json as _json
-            max_ts = None
+            current_date_str = result.get('date_str')
             db = SyncSessionLocal()
             try:
-                rows = db.query(StockPool).filter(StockPool.is_active.is_(True)).all()
-                for pool in rows:
-                    raw = pool.data
-                    if not raw:
-                        continue
-                    records = raw if isinstance(raw, list) else _json.loads(raw) if isinstance(raw, str) else []
-                    if not isinstance(records, list):
-                        continue
-                    for rec in records:
-                        if not isinstance(rec, dict):
-                            continue
-                        dv = rec.get("最新公告日")
-                        if not dv:
+                if current_date_str:
+                    rows = db.execute(text("""
+                        SELECT data_compressed FROM workflow_results
+                        WHERE workflow_type = :wt
+                          AND step_type = 'final'
+                          AND date_str < :dt
+                        ORDER BY date_str DESC
+                    """), {"wt": "质押", "dt": current_date_str}).fetchall()
+                    for row in rows:
+                        raw = row[0]
+                        if not raw:
                             continue
                         try:
-                            ts = pd.to_datetime(dv, errors="coerce")
-                            if pd.isna(ts):
-                                continue
+                            records = json.loads(zlib.decompress(raw).decode("utf-8"))
                         except Exception:
                             continue
-                        if max_ts is None or ts > max_ts:
-                            max_ts = ts
+                        if not isinstance(records, list):
+                            continue
+                        for rec in records:
+                            if not isinstance(rec, dict):
+                                continue
+                            dv = rec.get("最新公告日")
+                            if not dv:
+                                continue
+                            try:
+                                ts = pd.to_datetime(dv, errors="coerce")
+                                if pd.isna(ts):
+                                    continue
+                            except Exception:
+                                continue
+                            if max_ts is None or ts > max_ts:
+                                max_ts = ts
             finally:
                 db.close()
         except Exception:
