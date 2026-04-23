@@ -22,6 +22,9 @@
 7. 质押来源识别：文件名**前缀**优先（`中大盘{date}.xlsx` / `小盘{date}.xlsx`），sheet 名前缀兜底。用 `startswith` 而非 `in`——`"2026小盘汇总.xlsx"` 这类含子串但非前缀的不应误判。`_derive_pledge_source(file_name, sheet_name)` 签名两者必须都接。
 8. 质押首次出现绿标基准：`_load_pledge_baseline(public_dir)` 合并两源——`/质押/public/` 目录下所有 xlsx（遍历每 sheet，按列名抽 `证券代码` + `最新公告日` / `股权质押公告日期*`）+ `stock_pools` 表 `is_active=True` 记录的 `data` JSON（列表形如 `[{证券代码, 最新公告日, ...}]`）。判定时只看 `证券代码` 键（不分 sheet/来源），若新行 `最新公告日 > baseline` 或 code 未见过 → 绿标。
 9. 百日新高总趋势行数统计：源文件最后一行可能是水印文字（如"数据来源于：i问财网站（iwencai.com）"）被误计入。`count_high_price_rows` 必须按正则 `^\d{6}(\.[A-Za-z]{2,4})?$` 过滤代码格式，否则 2026-04-22 实测会多计 1 行（288 vs 正确 287）。识别列名兼容"证券代码/股票代码/代码"三种，归一后（去换行/空白/大小写）比对。
+10. 快捷批量上传（前端）：`resolveTarget(filename)` 匹配优先级为"子目录关键字 > 数字前缀"。含"百日新高/20日均线/国央企/板块"的文件都归并购重组的子目录（即 `data/excel/{date}/百日新高/` 等），不管数字前缀。未识别文件软校验跳过，不阻断。`POST /workflows/upload-step-file/` 的 `workflow_id` 允许传 `0`，仅按 `workflow_type + date_str` 落盘。
+11. 批量同步日期接口 `PUT /workflows/bulk-set-date`：同时更新 `Workflow.date_str` 和每个 step 的 `config.date_str`（后者通过 `copy.deepcopy` 构建 `new_steps` 后整体赋值 `wf.steps = new_steps`，避免 SQLAlchemy JSON in-place 修改失效）。
+12. FastAPI 路由顺序：literal-path 端点（如 `/bulk-set-date`）必须注册在参数化路径（`/{workflow_id}` 把 `bulk-set-date` 当 int 解析）之前，否则会被 422 拦截。
 
 ## 命令
 
