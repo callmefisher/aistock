@@ -398,13 +398,14 @@ class WorkflowExecutor:
         return df[prefix + rest]
 
     def _load_pledge_baseline(self, public_dir: str) -> Dict[str, Any]:
-        """读 public 目录所有 xlsx + stock_pools 表，返回**按来源分的**最大日期基准。
+        """读 public 目录所有 xlsx，返回**按来源分的**最大日期基准（运行时 finalize 使用）。
 
         返回结构：{"中大盘": Timestamp or None, "小盘": Timestamp or None}
-        规则：public xlsx 中 sheet 名以"中大盘"开头 → 贡献"中大盘"基准；以"小盘"开头 → 贡献"小盘"基准。
-        stock_pools 表的 data 记录按其"来源"字段分类；无"来源"时归入两者（不确定分类，做保守 fallback）。
-        新文件某行 `最新公告日 > 对应来源的 baseline` → 绿标。
+        规则：public xlsx 中 sheet 名含"中大盘" → 贡献"中大盘"基准；含"小盘" → 贡献"小盘"基准。
+        新文件某行 `最新公告日 > 对应来源的 baseline` → 红标；baseline 为空 → 不标。
         失败时对应 key 返回 None。
+
+        注意：stock_pools 表**不**在此读取；它只用于下载导出时的独立红标（见 statistics_api）。
         """
         baseline: Dict[str, Any] = {"中大盘": None, "小盘": None}
 
@@ -415,7 +416,7 @@ class WorkflowExecutor:
             if cur is None or ts > cur:
                 baseline[source_key] = ts
 
-        # 1) public 目录下所有 xlsx
+        # 读 public 目录下所有 xlsx
         try:
             if public_dir and os.path.isdir(public_dir):
                 from openpyxl import load_workbook as _lwb
@@ -472,47 +473,6 @@ class WorkflowExecutor:
                         continue
         except Exception as e:
             logger.warning(f"[质押 baseline] 扫描 public 目录失败: {e}")
-
-        # 2) stock_pools 表 — data 字段是 [{证券代码, 最新公告日, 来源?, ...}, ...]
-        try:
-            from core.database import SyncSessionLocal
-            from models.models import StockPool
-            import json as _json
-            db = SyncSessionLocal()
-            try:
-                rows = db.query(StockPool).filter(StockPool.is_active.is_(True)).all()
-                for pool in rows:
-                    raw = pool.data
-                    if not raw:
-                        continue
-                    records = raw if isinstance(raw, list) else _json.loads(raw) if isinstance(raw, str) else []
-                    if not isinstance(records, list):
-                        continue
-                    for rec in records:
-                        if not isinstance(rec, dict):
-                            continue
-                        dv = rec.get("最新公告日")
-                        if not dv:
-                            continue
-                        try:
-                            ts = pd.to_datetime(dv, errors="coerce")
-                            if pd.isna(ts):
-                                continue
-                        except Exception:
-                            continue
-                        src = str(rec.get("来源") or "").strip()
-                        if "中大盘" in src:
-                            _update("中大盘", ts)
-                        elif "小盘" in src:
-                            _update("小盘", ts)
-                        else:
-                            # 来源未知 → 两者都更新（保守，避免漏标）
-                            _update("中大盘", ts)
-                            _update("小盘", ts)
-            finally:
-                db.close()
-        except Exception as e:
-            logger.warning(f"[质押 baseline] 读取 stock_pools 失败: {e}")
 
         logger.info(f"[质押 baseline] 中大盘={baseline['中大盘']}, 小盘={baseline['小盘']}")
         return baseline
@@ -627,7 +587,9 @@ class WorkflowExecutor:
                     elif a < b:
                         right.fill = green_fill
 
-        # 最新公告日首次出现绿标（按 sheet 分基准：中大盘 sheet 用中大盘 baseline；小盘亦然）
+        # 最新公告日首次出现红标（按 sheet 分基准：中大盘 sheet 用中大盘 baseline；小盘亦然）
+        # 颜色：浅红（与质押比例变大的深红区分），同"新行增"语义
+        new_row_red_fill = PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid")
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
             header = [c.value for c in ws[1]]
@@ -652,8 +614,8 @@ class WorkflowExecutor:
                         continue
                 except Exception:
                     continue
-                if sheet_baseline is None or ts > sheet_baseline:
-                    ws.cell(row, date_col).fill = green_fill
+                if sheet_baseline is not None and ts > sheet_baseline:
+                    ws.cell(row, date_col).fill = new_row_red_fill
 
         dirname = os.path.dirname(output_path)
         if dirname:
