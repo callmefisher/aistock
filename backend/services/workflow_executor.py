@@ -2512,7 +2512,7 @@ class WorkflowExecutor:
         from openpyxl.styles import PatternFill, Font, Alignment as openpyxl_Alignment
 
         date_str = config.get("date_str") or date_str or self.today
-        logger.info(f"[涨幅排名] 开始执行: date={date_str}")
+        logger.info(f"[涨幅排名] 开始执行: date={date_str} [CODE_VERSION=2026-04-23-fix2]")
 
         # 1. 获取输入数据
         df = input_data
@@ -2522,6 +2522,18 @@ class WorkflowExecutor:
         cols = df.columns.tolist()
         if len(cols) < 2:
             return {"success": False, "message": f"输入数据至少需要2列，当前只有{len(cols)}列"}
+
+        # 诊断：打印 input_data 的每个列名（完整字符串含换行）、shape、前 3 行
+        logger.info(f"[涨幅排名][诊断] input_data shape={df.shape}, columns 数量={len(cols)}")
+        for i, c in enumerate(cols[:8]):
+            logger.info(f"[涨幅排名][诊断] col[{i}] repr={c!r}")
+        # 前 3 行每列的值
+        try:
+            for i in range(min(3, len(df))):
+                vals = [df.iloc[i, j] for j in range(min(len(cols), 5))]
+                logger.info(f"[涨幅排名][诊断] row[{i}] = {vals!r}")
+        except Exception as e:
+            logger.info(f"[涨幅排名][诊断] 打印前几行失败: {e}")
 
         sector_col = cols[0]  # 板块名称（第1列）
 
@@ -2568,6 +2580,7 @@ class WorkflowExecutor:
             logger.info(f"[涨幅排名] 未探测到「本年初」或「本月初」列，使用原输出布局")
 
         # 2. 提取板块名称和排序列，过滤空行，转数值排序
+        logger.info(f"[涨幅排名][诊断] 识别结果: 今日列={today_col_raw!r}, 年初列={ytd_col_raw!r}, 月初列={mtd_col_raw!r}, use_extended={use_extended}")
         work_df = df[[sector_col, sort_col_raw]].copy()
         work_df = work_df.rename(columns={sort_col_raw: sort_col_display})
         sort_col = sort_col_display
@@ -2580,6 +2593,11 @@ class WorkflowExecutor:
         if use_extended:
             work_df[YTD_COL] = df[ytd_col_raw].values
             work_df[MTD_COL] = df[mtd_col_raw].values
+            # 诊断：抽列后前 3 行
+            try:
+                logger.info(f"[涨幅排名][诊断] 抽列后 work_df 前3行 年初/月初/今日: {work_df[[YTD_COL, MTD_COL, sort_col]].head(3).values.tolist()}")
+            except Exception as e:
+                logger.info(f"[涨幅排名][诊断] 抽列后打印失败: {e}")
 
         # 过滤板块名称为空/NaN/含"妙想Choice"的行
         sector_str = work_df[sector_col].astype(str).str.strip()
@@ -2613,8 +2631,10 @@ class WorkflowExecutor:
                 result.loc[mask] = numeric.loc[mask].round(2)
                 return result
 
+            logger.info(f"[涨幅排名][诊断] round2 前 年初sample={work_df[YTD_COL].head(3).tolist()}, 月初sample={work_df[MTD_COL].head(3).tolist()}")
             work_df[YTD_COL] = _round2_col(work_df[YTD_COL])
             work_df[MTD_COL] = _round2_col(work_df[MTD_COL])
+            logger.info(f"[涨幅排名][诊断] round2 后 年初sample={work_df[YTD_COL].head(3).tolist()}, 月初sample={work_df[MTD_COL].head(3).tolist()}")
 
         # 2c. 扩展布局：为 YTD / MTD 计算降序排名（大的排前，非数字按出现顺序占末尾固定位）
         if use_extended:
@@ -2703,19 +2723,34 @@ class WorkflowExecutor:
                 # 列名规范化
                 prev_cols = [normalize_col_name(c) for c in prev_raw_df.columns.tolist()]
                 prev_raw_df.columns = prev_cols
-                # 列结构: [板块名称, 排序列, 迄今为止排进前5(次数), 上一日期列, ...]
-                if len(prev_cols) >= 4:
-                    prev_history_cols = prev_cols[3:]  # 从第4列开始都是历史日期列
+
+                # 识别"迄今为止排进前5(次数)"所在列索引（兼容新旧布局）：
+                # - 老布局: [板块, 今日, 次数, 日期列...]      → 次数在 idx 2
+                # - 新布局: [板块, 年初, B排, 月初, D排, 今日, 次数, 日期列...] → 次数在 idx 6
+                top5_idx = next(
+                    (i for i, c in enumerate(prev_cols) if "迄今为止排进前5" in str(c)),
+                    2  # 兜底：老布局默认位置
+                )
+                # 当日排名列（日期起点）= 次数列 + 1
+                today_rank_idx = top5_idx + 1
+                # 历史日期列 = 今日之后全部
+                if len(prev_cols) > today_rank_idx:
+                    prev_history_cols = prev_cols[today_rank_idx:]
                     for _, row in prev_raw_df.iterrows():
                         name = str(row[prev_cols[0]]).strip()
-                        top5_count = int(row[prev_cols[2]]) if pd.notna(row[prev_cols[2]]) else 0
-                        prev_rank = int(row[prev_cols[3]]) if pd.notna(row[prev_cols[3]]) else None
+                        top5_count = int(row[prev_cols[top5_idx]]) if pd.notna(row[prev_cols[top5_idx]]) else 0
+                        prev_rank_val = row[prev_cols[today_rank_idx]] if today_rank_idx < len(prev_cols) else None
+                        try:
+                            prev_rank = int(prev_rank_val) if pd.notna(prev_rank_val) else None
+                        except (ValueError, TypeError):
+                            prev_rank = None
                         history = {c: row[c] for c in prev_history_cols}
                         prev_data[name] = {
                             "top5_count": top5_count,
                             "prev_rank": prev_rank,
                             "history": history,
                         }
+                logger.info(f"[涨幅排名][诊断] 上一日 cols={prev_cols[:8]}, top5_idx={top5_idx}, history_cols_n={len(prev_history_cols)}, 首列={prev_history_cols[:3] if prev_history_cols else []}")
                 logger.info(f"[涨幅排名] 历史数据: {prev_file}, {len(prev_data)}个板块")
             except Exception as e:
                 logger.warning(f"[涨幅排名] 读取上一工作日文件失败: {e}")
@@ -2759,6 +2794,14 @@ class WorkflowExecutor:
             records.append(record)
 
         result_df = pd.DataFrame(records)
+
+        # 诊断：打印 result_df 的第一行（应与 round2 后一致）
+        try:
+            if len(result_df) > 0:
+                first_row = result_df.iloc[0].to_dict()
+                logger.info(f"[涨幅排名][诊断] result_df 第一行（写入 Excel 前）: 板块={first_row.get(sector_col)}, 年初={first_row.get(YTD_COL)}, 月初={first_row.get(MTD_COL)}, 今日={first_row.get(sort_col)}")
+        except Exception as e:
+            logger.info(f"[涨幅排名][诊断] 打印 result_df 失败: {e}")
 
         # 6. 生成文件名
         # 从上一工作日文件最后一列提取起始日期

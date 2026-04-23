@@ -241,8 +241,49 @@ async def bulk_set_date(
                 cfg = s_copy.get("config") or {}
                 if cfg.get("date_str") != date_str:
                     cfg["date_str"] = date_str
-                    s_copy["config"] = cfg
                     steps_changed = True
+                # 条件交集：high_price_periods[*].end 同步为新日期（start 不动，
+                # 实现"截至今日的滚动窗口"效果；若 end < start 会在执行时被忽略）
+                hp_periods = cfg.get("high_price_periods")
+                if isinstance(hp_periods, list):
+                    new_periods = []
+                    for p in hp_periods:
+                        if isinstance(p, dict) and p.get("end") != date_str:
+                            p_copy = dict(p)
+                            p_copy["end"] = date_str
+                            new_periods.append(p_copy)
+                            steps_changed = True
+                        else:
+                            new_periods.append(p)
+                    cfg["high_price_periods"] = new_periods
+                # 趋势类（导出20日均线趋势/百日新高总趋势）：
+                # preset 非 custom 时，以 date_str 为锚点重算 date_range_start/end；
+                # 同步清空可能附带旧日期的 output_filename / _actual_output（执行时会重新生成）。
+                # custom 模式尊重用户手动设置的固定范围，不动。
+                preset = cfg.get("date_preset")
+                if preset and preset != "custom" and "date_range_end" in cfg:
+                    try:
+                        from datetime import datetime as _dt
+                        from dateutil.relativedelta import relativedelta as _rd
+                        anchor = _dt.strptime(date_str, "%Y-%m-%d")
+                        delta_map = {"1m": _rd(months=1), "6m": _rd(months=6), "1y": _rd(years=1)}
+                        if preset in delta_map:
+                            new_start = (anchor - delta_map[preset]).strftime("%Y-%m-%d")
+                            new_end = anchor.strftime("%Y-%m-%d")
+                            if cfg.get("date_range_start") != new_start:
+                                cfg["date_range_start"] = new_start
+                                steps_changed = True
+                            if cfg.get("date_range_end") != new_end:
+                                cfg["date_range_end"] = new_end
+                                steps_changed = True
+                            # 清空含旧日期的文件名字段（执行时会重新生成）
+                            for fname_key in ("output_filename", "_actual_output"):
+                                if cfg.get(fname_key):
+                                    cfg[fname_key] = ""
+                                    steps_changed = True
+                    except Exception as e:
+                        logger.warning(f"[bulk-set-date] 趋势范围重算失败: {e}")
+                s_copy["config"] = cfg
                 new_steps.append(s_copy)
             else:
                 new_steps.append(s)
