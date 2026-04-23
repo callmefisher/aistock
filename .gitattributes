@@ -4,6 +4,10 @@
 # Force LF line endings for shell scripts (critical on Windows)
 *.sh text eol=lf
 
+# macOS double-clickable scripts — must be LF. If Windows git converts
+# to CRLF, the shebang becomes "#!/bin/bash\r" and execve fails.
+*.command text eol=lf
+
 # Force CRLF for Windows batch files - cmd.exe mis-parses LF-only .bat,
 # producing errors like "'tlocal' is not recognized" from `setlocal`.
 *.bat text eol=crlf

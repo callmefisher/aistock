@@ -82,27 +82,21 @@ cp .env.example .env
 # 编辑.env文件，配置必要的参数
 ```
 
-3. **启动服务（推荐）**
-```bash
-# 使用智能启动脚本，自动检测端口占用并切换
-./start.sh
-```
+3. **启动服务**
 
-或手动启动：
-```bash
-docker-compose up -d
-```
+   - **macOS**：双击 `mac.command`（首次被 Gatekeeper 拦截时右键→打开）
+   - **Windows**：双击 `win.bat`
+   - **Linux / 命令行**：
+     ```bash
+     ./deploy.sh smart-build && ./deploy.sh restart
+     ```
 
 4. **访问应用**
 
-启动脚本会自动检测端口占用情况，如果默认端口被占用，会自动切换到可用端口。
-
 默认端口：
-- 前端界面：http://localhost (80)
-- API文档：http://localhost:8000/docs
-- API地址：http://localhost:8000/api/v1
-
-如果端口被占用，启动脚本会显示实际使用的端口。
+- 前端界面：http://localhost:7654
+- API 文档：http://localhost:8000/docs
+- API 地址：http://localhost:8000/api/v1
 
 ### 首次使用
 

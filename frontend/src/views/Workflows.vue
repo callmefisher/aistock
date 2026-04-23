@@ -21,6 +21,27 @@
         </div>
       </template>
 
+      <!-- 首次初始化提示：历史 public 数据 -->
+      <div class="init-tip">
+        <div class="init-tip-icon">
+          <el-icon><InfoFilled /></el-icon>
+        </div>
+        <div class="init-tip-body">
+          <div class="init-tip-title">首次系统初始化提示</div>
+          <div class="init-tip-content">
+            <span class="tip-row">
+              <el-tag type="warning" size="small" effect="plain" round>工作流 1 / 2 / 9</el-tag>
+              需要<strong>去年</strong>的历史 Excel
+            </span>
+            <span class="tip-row">
+              <el-tag type="success" size="small" effect="plain" round>工作流 5 / 8</el-tag>
+              需要<strong>上一个工作日</strong>的历史 Excel
+            </span>
+            <span class="tip-hint">请上传至各工作流对应的 <code>public/</code> 目录</span>
+          </div>
+        </div>
+      </div>
+
       <el-table :data="workflows" stripe v-loading="loading" @selection-change="handleSelectionChange" ref="workflowTableRef" :row-class-name="getRowClassName">
         <el-table-column type="selection" width="50" />
         <el-table-column prop="name" label="工作流名称" />
@@ -1167,7 +1188,7 @@
 import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus } from '@element-plus/icons-vue'
+import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus, InfoFilled } from '@element-plus/icons-vue'
 import QuickUploadDialog from '@/components/QuickUploadDialog.vue'
 
 const todayBeijing = () => {
@@ -2609,6 +2630,75 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.init-tip {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  margin: 4px 0 18px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #eef6ff 0%, #f5faff 100%);
+  border: 1px solid #d6e7fb;
+  box-shadow: 0 2px 6px rgba(100, 140, 200, 0.06);
+  position: relative;
+}
+.init-tip-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #409eff;
+  color: #fff;
+  font-size: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.init-tip-body {
+  flex: 1;
+  min-width: 0;
+}
+.init-tip-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f4e8a;
+  margin-bottom: 6px;
+  letter-spacing: 0.2px;
+}
+.init-tip-content {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  font-size: 13px;
+  color: #4a5a72;
+  line-height: 1.6;
+}
+.init-tip-content .tip-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.init-tip-content strong {
+  color: #1f4e8a;
+  font-weight: 600;
+}
+.init-tip-content code {
+  background: #ffffff;
+  border: 1px solid #d6e7fb;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  color: #1f4e8a;
+  font-family: 'SF Mono', Consolas, Monaco, monospace;
+}
+.tip-hint {
+  color: #6b7a90;
+  font-size: 12.5px;
+  margin-left: 2px;
 }
 
 .steps-container {
