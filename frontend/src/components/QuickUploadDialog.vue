@@ -88,7 +88,7 @@
     <template #footer>
       <el-button v-if="currentStep > 0 && currentStep < 2" @click="currentStep--">上一步</el-button>
       <el-button v-if="currentStep === 0" type="primary" :disabled="!canGoPreview" @click="goPreview">下一步</el-button>
-      <el-button v-if="currentStep === 1" type="primary" :disabled="!resolvedRows.length" @click="startUpload">确认上传</el-button>
+      <el-button v-if="currentStep === 1" type="primary" :disabled="!resolvedRows.length" @click="() => startUpload()">确认上传</el-button>
       <el-button v-if="currentStep === 2 && failedUploads.length && !uploading" @click="retryFailed">重试失败项</el-button>
       <el-button v-if="currentStep === 2 && !uploading" type="primary" @click="finishAndTriggerRun">完成并执行</el-button>
       <el-button @click="handleClose">取消</el-button>
@@ -207,10 +207,18 @@ async function loadExistingFiles() {
 }
 
 async function startUpload(rowsToUpload = null) {
-  const rows = rowsToUpload || resolvedRows.value
+  const isRetry = Array.isArray(rowsToUpload)
+  const rows = isRetry ? rowsToUpload : resolvedRows.value
+  console.log('[QuickUpload] startUpload invoked', {
+    isRetry,
+    rowsCount: rows.length,
+    rowsSample: rows.slice(0, 3).map(r => ({ filename: r?.filename, step_type: r?.step_type, workflow_type: r?.workflow_type })),
+    fileMapSize: fileMap.size,
+    dateStr: dateStr.value,
+  })
   currentStep.value = 2
   uploading.value = true
-  if (!rowsToUpload) {
+  if (!isRetry) {
     // Fresh upload: reset all counters
     uploadSuccess.value = 0
     uploadFailed.value = 0
@@ -228,17 +236,20 @@ async function startUpload(rowsToUpload = null) {
 
   const concurrency = 4
   const queue = [...rows]
-  const worker = async () => {
+  const worker = async (workerId) => {
     while (queue.length) {
       const row = queue.shift()
       if (!row) break
       const file = fileMap.get(row.filename)
       if (!file) {
+        console.warn('[QuickUpload] file missing in fileMap', row.filename)
         uploadFailed.value++
         doneInBatch.value++
         failedUploads.value.push({ filename: row.filename, error: '文件引用丢失', _row: row })
         continue
       }
+      const t0 = performance.now()
+      console.log(`[QuickUpload] worker#${workerId} POST ${row.filename} → ${row.workflow_type}/${row.step_type}`)
       try {
         const fd = new FormData()
         fd.append('file', file)
@@ -250,20 +261,29 @@ async function startUpload(rowsToUpload = null) {
         const resp = await api.post('/workflows/upload-step-file/', fd, {
           headers: { 'Content-Type': 'multipart/form-data' }
         })
+        const ms = Math.round(performance.now() - t0)
         if (resp?.success) {
+          console.log(`[QuickUpload] worker#${workerId} OK ${row.filename} (${ms}ms)`)
           uploadSuccess.value++
         } else {
+          console.warn(`[QuickUpload] worker#${workerId} FAIL ${row.filename} (${ms}ms)`, resp)
           uploadFailed.value++
           failedUploads.value.push({ filename: row.filename, error: resp?.message || '未知错误', _row: row })
         }
       } catch (err) {
+        const ms = Math.round(performance.now() - t0)
+        console.error(`[QuickUpload] worker#${workerId} ERROR ${row.filename} (${ms}ms)`, err)
         uploadFailed.value++
         failedUploads.value.push({ filename: row.filename, error: err.message || String(err), _row: row })
       }
       doneInBatch.value++
     }
   }
-  await Promise.all(Array.from({ length: concurrency }, () => worker()))
+  await Promise.all(Array.from({ length: concurrency }, (_, i) => worker(i)))
+  console.log('[QuickUpload] startUpload finished', {
+    success: uploadSuccess.value,
+    failed: uploadFailed.value,
+  })
   uploading.value = false
 }
 
