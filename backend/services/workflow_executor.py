@@ -2524,24 +2524,43 @@ class WorkflowExecutor:
             return {"success": False, "message": f"输入数据至少需要2列，当前只有{len(cols)}列"}
 
         sector_col = cols[0]  # 板块名称（第1列）
-        sort_col_raw = cols[1]    # 排序列（第2列，固定位置）
-        # 多行列名只取第一行（如 "成份区间涨跌幅(算术平均)\n[起始交易日期]..." → "成份区间涨跌幅(算术平均)"）
-        sort_col_display = str(sort_col_raw).split('\n')[0].strip()
-        # 按用户要求，展示名固定为"今日涨跌幅"（下游所有逻辑按 sort_col 变量处理，换名不影响）
-        sort_col_display = "今日涨跌幅"
-        logger.info(f"[涨幅排名] 板块列={sector_col}, 原始列={str(sort_col_raw).split(chr(10))[0].strip()}, 展示列={sort_col_display}")
 
-        # 1b. 探测"本年初/本月初"两列（多行列名形式，去空白换行后按子串匹配）
+        # 按"表头内容"识别三列（避免依赖列位置——有些源的列顺序是
+        # [板块名, 本年初, 本月初, 今日]，有些是 [板块名, 今日, 本年初, 本月初]）：
+        # - 今日涨跌幅：表头 **不含** "本年初" / "本月初"（通常含具体 YYYY-MM-DD 或"最新"）
+        # - 年初涨跌幅：表头含 "本年初"
+        # - 月初涨跌幅：表头含 "本月初"
         def _col_contains(col, key: str) -> bool:
             return key in str(col).replace("\n", "").replace("\r", "").replace(" ", "").replace("\t", "")
 
         ytd_col_raw = None  # 年初涨跌幅 原始列
         mtd_col_raw = None  # 月初涨跌幅 原始列
-        for c in cols:
+        today_col_raw = None  # 今日涨跌幅 原始列
+        for c in cols[1:]:
             if ytd_col_raw is None and _col_contains(c, "本年初"):
                 ytd_col_raw = c
+                continue
             if mtd_col_raw is None and _col_contains(c, "本月初"):
                 mtd_col_raw = c
+                continue
+            if today_col_raw is None:
+                today_col_raw = c
+
+        # 兜底：若未识别到今日列（例如只有 2 列输入），退回到第 2 列
+        if today_col_raw is None:
+            today_col_raw = cols[1]
+
+        sort_col_raw = today_col_raw  # 排序主列——今日涨跌幅
+        # 多行列名只取第一行（如 "成份区间涨跌幅(算术平均)\n[起始交易日期]..." → "成份区间涨跌幅(算术平均)"）
+        # 按用户要求，展示名固定为"今日涨跌幅"（下游所有逻辑按 sort_col 变量处理，换名不影响）
+        sort_col_display = "今日涨跌幅"
+        def _col_head(c):
+            return str(c).split("\n")[0].strip() if c is not None else None
+        logger.info(
+            "[涨幅排名] 板块列=%s, 今日列=%s, 年初列=%s, 月初列=%s",
+            sector_col, _col_head(today_col_raw), _col_head(ytd_col_raw), _col_head(mtd_col_raw)
+        )
+
         use_extended = ytd_col_raw is not None and mtd_col_raw is not None
         if use_extended:
             logger.info(f"[涨幅排名] 探测到年初列 + 月初列，启用扩展输出布局")
@@ -2583,6 +2602,19 @@ class WorkflowExecutor:
 
         if work_df.empty:
             return {"success": False, "message": "过滤后无有效数据（所有行为空/妙想Choice或排序列无数值）"}
+
+        # 2b2. 年初/月初数值列统一保留 2 位小数（非数字原样保留）
+        if use_extended:
+            def _round2_col(series: pd.Series) -> pd.Series:
+                """可解析为数字的位置 round 到 2 位；其他保持原值。"""
+                numeric = pd.to_numeric(series, errors='coerce')
+                result = series.copy()
+                mask = numeric.notna()
+                result.loc[mask] = numeric.loc[mask].round(2)
+                return result
+
+            work_df[YTD_COL] = _round2_col(work_df[YTD_COL])
+            work_df[MTD_COL] = _round2_col(work_df[MTD_COL])
 
         # 2c. 扩展布局：为 YTD / MTD 计算降序排名（大的排前，非数字按出现顺序占末尾固定位）
         if use_extended:

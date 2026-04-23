@@ -120,3 +120,69 @@ async def test_extended_layout_only_ytd_falls_back_to_legacy(tmp_base):
 
     assert res["success"] is True
     assert "年初涨跌幅" not in res["columns"]
+
+
+@pytest.mark.asyncio
+async def test_column_order_year_month_today(tmp_base):
+    """源文件列顺序为 [板块, 本年初, 本月初, 今日] 时正确识别三列
+
+    回归 bug1：之前硬编码 cols[1] 为今日列，真实数据中 cols[1] 是"本年初"
+    时会把年初值当今日排序，颜色标记全错。
+    """
+    exe = WorkflowExecutor(base_dir=tmp_base, workflow_type="涨幅排名")
+    df = pd.DataFrame({
+        "板块名称": ["A", "B", "C"],
+        "成份区间涨跌幅(算术平均)\n[起始交易日期]本年初\n[截止交易日期]最新": [-13.35, 11.44, 38.78],
+        "成份区间涨跌幅(算术平均)\n[起始交易日期]本月初\n[截止交易日期]最新": [0.49, 11.36, -3.98],
+        "成份区间涨跌幅(算术平均)\n[起始交易日期]2026-04-23\n[截止交易日期]2026-04-23": [2.84, 2.37, 2.26],
+    })
+
+    with patch.object(exe.resolver, "find_previous_public_file", return_value=(None, None)):
+        res = await exe._ranking_sort(
+            {"date_str": "2026-04-23"}, df, "2026-04-23"
+        )
+
+    assert res["success"] is True
+    cols = res["columns"]
+    assert cols[0] == "板块名称"
+    data_rows = res["data"]
+    sectors_ordered = [r["板块名称"] for r in data_rows]
+    # 今日涨跌幅 [2.84, 2.37, 2.26] 降序 → A, B, C
+    assert sectors_ordered == ["A", "B", "C"]
+    today_values = [r["今日涨跌幅"] for r in data_rows]
+    assert today_values == [2.84, 2.37, 2.26]
+    ytd_values = [r["年初涨跌幅"] for r in data_rows]
+    assert ytd_values == [-13.35, 11.44, 38.78]
+    mtd_values = [r["月初涨跌幅"] for r in data_rows]
+    assert mtd_values == [0.49, 11.36, -3.98]
+
+
+@pytest.mark.asyncio
+async def test_values_rounded_to_2_decimals(tmp_base):
+    """今日/年初/月初三列都保留 2 位小数；非数字（如 '--'）原样保留"""
+    exe = WorkflowExecutor(base_dir=tmp_base, workflow_type="涨幅排名")
+    df = pd.DataFrame({
+        "板块名称": ["P1", "P2", "P3"],
+        "成份区间涨跌幅(算术平均)\n[起始交易日期]本年初": [1.23456, -7.891234, 0.1],
+        "成份区间涨跌幅(算术平均)\n[起始交易日期]本月初": [2.99999, "--", 3.005],
+        "成份区间涨跌幅(算术平均)\n[起始交易日期]2026-04-23": [5.5555, 4.4444, 3.3333],
+    })
+
+    with patch.object(exe.resolver, "find_previous_public_file", return_value=(None, None)):
+        res = await exe._ranking_sort(
+            {"date_str": "2026-04-23"}, df, "2026-04-23"
+        )
+
+    assert res["success"] is True
+    data_rows = res["data"]
+
+    today_values = [r["今日涨跌幅"] for r in data_rows]
+    assert today_values == [5.56, 4.44, 3.33]
+
+    ytd_values = [r["年初涨跌幅"] for r in data_rows]
+    assert ytd_values == [1.23, -7.89, 0.1]
+
+    mtd_values = [r["月初涨跌幅"] for r in data_rows]
+    assert mtd_values[0] == 3.0
+    assert mtd_values[1] == "--"
+    assert mtd_values[2] in (3.0, 3.01)
