@@ -2531,10 +2531,37 @@ class WorkflowExecutor:
         sort_col_display = "今日涨跌幅"
         logger.info(f"[涨幅排名] 板块列={sector_col}, 原始列={str(sort_col_raw).split(chr(10))[0].strip()}, 展示列={sort_col_display}")
 
+        # 1b. 探测"本年初/本月初"两列（多行列名形式，去空白换行后按子串匹配）
+        def _col_contains(col, key: str) -> bool:
+            return key in str(col).replace("\n", "").replace("\r", "").replace(" ", "").replace("\t", "")
+
+        ytd_col_raw = None  # 年初涨跌幅 原始列
+        mtd_col_raw = None  # 月初涨跌幅 原始列
+        for c in cols:
+            if ytd_col_raw is None and _col_contains(c, "本年初"):
+                ytd_col_raw = c
+            if mtd_col_raw is None and _col_contains(c, "本月初"):
+                mtd_col_raw = c
+        use_extended = ytd_col_raw is not None and mtd_col_raw is not None
+        if use_extended:
+            logger.info(f"[涨幅排名] 探测到年初列 + 月初列，启用扩展输出布局")
+        else:
+            logger.info(f"[涨幅排名] 未探测到「本年初」或「本月初」列，使用原输出布局")
+
         # 2. 提取板块名称和排序列，过滤空行，转数值排序
         work_df = df[[sector_col, sort_col_raw]].copy()
         work_df = work_df.rename(columns={sort_col_raw: sort_col_display})
         sort_col = sort_col_display
+
+        # 2b. 扩展布局：同时抽年初 / 月初 原始值（保留原字符串，后续单独算数值排名）
+        YTD_COL = "年初涨跌幅"
+        MTD_COL = "月初涨跌幅"
+        YTD_RANK_COL = "B列的数值升序排序结果"
+        MTD_RANK_COL = "D列的数值升序排序结果"
+        if use_extended:
+            work_df[YTD_COL] = df[ytd_col_raw].values
+            work_df[MTD_COL] = df[mtd_col_raw].values
+
         # 过滤板块名称为空/NaN/含"妙想Choice"的行
         sector_str = work_df[sector_col].astype(str).str.strip()
         work_df = work_df[
@@ -2556,6 +2583,31 @@ class WorkflowExecutor:
 
         if work_df.empty:
             return {"success": False, "message": "过滤后无有效数据（所有行为空/妙想Choice或排序列无数值）"}
+
+        # 2c. 扩展布局：为 YTD / MTD 计算降序排名（大的排前，非数字按出现顺序占末尾固定位）
+        if use_extended:
+            def _compute_rank(col_name: str) -> list:
+                """
+                返回 work_df 每行对应的排名整数。
+                有效数字 → 按降序排名（数值大排名小），method='min' 同值并列取最小名次
+                非数字（-- / 空 / 非法）→ 取末尾固定位: valid_n+1, valid_n+2, ...（按 work_df 行顺序）
+                """
+                series = pd.to_numeric(work_df[col_name], errors='coerce')
+                valid_mask = series.notna()
+                ranks = series.rank(ascending=False, method='min')  # 含 NaN 行，结果也是 NaN
+                valid_count = int(valid_mask.sum())
+                result = []
+                next_invalid = valid_count + 1
+                for i in range(len(work_df)):
+                    if valid_mask.iloc[i]:
+                        result.append(int(ranks.iloc[i]))
+                    else:
+                        result.append(next_invalid)
+                        next_invalid += 1
+                return result
+
+            work_df[YTD_RANK_COL] = _compute_rank(YTD_COL)
+            work_df[MTD_RANK_COL] = _compute_rank(MTD_COL)
 
         # 3. 列名规范化函数 + 当日日期列名
         import re as re_mod
@@ -2653,9 +2705,20 @@ class WorkflowExecutor:
 
             record = OrderedDict()
             record[sector_col] = sector
-            record[sort_col] = sort_val
-            record["迄今为止排进前5(次数)"] = new_top5
-            record[today_col] = rank
+            if use_extended:
+                # 扩展布局: 板块 | 年初 | B排名 | 月初 | D排名 | 今日 | Top5次数 | 日期列...
+                record[YTD_COL] = row[YTD_COL]
+                record[YTD_RANK_COL] = row[YTD_RANK_COL]
+                record[MTD_COL] = row[MTD_COL]
+                record[MTD_RANK_COL] = row[MTD_RANK_COL]
+                record[sort_col] = sort_val
+                record["迄今为止排进前5(次数)"] = new_top5
+                record[today_col] = rank
+            else:
+                # 原布局: 板块 | 今日 | Top5次数 | 日期列...
+                record[sort_col] = sort_val
+                record["迄今为止排进前5(次数)"] = new_top5
+                record[today_col] = rank
 
             # 附加历史列
             for hcol in prev_history_cols:
@@ -2700,73 +2763,22 @@ class WorkflowExecutor:
         LIGHT_RED_FONT = Font(color="FFFFFF")
         GOLD_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 
-        # --- 辅助函数: 对 sheet 应用通用格式（表头、列宽、第3列金色、Top5、过滤） ---
-        def apply_ranking_sheet_format(ws, col_start_for_top5, max_data_row):
-            from openpyxl.utils import get_column_letter
-            from openpyxl.worksheet.dimensions import ColumnDimension
-
-            # 表头格式：加粗居中，仅第3列金色；日期列头写入实际日期值
-            for col_idx in range(1, ws.max_column + 1):
-                cell = ws.cell(row=1, column=col_idx)
-                header_text = str(cell.value or '')
-                # 日期列头: 写入实际日期值 + 自定义格式显示为 "X月X日"
-                if header_text in _col_date_map:
-                    cell.value = _col_date_map[header_text]
-                    cell.number_format = 'm"月"d"日"'
-                cell.font = Font(bold=True, size=11)
-                cell.alignment = openpyxl_Alignment(horizontal="center", vertical="center")
-            ws.cell(row=1, column=3).fill = GOLD_FILL
-            ws.cell(row=1, column=3).font = Font(bold=True, size=11)
-
-            # 列宽
-            for col_idx in range(1, ws.max_column + 1):
-                letter = get_column_letter(col_idx)
-                ws.column_dimensions[letter].width = 35 if col_idx in (2, 3) else 25
-
-            # 所有数据单元格居中
-            center_align = openpyxl_Alignment(horizontal="center", vertical="center")
-            for row_idx in range(2, max_data_row + 1):
-                for col_idx in range(1, ws.max_column + 1):
-                    ws.cell(row=row_idx, column=col_idx).alignment = center_align
-
-            # 日期列 Top5 深红
-            for col_idx in range(col_start_for_top5, ws.max_column + 1):
-                for row_idx in range(2, max_data_row + 1):
-                    cell = ws.cell(row=row_idx, column=col_idx)
-                    try:
-                        val = int(cell.value) if cell.value is not None else None
-                    except (ValueError, TypeError):
-                        val = None
-                    if val is not None and val <= 5:
-                        cell.fill = DEEP_RED
-                        cell.font = DEEP_RED_FONT
-
-            # 自动过滤
-            from openpyxl.utils import get_column_letter as gcl
-            last_col_letter = gcl(ws.max_column)
-            ws.auto_filter.ref = f"A1:{last_col_letter}{max_data_row}"
+        from services.ranking_format import apply_ranking_format
 
         # --- 当日 sheet ---
         ws_today = wb[today_sheet]
-        today_col_idx = result_df.columns.tolist().index(today_col) + 1
         data_row_count = len(result_df) + 1
 
-        apply_ranking_sheet_format(ws_today, 4, data_row_count)
-
-        # 当日列追加排名提升浅红(仅非 Top5 行)
-        for row_idx in range(2, data_row_count + 1):
-            rank_cell = ws_today.cell(row=row_idx, column=today_col_idx)
-            try:
-                rank_val = int(rank_cell.value) if rank_cell.value is not None else None
-            except (ValueError, TypeError):
-                rank_val = None
-            if rank_val is not None and rank_val > 5:
-                sector_name = str(ws_today.cell(row=row_idx, column=1).value).strip()
-                prev = prev_data.get(sector_name, {})
-                prev_rank = prev.get("prev_rank")
-                if prev_rank is not None and rank_val < prev_rank:
-                    rank_cell.fill = LIGHT_RED
-                    rank_cell.font = LIGHT_RED_FONT
+        # prev_rank_by_sector：从 prev_data 提取板块 → 上一日排名（用于当日列浅红）
+        prev_rank_by_sector = {
+            name: (d.get("prev_rank") if isinstance(d, dict) else None)
+            for name, d in prev_data.items()
+        }
+        apply_ranking_format(
+            ws_today,
+            prev_rank_by_sector=prev_rank_by_sector,
+            date_col_date_map=_col_date_map,
+        )
 
         wb.save(output_path)
 

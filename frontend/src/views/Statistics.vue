@@ -1311,11 +1311,15 @@ const rankingParsed = computed(() => {
   const cols = rankingData.value.columns || []
   const data = rankingData.value.data || []
   if (cols.length < 4) return null
-  // cols[0]=板块名称, cols[1]=排序列, cols[2]=Top5次数, cols[3+]=日期列
-  // 数据中日期列已是降序（最新在前：4月15日, 4月14日, ...）
-  const dateCols = cols.slice(3)
+  // 兼容两种布局：
+  //  旧: 板块 | 今日涨跌幅 | 迄今为止排进前5(次数) | 日期列...
+  //  新: 板块 | 年初 | B排名 | 月初 | D排名 | 今日涨跌幅 | 迄今为止排进前5(次数) | 日期列...
+  // 以"迄今为止排进前5(次数)"列为锚点，之后的所有列即日期列
+  const top5ColIdx = cols.findIndex(c => typeof c === 'string' && c.includes('迄今为止排进前5'))
+  const anchor = top5ColIdx >= 0 ? top5ColIdx : 2  // 兜底老逻辑第3列
+  const dateCols = cols.slice(anchor + 1)
   const sectorCol = cols[0]
-  const top5Col = cols[2]
+  const top5Col = cols[anchor]
   const sectors = data.map(r => r[sectorCol]).filter(Boolean)
   return { cols, dateCols, sectors, sectorCol, top5Col, data }
 })

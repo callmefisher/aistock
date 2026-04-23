@@ -214,81 +214,23 @@ async def download_result(
 
     df.to_excel(tmp_path, index=False, engine="openpyxl")
 
-    # 涨幅排名: 应用专属格式
+    # 涨幅排名: 应用专属格式（与工作流导出共享 apply_ranking_format）
     if result.get('workflow_type') == '涨幅排名':
+        from datetime import datetime as dt
+        from services.ranking_format import apply_ranking_format
+
         wb = load_workbook(tmp_path)
         ws = wb.active
 
-        DEEP_RED = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
-        DEEP_RED_FONT = Font(color="FFFFFF", bold=True)
-        LIGHT_RED = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
-        LIGHT_RED_FONT = Font(color="FFFFFF")
-        GOLD_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-
-        max_row = ws.max_row
-        max_col = ws.max_column
-
-        # 表头：加粗居中，仅第3列金色，日期列头写入实际日期值
-        import re as re_mod
-        from datetime import datetime as dt
         date_str = result.get('date_str', '')
         try:
             ref_date = dt.strptime(date_str, '%Y-%m-%d')
         except Exception:
             ref_date = dt.now()
 
-        for col_idx in range(1, max_col + 1):
-            cell = ws.cell(row=1, column=col_idx)
-            header = str(cell.value or '')
-            m = re_mod.match(r'^(\d+)月(\d+)日$', header)
-            if m:
-                month, day = int(m.group(1)), int(m.group(2))
-                year = ref_date.year if month <= ref_date.month else ref_date.year - 1
-                cell.value = dt(year, month, day)
-                cell.number_format = 'm"月"d"日"'
-            cell.font = Font(bold=True, size=11)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-        ws.cell(row=1, column=3).fill = GOLD_FILL
-        ws.cell(row=1, column=3).font = Font(bold=True, size=11)
-
-        # 列宽
-        for col_idx in range(1, max_col + 1):
-            ws.column_dimensions[get_column_letter(col_idx)].width = 35 if col_idx in (2, 3) else 25
-
-        # 所有数据单元格居中
-        center = Alignment(horizontal="center", vertical="center")
-        for row_idx in range(2, max_row + 1):
-            for col_idx in range(1, max_col + 1):
-                ws.cell(row=row_idx, column=col_idx).alignment = center
-
-        # 日期列(col4+) Top5 深红
-        for col_idx in range(4, max_col + 1):
-            for row_idx in range(2, max_row + 1):
-                cell = ws.cell(row=row_idx, column=col_idx)
-                try:
-                    val = int(cell.value) if cell.value is not None else None
-                except (ValueError, TypeError):
-                    val = None
-                if val is not None and val <= 5:
-                    cell.fill = DEEP_RED
-                    cell.font = DEEP_RED_FONT
-
-        # 当日列(col4) 排名提升浅红（非Top5，且排名数字 < 上一工作日col5）
-        if max_col >= 5:
-            for row_idx in range(2, max_row + 1):
-                cell_today = ws.cell(row=row_idx, column=4)
-                cell_prev = ws.cell(row=row_idx, column=5)
-                try:
-                    rank_today = int(cell_today.value) if cell_today.value is not None else None
-                    rank_prev = int(cell_prev.value) if cell_prev.value is not None else None
-                except (ValueError, TypeError):
-                    rank_today = rank_prev = None
-                if rank_today is not None and rank_today > 5 and rank_prev is not None and rank_today < rank_prev:
-                    cell_today.fill = LIGHT_RED
-                    cell_today.font = LIGHT_RED_FONT
-
-        # 自动过滤
-        ws.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
+        # 统计分析路径下 prev_rank 取 sheet 第 (date_start+1) 列的值（共享函数内部处理），
+        # 所以这里 prev_rank_by_sector 传 None 即可
+        apply_ranking_format(ws, prev_rank_by_sector=None, ref_date=ref_date)
 
         wb.save(tmp_path)
 
