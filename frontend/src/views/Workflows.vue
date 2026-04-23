@@ -2433,7 +2433,7 @@ const openQuickUpload = () => {
 // trigger the existing batch-run confirmation flow.
 // (AGGREGATION_TYPES is declared above and reused here.)
 
-const onQuickUploadFinish = async (dateStr) => {
+const onQuickUploadFinish = async (_dateStr) => {
   // 1. Reload workflow list (dates already synced by backend)
   await fetchWorkflows()
 
@@ -2442,12 +2442,14 @@ const onQuickUploadFinish = async (dateStr) => {
 
   // 3. Select all non-aggregation, non-export-only workflows in the table
   const tableRef = workflowTableRef.value
-  if (tableRef) {
-    tableRef.clearSelection()
-    const toSelect = workflows.value.filter(w => !AGGREGATION_TYPES.includes(w.workflow_type))
-    for (const row of toSelect) {
-      tableRef.toggleRowSelection(row, true)
-    }
+  if (!tableRef) {
+    ElMessage.error('表格未就绪，请稍后重试')
+    return
+  }
+  tableRef.clearSelection()
+  const toSelect = workflows.value.filter(w => !AGGREGATION_TYPES.includes(w.workflow_type))
+  for (const row of toSelect) {
+    tableRef.toggleRowSelection(row, true)
   }
 
   // 4. Let selection-change event fire and update selectedWorkflows, then trigger batch-run
