@@ -1934,6 +1934,41 @@ class WorkflowExecutor:
                         decompressed = zlib.decompress(row[0])
                         records = json_mod.loads(decompressed.decode("utf-8"))
                         df = pd.DataFrame(records)
+                        # 质押类型兼容：DB 老数据可能缺"来源"列（旧 save_workflow_result 只读首 sheet），
+                        # 此时直接从 public 目录的双 sheet 文件重新读入以恢复两 sheet 和"来源"
+                        if wtype == "质押" and "来源" not in df.columns:
+                            try:
+                                from services.path_resolver import get_resolver
+                                _resolver = get_resolver(self.base_dir, "质押")
+                                _public_dir = _resolver.get_public_directory(date_str)
+                                _parts = []
+                                if os.path.isdir(_public_dir):
+                                    for _fn in os.listdir(_public_dir):
+                                        if not _fn.lower().endswith(".xlsx"):
+                                            continue
+                                        _fp = os.path.join(_public_dir, _fn)
+                                        try:
+                                            _sm = pd.read_excel(_fp, sheet_name=None)
+                                        except Exception:
+                                            continue
+                                        for _sn, _sub in (_sm or {}).items():
+                                            if _sub is None or len(_sub) == 0:
+                                                continue
+                                            _sn_str = str(_sn or "").strip()
+                                            if "中大盘" in _sn_str:
+                                                _src = "中大盘"
+                                            elif "小盘" in _sn_str:
+                                                _src = "小盘"
+                                            else:
+                                                continue
+                                            _sub = _sub.copy()
+                                            _sub["来源"] = _src
+                                            _parts.append(_sub)
+                                if _parts:
+                                    df = pd.concat(_parts, ignore_index=True)
+                                    logger.info(f"[条件交集] 质押 DB 数据缺'来源'，已从 public 重读双 sheet: {len(df)}行")
+                            except Exception as e:
+                                logger.warning(f"[条件交集] 质押 public 兜底读取失败: {e}")
                         type_dataframes[wtype] = df
                         logger.info(f"[条件交集] 读取 {wtype}: {len(df)}行")
                     except Exception as e:
