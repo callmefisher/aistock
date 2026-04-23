@@ -876,6 +876,14 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                 else:
                     result_entry["status"] = "completed"
 
+                # 质押工作流 finalize：列重排 + 分 sheet + 条件格式 + 同步 public
+                # 必须在 save_workflow_result 之前，否则 DB 存的还是 finalize 前的单 sheet 文件
+                try:
+                    if result_entry["output_file"]:
+                        executor_with_type.finalize_pledge_if_needed(result_entry["output_file"], output_date_str)
+                except Exception as _e:
+                    logger.warning(f"[批量] 工作流{wf_id} 质押 finalize 失败: {_e}")
+
                 # 执行成功后写入 workflow_results（is_export_only 类型跳过）
                 from config.workflow_type_config import get_type_config as _get_tc
                 _tc = _get_tc(workflow_type)
