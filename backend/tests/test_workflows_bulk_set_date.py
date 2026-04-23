@@ -297,3 +297,137 @@ class TestBulkSetDate:
         # custom 范围不动
         assert cfg["date_range_start"] == "2026-01-01"
         assert cfg["date_range_end"] == "2026-03-31"
+
+    @pytest.mark.asyncio
+    async def test_condition_intersection_output_filename_cleared(
+        self, client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+    ):
+        """条件交集 date_str 变更时，output_filename / _actual_output 被清空
+        （下次执行时会按新 date_str 生成 7条件交集20260424.xlsx）"""
+        wf = Workflow(
+            name="7条件交集", workflow_type="条件交集", date_str="2026-04-23",
+            steps=[{
+                "type": "condition_intersection",
+                "config": {
+                    "date_str": "2026-04-23",
+                    "output_filename": "7条件交集20260423.xlsx",
+                    "_actual_output": "7条件交集20260423.xlsx",
+                    "high_price_periods": [{"start": "2026-03-18", "end": "2026-04-23"}],
+                }
+            }],
+        )
+        db_session.add(wf)
+        await db_session.commit()
+
+        await client.put(
+            "/api/v1/workflows/bulk-set-date",
+            headers=auth_headers,
+            json={"date_str": "2026-04-24"},
+        )
+
+        result = await db_session.execute(select(Workflow).where(Workflow.id == wf.id))
+        refreshed = result.scalar_one()
+        cfg = refreshed.steps[0]["config"]
+        assert cfg["date_str"] == "2026-04-24"
+        assert cfg["output_filename"] == ""
+        assert cfg["_actual_output"] == ""
+        # period.end 也应同步
+        assert cfg["high_price_periods"][0]["end"] == "2026-04-24"
+
+    @pytest.mark.asyncio
+    async def test_regular_workflow_output_filename_cleared_on_date_change(
+        self, client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+    ):
+        """普通工作流（如涨幅排名）也会清空 output_filename"""
+        wf = Workflow(
+            name="8涨幅排名", workflow_type="涨幅排名", date_str="2026-04-23",
+            steps=[
+                {"type": "merge_excel", "config": {"date_str": "2026-04-23", "output_filename": "total_1.xlsx"}},
+                {"type": "ranking_sort", "config": {
+                    "date_str": "2026-04-23",
+                    "_actual_output": "8涨幅排名0202-20260423.xlsx",
+                    "output_filename": "",
+                }},
+            ],
+        )
+        db_session.add(wf)
+        await db_session.commit()
+
+        await client.put(
+            "/api/v1/workflows/bulk-set-date",
+            headers=auth_headers,
+            json={"date_str": "2026-04-24"},
+        )
+
+        result = await db_session.execute(select(Workflow).where(Workflow.id == wf.id))
+        refreshed = result.scalar_one()
+        # merge_excel 的 output_filename=total_1.xlsx 不含日期，
+        # date_str 变化时被清空（让执行时按新 resolver 重新生成）
+        assert refreshed.steps[0]["config"]["output_filename"] == ""
+        # ranking_sort 的 _actual_output 含旧日期 20260423，被清空
+        assert refreshed.steps[1]["config"]["_actual_output"] == ""
+
+    @pytest.mark.asyncio
+    async def test_stale_filename_cleared_even_if_date_str_already_current(
+        self, client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+    ):
+        """date_str 已是目标日期但 output_filename 里还残留旧日期 → 也应清空
+
+        重放场景：首次 bulk-set-date 把 date_str 改了但 output_filename
+        未清；第二次同日期调用时仍应清理残留。
+        """
+        wf = Workflow(
+            name="7条件交集", workflow_type="条件交集", date_str="2026-04-24",
+            steps=[{
+                "type": "condition_intersection",
+                "config": {
+                    "date_str": "2026-04-24",  # 已是目标日期
+                    "output_filename": "7条件交集20260423.xlsx",  # 但残留旧日期
+                    "_actual_output": "7条件交集20260423.xlsx",
+                }
+            }],
+        )
+        db_session.add(wf)
+        await db_session.commit()
+
+        resp = await client.put(
+            "/api/v1/workflows/bulk-set-date",
+            headers=auth_headers,
+            json={"date_str": "2026-04-24"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["updated_count"] >= 1
+
+        result = await db_session.execute(select(Workflow).where(Workflow.id == wf.id))
+        refreshed = result.scalar_one()
+        cfg = refreshed.steps[0]["config"]
+        assert cfg["output_filename"] == ""
+        assert cfg["_actual_output"] == ""
+
+    @pytest.mark.asyncio
+    async def test_filename_with_current_date_preserved(
+        self, client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+    ):
+        """filename 已经含当前日期 → 不应被误清"""
+        wf = Workflow(
+            name="7条件交集", workflow_type="条件交集", date_str="2026-04-24",
+            steps=[{
+                "type": "condition_intersection",
+                "config": {
+                    "date_str": "2026-04-24",
+                    "output_filename": "7条件交集20260424.xlsx",  # 当前日期，应保留
+                }
+            }],
+        )
+        db_session.add(wf)
+        await db_session.commit()
+
+        await client.put(
+            "/api/v1/workflows/bulk-set-date",
+            headers=auth_headers,
+            json={"date_str": "2026-04-24"},
+        )
+
+        result = await db_session.execute(select(Workflow).where(Workflow.id == wf.id))
+        refreshed = result.scalar_one()
+        assert refreshed.steps[0]["config"]["output_filename"] == "7条件交集20260424.xlsx"

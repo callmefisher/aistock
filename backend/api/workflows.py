@@ -239,9 +239,11 @@ async def bulk_set_date(
             if isinstance(s, dict):
                 s_copy = copy.deepcopy(s)
                 cfg = s_copy.get("config") or {}
+                date_str_changed_in_step = False
                 if cfg.get("date_str") != date_str:
                     cfg["date_str"] = date_str
                     steps_changed = True
+                    date_str_changed_in_step = True
                 # 条件交集：high_price_periods[*].end 同步为新日期（start 不动，
                 # 实现"截至今日的滚动窗口"效果；若 end < start 会在执行时被忽略）
                 hp_periods = cfg.get("high_price_periods")
@@ -257,8 +259,7 @@ async def bulk_set_date(
                             new_periods.append(p)
                     cfg["high_price_periods"] = new_periods
                 # 趋势类（导出20日均线趋势/百日新高总趋势）：
-                # preset 非 custom 时，以 date_str 为锚点重算 date_range_start/end；
-                # 同步清空可能附带旧日期的 output_filename / _actual_output（执行时会重新生成）。
+                # preset 非 custom 时，以 date_str 为锚点重算 date_range_start/end。
                 # custom 模式尊重用户手动设置的固定范围，不动。
                 preset = cfg.get("date_preset")
                 if preset and preset != "custom" and "date_range_end" in cfg:
@@ -276,13 +277,29 @@ async def bulk_set_date(
                             if cfg.get("date_range_end") != new_end:
                                 cfg["date_range_end"] = new_end
                                 steps_changed = True
-                            # 清空含旧日期的文件名字段（执行时会重新生成）
-                            for fname_key in ("output_filename", "_actual_output"):
-                                if cfg.get(fname_key):
-                                    cfg[fname_key] = ""
-                                    steps_changed = True
                     except Exception as e:
                         logger.warning(f"[bulk-set-date] 趋势范围重算失败: {e}")
+                # 若本 step 的 date_str 发生变化，或 output_filename / _actual_output
+                # 里仍残留非当前日期的 8 位日期串（YYYYMMDD / YYYY-MM-DD），
+                # 都清空——下次执行会按新 date_str 重新生成文件名。
+                target_no_dash = date_str.replace("-", "")
+                def _has_stale_date(val: str) -> bool:
+                    if not val or not isinstance(val, str):
+                        return False
+                    # 任意 8 位数字连串不等于当前日期 → 视为残留旧日期
+                    for m in re.finditer(r"\d{8}", val):
+                        if m.group(0) != target_no_dash:
+                            return True
+                    # 或带连字符形式
+                    for m in re.finditer(r"\d{4}-\d{2}-\d{2}", val):
+                        if m.group(0) != date_str:
+                            return True
+                    return False
+                for fname_key in ("output_filename", "_actual_output"):
+                    cur = cfg.get(fname_key)
+                    if cur and (date_str_changed_in_step or _has_stale_date(cur)):
+                        cfg[fname_key] = ""
+                        steps_changed = True
                 s_copy["config"] = cfg
                 new_steps.append(s_copy)
             else:
