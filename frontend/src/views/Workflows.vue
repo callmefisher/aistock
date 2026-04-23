@@ -2440,15 +2440,15 @@ const onQuickUploadFinish = async (_dateStr) => {
   // 2. Wait for el-table to render new data
   await nextTick()
 
-  // 3. Select all non-aggregation, non-export-only workflows in the table
+  // 3. Select ALL workflows (including aggregation/export types — they depend on
+  //    other workflows' outputs, so they should run in the same batch)
   const tableRef = workflowTableRef.value
   if (!tableRef) {
     ElMessage.error('表格未就绪，请稍后重试')
     return
   }
   tableRef.clearSelection()
-  const toSelect = workflows.value.filter(w => !AGGREGATION_TYPES.includes(w.workflow_type))
-  for (const row of toSelect) {
+  for (const row of workflows.value) {
     tableRef.toggleRowSelection(row, true)
   }
 
@@ -2457,7 +2457,7 @@ const onQuickUploadFinish = async (_dateStr) => {
   if (selectedWorkflows.value.length > 0) {
     await handleBatchRun()
   } else {
-    ElMessage.info('没有可执行的工作流（已排除聚合类/导出类）')
+    ElMessage.info('没有可执行的工作流')
   }
 }
 

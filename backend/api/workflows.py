@@ -658,7 +658,18 @@ async def upload_step_file(
     logger.info(f"[Upload] target_dir={target_dir}")
     os.makedirs(target_dir, exist_ok=True)
 
-    file_path = os.path.join(target_dir, file.filename)
+    # 安全防御：客户端传来的 filename 可能含路径分隔符（如 Safari 的
+    # webkitdirectory 会让 file.name = "0422/foo.xlsx"），也可能被
+    # 恶意构造 "../../etc/passwd"。统一取 basename 剥到叶子名。
+    raw_filename = file.filename or ""
+    safe_filename = os.path.basename(raw_filename.replace("\\", "/"))
+    if not safe_filename or safe_filename in (".", ".."):
+        logger.error(f"[Upload] 非法 filename: {raw_filename!r}")
+        return {"success": False, "message": f"非法文件名: {raw_filename!r}"}
+    if safe_filename != raw_filename:
+        logger.warning(f"[Upload] filename 含路径分隔符，剥离后 {raw_filename!r} → {safe_filename!r}")
+
+    file_path = os.path.join(target_dir, safe_filename)
     logger.info(f"[Upload] saving to {file_path}")
     try:
         with open(file_path, "wb") as buffer:
