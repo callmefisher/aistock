@@ -76,6 +76,23 @@ export function resolveTarget(filename, date_str = '{date}') {
     }
   }
   const base = stripExt(filename)
+  const first = base.charAt(0)
+
+  // 例外：8 开头 + 含"涨跌幅"视为"涨幅排名"，绕过"板块"等子目录关键字
+  // (e.g. `8、板块涨跌幅排名 0422.xlsx` 应落入 data/excel/涨幅排名/{date}/，
+  //  而不是 data/excel/{date}/一级板块/)
+  if (first === '8' && base.includes('涨跌幅')) {
+    const wt = PREFIX_TO_TYPE['8']
+    return {
+      filename,
+      workflow_type: wt,
+      step_type: 'merge_excel',
+      sub_dir: null,
+      target_dir: buildTargetDir(wt, null, date_str),
+      status: 'resolved',
+      reason: `首位数字 "8" + 含"涨跌幅" → ${wt}`,
+    }
+  }
 
   // 优先级 1: 子目录关键字
   for (const { keywords, step_type, sub_dir } of SUBDIR_KEYWORDS) {
@@ -94,7 +111,6 @@ export function resolveTarget(filename, date_str = '{date}') {
   }
 
   // 优先级 2: 数字前缀
-  const first = base.charAt(0)
   if (PREFIX_TO_TYPE[first]) {
     const wt = PREFIX_TO_TYPE[first]
     return {

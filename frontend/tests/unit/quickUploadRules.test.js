@@ -179,3 +179,32 @@ describe('isSilentlyIgnored - 应静默忽略的文件', () => {
     expect(isSilentlyIgnored(undefined)).toBe(true)
   })
 })
+
+describe('resolveTarget - 例外：8 开头 + 含"涨跌幅" 绕过"板块"子目录', () => {
+  it('"8、板块涨跌幅排名 0422.xlsx" → 涨幅排名（不进一级板块）', () => {
+    const r = resolveTarget('8、板块涨跌幅排名 0422.xlsx', '2026-04-23')
+    expect(r.status).toBe('resolved')
+    expect(r.workflow_type).toBe('涨幅排名')
+    expect(r.step_type).toBe('merge_excel')
+    expect(r.sub_dir).toBeNull()
+    expect(r.target_dir).toBe('data/excel/涨幅排名/2026-04-23/')
+  })
+
+  it('不以 8 开头但含"板块涨跌幅" → 仍走板块子目录', () => {
+    const r = resolveTarget('板块涨跌幅统计.xlsx')
+    expect(r.step_type).toBe('match_sector')
+    expect(r.sub_dir).toBe('一级板块')
+  })
+
+  it('8 开头但不含"涨跌幅"仍含"板块" → 走板块子目录', () => {
+    // 不应该发生的边界场景；但按规则，例外不触发就回到关键字优先
+    const r = resolveTarget('8板块数据.xlsx')
+    expect(r.step_type).toBe('match_sector')
+    expect(r.sub_dir).toBe('一级板块')
+  })
+
+  it('8 开头但不含"板块"（普通涨幅排名） → 涨幅排名', () => {
+    const r = resolveTarget('8涨幅排名0422.xlsx')
+    expect(r.workflow_type).toBe('涨幅排名')
+  })
+})
