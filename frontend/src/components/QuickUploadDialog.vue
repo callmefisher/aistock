@@ -117,6 +117,11 @@ const uploading = ref(false)
 const uploadSuccess = ref(0)
 const uploadFailed = ref(0)
 const failedUploads = ref([])
+const batchSize = ref(0)
+const doneInBatch = ref(0)
+
+// File objects kept outside reactive state (Vue shouldn't track File internals)
+const fileMap = new Map()  // filename → File
 
 const resolvedRows = computed(() => parsedRows.value.filter(r => r.status === 'resolved'))
 const unresolvedRows = computed(() => parsedRows.value.filter(r => r.status === 'unresolved'))
@@ -148,8 +153,8 @@ const overwriteCount = computed(() =>
 const canGoPreview = computed(() => acceptedFiles.value.length > 0 && dateStr.value)
 
 const uploadPercent = computed(() => {
-  if (!resolvedRows.value.length) return 0
-  return Math.round(((uploadSuccess.value + uploadFailed.value) / resolvedRows.value.length) * 100)
+  if (!batchSize.value) return 0
+  return Math.min(100, Math.round(doneInBatch.value / batchSize.value * 100))
 })
 
 const uploadStatus = computed(() => {
@@ -166,10 +171,11 @@ function onFilesPicked(e) {
 }
 
 async function goPreview() {
-  parsedRows.value = acceptedFiles.value.map(f => ({
-    ...resolveTarget(f.name, dateStr.value),
-    _file: f,
-  }))
+  fileMap.clear()
+  parsedRows.value = acceptedFiles.value.map(f => {
+    fileMap.set(f.name, f)
+    return { ...resolveTarget(f.name, dateStr.value) }
+  })
   previewLoading.value = true
   await loadExistingFiles()
   previewLoading.value = false
@@ -205,13 +211,20 @@ async function startUpload(rowsToUpload = null) {
   currentStep.value = 2
   uploading.value = true
   if (!rowsToUpload) {
+    // Fresh upload: reset all counters
     uploadSuccess.value = 0
     uploadFailed.value = 0
     failedUploads.value = []
   } else {
-    failedUploads.value = failedUploads.value.filter(f => !rows.some(r => r.filename === f.filename))
-    uploadFailed.value = failedUploads.value.length
+    // Retry: remove retrying items from failed list and decrement counter by retry count
+    // (avoids double-counting if the retry also fails; worker will re-increment on failure)
+    const retrySet = new Set(rows.map(r => r.filename))
+    failedUploads.value = failedUploads.value.filter(f => !retrySet.has(f.filename))
+    uploadFailed.value = Math.max(0, uploadFailed.value - rows.length)
   }
+  // Each call to startUpload is its own progress batch: bar resets 0→100% over rows.length
+  batchSize.value = rows.length
+  doneInBatch.value = 0
 
   const concurrency = 4
   const queue = [...rows]
@@ -219,9 +232,16 @@ async function startUpload(rowsToUpload = null) {
     while (queue.length) {
       const row = queue.shift()
       if (!row) break
+      const file = fileMap.get(row.filename)
+      if (!file) {
+        uploadFailed.value++
+        doneInBatch.value++
+        failedUploads.value.push({ filename: row.filename, error: '文件引用丢失', _row: row })
+        continue
+      }
       try {
         const fd = new FormData()
-        fd.append('file', row._file)
+        fd.append('file', file)
         fd.append('workflow_id', '0')
         fd.append('step_index', '0')
         fd.append('step_type', row.step_type)
@@ -240,6 +260,7 @@ async function startUpload(rowsToUpload = null) {
         uploadFailed.value++
         failedUploads.value.push({ filename: row.filename, error: err.message || String(err), _row: row })
       }
+      doneInBatch.value++
     }
   }
   await Promise.all(Array.from({ length: concurrency }, () => worker()))
@@ -278,6 +299,9 @@ watch(() => props.modelValue, (v) => {
     uploadSuccess.value = 0
     uploadFailed.value = 0
     failedUploads.value = []
+    batchSize.value = 0
+    doneInBatch.value = 0
+    fileMap.clear()
   }
 })
 </script>
