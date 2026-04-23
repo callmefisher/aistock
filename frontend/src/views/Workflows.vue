@@ -118,6 +118,13 @@
             style="margin-top: 8px"
           />
           <el-alert
+            v-if="form.workflow_type === '百日新高总趋势'"
+            title="百日新高总趋势：扫当日 data/excel/{date}/百日新高/ 行数写入 DB，按日期区间出折线图，一键执行排最后"
+            type="warning"
+            :closable="false"
+            style="margin-top: 8px"
+          />
+          <el-alert
             v-if="form.workflow_type === '涨幅排名'"
             title="涨幅排名：按第2列降序排名，自动对比上一工作日数据，Top5深红标注，排名提升浅红标注"
             type="info"
@@ -148,6 +155,9 @@
                   </template>
                   <template v-else-if="form.workflow_type === '导出20日均线趋势'">
                     <el-option label="导出趋势Excel" value="export_ma20_trend" />
+                  </template>
+                  <template v-else-if="form.workflow_type === '百日新高总趋势'">
+                    <el-option label="导出百日新高趋势Excel" value="export_high_price_trend" />
                   </template>
                   <template v-else-if="form.workflow_type === '涨幅排名'">
                     <el-option label="合并当日数据源" value="merge_excel" />
@@ -845,7 +855,53 @@
                 </el-form-item>
 
                 <el-form-item label="输出文件名">
-                  <el-input v-model="step.config.output_filename" placeholder="10站上20日均线趋势.xlsx" />
+                  <el-input v-model="step.config.output_filename" :placeholder="`10站上20日均线趋势${step.config.date_str || '{date}'}.xlsx`" />
+                </el-form-item>
+              </template>
+
+              <template v-if="step.type === 'export_high_price_trend'">
+                <el-form-item label="数据日期">
+                  <el-date-picker
+                    v-model="step.config.date_str"
+                    type="date"
+                    placeholder="选择数据日期"
+                    format="YYYY-MM-DD"
+                    value-format="YYYY-MM-DD"
+                    style="width: 100%"
+                    @change="onTrendDateStrChange(step)"
+                  />
+                </el-form-item>
+
+                <el-form-item label="趋势时间范围">
+                  <div style="width: 100%">
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                      <el-radio-group v-model="step.config.date_preset" size="small" @change="onTrendPresetChange(step)">
+                        <el-radio-button label="1m">最近1个月</el-radio-button>
+                        <el-radio-button label="6m">最近半年</el-radio-button>
+                        <el-radio-button label="1y">最近1年</el-radio-button>
+                        <el-radio-button label="custom">自定义</el-radio-button>
+                      </el-radio-group>
+                    </div>
+                    <el-date-picker
+                      v-if="step.config.date_preset === 'custom'"
+                      v-model="step.config.date_range"
+                      type="daterange"
+                      range-separator="至"
+                      start-placeholder="开始日期"
+                      end-placeholder="结束日期"
+                      format="YYYY-MM-DD"
+                      value-format="YYYY-MM-DD"
+                      style="width: 100%"
+                      @change="onTrendRangeChange(step)"
+                    />
+                    <el-tag v-else type="info" style="margin-top: 4px;">
+                      {{ step.config.date_range_start || '?' }} 至 {{ step.config.date_range_end || '?' }}
+                    </el-tag>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="输出文件名">
+                  <el-input v-model="step.config.output_filename" :placeholder="`11百日新高趋势图${step.config.date_str || '{date}'}.xlsx`" />
                 </el-form-item>
               </template>
 
@@ -1299,6 +1355,7 @@ const getStepType = (type) => {
     export_excel: 'info',
     condition_intersection: 'warning',
     export_ma20_trend: 'warning',
+    export_high_price_trend: 'warning',
     ranking_sort: 'success',
     pledge_trend_analysis: 'warning',
     pending: 'danger'
@@ -1320,6 +1377,7 @@ const getStepTypeName = (type) => {
     match_sector: '匹配一级板块',
     condition_intersection: '合并当日数据',
     export_ma20_trend: '导出趋势Excel',
+    export_high_price_trend: '导出百日新高趋势Excel',
     ranking_sort: '涨幅排名排序',
     pledge_trend_analysis: '质押异动和趋势',
     pending: '待定'
@@ -1327,8 +1385,8 @@ const getStepTypeName = (type) => {
   return names[type] || type
 }
 
-// 条件交集 & 导出20日均线趋势 相关
-const AGGREGATION_TYPES = ['条件交集', '导出20日均线趋势']
+// 条件交集 & 导出20日均线趋势 & 百日新高总趋势 相关
+const AGGREGATION_TYPES = ['条件交集', '导出20日均线趋势', '百日新高总趋势']
 const isAggregationType = computed(() => AGGREGATION_TYPES.includes(form.value.workflow_type))
 
 const FILTER_COLUMNS = ['百日新高', '20日均线', '国企', '一级板块']
@@ -1410,7 +1468,24 @@ const defaultMa20TrendStep = () => {
       date_range_start: range.start,
       date_range_end: range.end,
       date_range: null,
-      output_filename: '10站上20日均线趋势.xlsx'
+      output_filename: `10站上20日均线趋势${today}.xlsx`
+    },
+    status: 'pending'
+  }
+}
+
+const defaultHighPriceTrendStep = () => {
+  const today = new Date().toISOString().split('T')[0]
+  const range = computeTrendDateRange('6m', today)
+  return {
+    type: 'export_high_price_trend',
+    config: {
+      date_str: today,
+      date_preset: '6m',
+      date_range_start: range.start,
+      date_range_end: range.end,
+      date_range: null,
+      output_filename: `11百日新高趋势图${today}.xlsx`
     },
     status: 'pending'
   }
@@ -1431,6 +1506,26 @@ const onTrendDateStrChange = (step) => {
     step.config.date_range_start = range.start
     step.config.date_range_end = range.end
     step.config.date_range = null
+  }
+  // 百日新高总趋势：输出文件名按新日期同步（仅当用户未自定义或仍是旧自动名时）
+  if (step.type === 'export_high_price_trend' && step.config.date_str) {
+    const autoName = `11百日新高趋势图${step.config.date_str}.xlsx`
+    const prev = step.config.output_filename || ''
+    // 仅替换自动生成的文件名；用户手动改过的保持不动
+    if (!prev || /^11百日新高趋势图\d{4}-\d{2}-\d{2}\.xlsx$/.test(prev) || prev.includes('{date}')) {
+      step.config.output_filename = autoName
+    }
+  }
+  // 导出20日均线趋势：输出文件名按新日期同步
+  if (step.type === 'export_ma20_trend' && step.config.date_str) {
+    const autoName = `10站上20日均线趋势${step.config.date_str}.xlsx`
+    const prev = step.config.output_filename || ''
+    if (!prev
+        || prev === '10站上20日均线趋势.xlsx'
+        || /^10站上20日均线趋势\d{4}-\d{2}-\d{2}\.xlsx$/.test(prev)
+        || prev.includes('{date}')) {
+      step.config.output_filename = autoName
+    }
   }
 }
 
@@ -1513,6 +1608,8 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
     form.value.steps = [defaultIntersectionStep()]
   } else if (newType === '导出20日均线趋势') {
     form.value.steps = [defaultMa20TrendStep()]
+  } else if (newType === '百日新高总趋势') {
+    form.value.steps = [defaultHighPriceTrendStep()]
   } else if (newType === '涨幅排名') {
     form.value.steps = defaultRankingSteps()
   } else if ((wasAgg || oldType === '涨幅排名') && !isAgg && newType !== '涨幅排名') {
@@ -1690,9 +1787,10 @@ const handleSave = async () => {
     return
   }
 
-  // 保存前：对 export_ma20_trend 步骤按 preset + date_str 重算范围
+  // 保存前：对 export_ma20_trend / export_high_price_trend 步骤按 preset + date_str 重算范围
   form.value.steps.forEach(step => {
-    if (step.type === 'export_ma20_trend' && step.config?.date_preset && step.config.date_preset !== 'custom') {
+    if ((step.type === 'export_ma20_trend' || step.type === 'export_high_price_trend')
+        && step.config?.date_preset && step.config.date_preset !== 'custom') {
       const range = computeTrendDateRange(step.config.date_preset, step.config.date_str)
       step.config.date_range_start = range.start
       step.config.date_range_end = range.end
@@ -2183,9 +2281,10 @@ const handleEdit = (row) => {
   if (form.value.steps.length === 0) {
     form.value.steps = [defaultStep()]
   }
-  // 对 export_ma20_trend 步骤：非 custom preset 时按 date_str 重算趋势范围
+  // 对 export_ma20_trend / export_high_price_trend 步骤：非 custom preset 时按 date_str 重算趋势范围
   form.value.steps.forEach(step => {
-    if (step.type === 'export_ma20_trend' && step.config?.date_preset && step.config.date_preset !== 'custom') {
+    if ((step.type === 'export_ma20_trend' || step.type === 'export_high_price_trend')
+        && step.config?.date_preset && step.config.date_preset !== 'custom') {
       const range = computeTrendDateRange(step.config.date_preset, step.config.date_str)
       step.config.date_range_start = range.start
       step.config.date_range_end = range.end

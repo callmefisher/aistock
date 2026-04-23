@@ -198,7 +198,116 @@
         </el-card>
       </el-tab-pane>
 
-      <!-- ===== Tab 3: 板块涨幅分析 ===== -->
+      <!-- ===== Tab 3: 百日新高总趋势 ===== -->
+      <el-tab-pane label="百日新高总趋势" name="hp_trend">
+        <!-- 日期区间 + 导出 -->
+        <div class="trend-toolbar">
+          <div class="trend-date-btns">
+            <el-button-group>
+              <el-button :type="hpDatePreset === 'month' ? 'primary' : ''" size="small" @click="hpSetDatePreset('month')">本月</el-button>
+              <el-button :type="hpDatePreset === 'lastMonth' ? 'primary' : ''" size="small" @click="hpSetDatePreset('lastMonth')">上月</el-button>
+              <el-button :type="hpDatePreset === 'year' ? 'primary' : ''" size="small" @click="hpSetDatePreset('year')">本年</el-button>
+            </el-button-group>
+            <el-date-picker
+              v-model="hpDateRange"
+              type="daterange"
+              range-separator="至"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              format="YYYY-MM-DD"
+              value-format="YYYY-MM-DD"
+              size="small"
+              style="width: 260px; margin-left: 12px"
+              @change="hpOnDateRangeChange"
+            />
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <el-button size="small" type="success" @click="hpExportAll">
+              <el-icon><Download /></el-icon> 导出
+            </el-button>
+          </div>
+        </div>
+
+        <!-- 图表区域 -->
+        <div class="trend-charts" v-loading="hpTrendLoading">
+          <el-card class="chart-card" shadow="hover">
+            <template #header>
+              <div class="chart-header">
+                <span class="chart-title">11百日新高总趋势</span>
+                <span style="font-size:12px;color:#909399">数量 = 当日有效股票代码行数</span>
+              </div>
+            </template>
+            <div v-if="hpTrendData.length" class="chart-container" ref="hpChartRef"></div>
+            <el-empty v-else description="暂无数据，录入或执行工作流后会自动展示" :image-size="60" />
+          </el-card>
+        </div>
+
+        <el-divider content-position="left">数据管理</el-divider>
+
+        <div class="trend-data-mgmt">
+          <!-- 手动录入 -->
+          <el-card shadow="never" class="mgmt-card">
+            <template #header><span>手动录入</span></template>
+            <el-form :model="hpManualForm" inline size="small">
+              <el-form-item label="日期">
+                <el-date-picker v-model="hpManualForm.date_str" type="date" format="YYYY-MM-DD" value-format="YYYY-MM-DD" placeholder="选择日期" style="width: 150px" />
+              </el-form-item>
+              <el-form-item label="数量">
+                <el-input-number v-model="hpManualForm.count" :min="0" controls-position="right" style="width: 140px" />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" @click="hpSubmitManual" :loading="hpSubmitting">保存</el-button>
+              </el-form-item>
+            </el-form>
+          </el-card>
+
+          <!-- Excel 上传 -->
+          <el-card shadow="never" class="mgmt-card">
+            <template #header><span>Excel 上传</span></template>
+            <el-form inline size="small">
+              <el-form-item>
+                <input type="file" accept=".xlsx,.xls" ref="hpFileInput" @change="hpHandleUpload" style="display:none" />
+                <el-button @click="$refs.hpFileInput?.click()">选择文件</el-button>
+              </el-form-item>
+            </el-form>
+            <el-alert title="两列格式：日期 + 数量。空数量行自动跳过。"
+              type="info" :closable="false" style="margin-top: 6px;" />
+            <div v-if="hpUploadPreview.length">
+              <el-table :data="hpUploadPreview" stripe border max-height="240" size="small" style="margin-top: 8px">
+                <el-table-column prop="date_str" label="日期" width="140" />
+                <el-table-column prop="count" label="数量" width="140" />
+              </el-table>
+              <div style="margin-top: 8px; display: flex; gap: 8px">
+                <el-button type="primary" size="small" @click="hpConfirmUpload" :loading="hpSubmitting">确认入库 ({{ hpUploadPreview.length }}条)</el-button>
+                <el-button size="small" @click="hpUploadPreview = []">取消</el-button>
+              </div>
+            </div>
+          </el-card>
+        </div>
+
+        <!-- 已录入数据 -->
+        <el-card shadow="never" style="margin-top: 16px">
+          <template #header><span>已录入数据</span></template>
+          <el-table :data="hpTrendData" stripe border size="small" max-height="300">
+            <el-table-column prop="date_str" label="日期" width="140" sortable />
+            <el-table-column prop="count" label="数量" width="140" align="center" />
+            <el-table-column prop="source" label="来源" width="100" align="center">
+              <template #default="{ row }">
+                <el-tag :type="row.source === 'auto' ? 'success' : row.source === 'excel' ? 'warning' : 'info'" size="small">
+                  {{ { manual: '手动', excel: 'Excel', auto: '自动' }[row.source] || row.source }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100" align="center">
+              <template #default="{ row }">
+                <el-button type="danger" link size="small" @click="hpDeleteItem(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-tab-pane>
+
+      <!-- ===== Tab 4: 板块涨幅分析 ===== -->
       <el-tab-pane label="板块涨幅分析" name="ranking">
         <div v-loading="rankingLoading">
           <!-- 数据选择器 -->
@@ -878,6 +987,10 @@ watch(mainTab, (val) => {
     if (!trendDateRange.value?.length) setDatePreset('year')
     else fetchTrendData()
   }
+  if (val === 'hp_trend') {
+    if (!hpDateRange.value?.length) hpSetDatePreset('year')
+    else hpFetchTrendData()
+  }
   if (val === 'ranking' && !rankingData.value) fetchRankingAnalysis()
 })
 
@@ -885,6 +998,7 @@ watch(mainTab, (val) => {
 const handleResize = () => {
   Object.values(chartInstances).forEach(c => c?.resize())
   Object.values(rkChartInstances).forEach(c => c?.resize())
+  hpChartInstance?.resize()
 }
 onMounted(() => {
   fetchData()
@@ -894,6 +1008,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
   Object.values(chartInstances).forEach(c => c?.dispose())
   Object.values(rkChartInstances).forEach(c => c?.dispose())
+  hpChartInstance?.dispose()
 })
 
 // ===== 手动录入 =====
@@ -1010,6 +1125,171 @@ const exportSingleTrend = async (wt) => {
     await api.download(`/statistics/trend/trend-data/export?${params}`, `20日均线趋势_${wt}.xlsx`)
     ElMessage.success('已导出（含趋势图）')
   } catch (e) { ElMessage.error('导出失败') }
+}
+
+// ===== 百日新高总趋势 tab =====
+const hpTrendLoading = ref(false)
+const hpTrendData = ref([])
+const hpDatePreset = ref('year')
+const hpDateRange = ref([])
+const hpSubmitting = ref(false)
+const hpManualForm = reactive({ date_str: '', count: 0 })
+const hpUploadPreview = ref([])
+const hpFileInput = ref(null)
+const hpChartRef = ref(null)
+let hpChartInstance = null
+
+const hpSetDatePreset = (preset) => {
+  hpDatePreset.value = preset
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = now.getMonth()
+  const fmt = d => d.toISOString().split('T')[0]
+  if (preset === 'month') {
+    hpDateRange.value = [fmt(new Date(y, m, 1)), fmt(now)]
+  } else if (preset === 'lastMonth') {
+    hpDateRange.value = [fmt(new Date(y, m - 1, 1)), fmt(new Date(y, m, 0))]
+  } else {
+    hpDateRange.value = [fmt(new Date(y, 0, 1)), fmt(now)]
+  }
+  hpFetchTrendData()
+}
+
+const hpOnDateRangeChange = () => {
+  hpDatePreset.value = ''
+  hpFetchTrendData()
+}
+
+const hpFetchTrendData = async () => {
+  hpTrendLoading.value = true
+  try {
+    const [start, end] = hpDateRange.value || []
+    const res = await api.get('/statistics/trend/trend-data/', {
+      params: { metric_type: 'high_price', start_date: start, end_date: end }
+    })
+    if (res?.success) hpTrendData.value = res.data || []
+  } catch { ElMessage.error('获取百日新高趋势数据失败') }
+  finally { hpTrendLoading.value = false }
+}
+
+const hpRenderChart = async () => {
+  await nextTick()
+  if (!hpChartRef.value) return
+  if (!hpChartInstance) {
+    hpChartInstance = echarts.init(hpChartRef.value)
+  }
+  const data = [...hpTrendData.value].sort((a, b) => a.date_str.localeCompare(b.date_str))
+  const dates = data.map(d => d.date_str)
+  const counts = data.map(d => d.count)
+  const option = {
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        const idx = params[0].dataIndex
+        const fullDate = dates[idx] || params[0].axisValue
+        let html = `<b>${fullDate}</b><br/>`
+        params.forEach(p => { html += `${p.marker} ${p.seriesName}: ${p.value}<br/>` })
+        return html
+      }
+    },
+    legend: { data: ['数量'], top: 0 },
+    grid: { left: 50, right: 50, bottom: dates.length > 30 ? 70 : 40, top: 36 },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: dates.map(d => { const p = d.split('-'); return `${+p[1]}/${+p[2]}` }),
+      axisLabel: {
+        rotate: dates.length > 15 ? 45 : 0,
+        fontSize: 11,
+        interval: dates.length > 60 ? Math.floor(dates.length / 20) - 1 : dates.length > 30 ? Math.floor(dates.length / 15) - 1 : 'auto'
+      }
+    },
+    dataZoom: dates.length > 30 ? [{ type: 'slider', start: 0, end: 100, height: 20, bottom: 5 }] : [],
+    yAxis: { type: 'value', name: '数量', min: 0, minInterval: 1, splitNumber: 5, axisLabel: { fontSize: 11 } },
+    series: [{
+      name: '数量', type: 'line', smooth: true, data: counts,
+      itemStyle: { color: '#67C23A' },
+      lineStyle: { width: 2.5, color: '#67C23A' },
+      symbol: 'circle', symbolSize: 6,
+    }]
+  }
+  hpChartInstance.setOption(option, true)
+}
+
+watch(hpTrendData, () => { nextTick(() => hpRenderChart()) })
+
+const hpSubmitManual = async () => {
+  if (!hpManualForm.date_str) { ElMessage.warning('请选择日期'); return }
+  if (hpManualForm.count < 0) { ElMessage.warning('数量不能为负'); return }
+  hpSubmitting.value = true
+  try {
+    await api.post('/statistics/trend/trend-data/', {
+      metric_type: 'high_price',
+      workflow_type: '百日新高总趋势',
+      date_str: hpManualForm.date_str,
+      count: hpManualForm.count,
+      total: 0,
+    })
+    ElMessage.success('已保存')
+    hpManualForm.count = 0
+    await hpFetchTrendData()
+  } catch (e) { ElMessage.error('保存失败') }
+  finally { hpSubmitting.value = false }
+}
+
+const hpHandleUpload = async (e) => {
+  const file = e.target.files?.[0]
+  if (!file) return
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('workflow_type', '百日新高总趋势')
+  formData.append('metric_type', 'high_price')
+  try {
+    const res = await api.post('/statistics/trend/trend-data/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    if (res?.success) {
+      hpUploadPreview.value = res.records || []
+      ElMessage.success(`解析成功，共${res.count}条`)
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '上传失败')
+  } finally {
+    e.target.value = ''
+  }
+}
+
+const hpConfirmUpload = async () => {
+  hpSubmitting.value = true
+  try {
+    const res = await api.post('/statistics/trend/trend-data/batch', {
+      metric_type: 'high_price', source: 'excel', records: hpUploadPreview.value
+    })
+    ElMessage.success(res.message || '已入库')
+    hpUploadPreview.value = []
+    await hpFetchTrendData()
+  } catch { ElMessage.error('入库失败') }
+  finally { hpSubmitting.value = false }
+}
+
+const hpDeleteItem = async (row) => {
+  try {
+    await ElMessageBox.confirm(`确认删除 ${row.date_str} 的数据？`, '确认', { type: 'warning' })
+    await api.delete(`/statistics/trend/trend-data/${row.id}`)
+    ElMessage.success('已删除')
+    await hpFetchTrendData()
+  } catch {}
+}
+
+const hpExportAll = async () => {
+  try {
+    const params = new URLSearchParams({ metric_type: 'high_price' })
+    if (hpDateRange.value?.[0]) params.append('start_date', hpDateRange.value[0])
+    if (hpDateRange.value?.[1]) params.append('end_date', hpDateRange.value[1])
+    const endDate = hpDateRange.value?.[1] || new Date().toISOString().split('T')[0]
+    await api.download(`/statistics/trend/trend-data/export?${params}`, `11百日新高趋势图${endDate}.xlsx`)
+    ElMessage.success('已导出（含趋势图）')
+  } catch { ElMessage.error('导出失败') }
 }
 
 // ===== 板块涨幅分析 tab =====

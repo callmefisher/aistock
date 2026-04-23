@@ -747,6 +747,8 @@ class WorkflowExecutor:
                 return await self._condition_intersection(step_config, date_str)
             elif step_type == "export_ma20_trend":
                 return await self._export_ma20_trend(step_config, date_str)
+            elif step_type == "export_high_price_trend":
+                return await self._export_high_price_trend(step_config, date_str)
             elif step_type == "ranking_sort":
                 return await self._ranking_sort(step_config, input_data, date_str)
             elif step_type == "pledge_trend_analysis":
@@ -2249,7 +2251,10 @@ class WorkflowExecutor:
         from services.trend_service import get_trend_data, export_trend_excel_with_chart
 
         date_str = config.get("date_str") or date_str or self.today
-        output_filename = config.get("output_filename") or "10站上20日均线趋势.xlsx"
+        output_filename = config.get("output_filename") or f"10站上20日均线趋势{date_str}.xlsx"
+        # 兼容用户在 UI 里留下的 {date} 占位
+        if "{date}" in output_filename:
+            output_filename = output_filename.replace("{date}", date_str)
         date_preset = config.get("date_preset")
         date_range_start = config.get("date_range_start")
         date_range_end = config.get("date_range_end")
@@ -2302,6 +2307,78 @@ class WorkflowExecutor:
             "columns": list(data[0].keys()) if data else [],
             "rows": len(data),
             "file_path": output_path,
+        }
+
+    async def _export_high_price_trend(self, config: Dict, date_str: Optional[str] = None) -> Dict[str, Any]:
+        """导出百日新高总趋势：扫当日文件 count→写DB→拉历史→出图。"""
+        from services.trend_service import (
+            count_high_price_rows, save_trend_data, get_trend_data,
+            export_trend_excel_with_chart,
+        )
+
+        date_str = config.get("date_str") or date_str or self.today
+        output_filename = config.get("output_filename") or f"11百日新高趋势图{date_str}.xlsx"
+        # 兼容用户在 UI 里留下的 {date} 占位
+        if "{date}" in output_filename:
+            output_filename = output_filename.replace("{date}", date_str)
+        date_preset = config.get("date_preset")
+        date_range_start = config.get("date_range_start")
+        date_range_end = config.get("date_range_end")
+
+        if date_preset and date_preset != "custom":
+            from datetime import datetime as _dt
+            from dateutil.relativedelta import relativedelta
+            try:
+                anchor = _dt.strptime(date_str, "%Y-%m-%d")
+                if date_preset == "1m":
+                    start = anchor - relativedelta(months=1)
+                elif date_preset == "6m":
+                    start = anchor - relativedelta(months=6)
+                elif date_preset == "1y":
+                    start = anchor - relativedelta(years=1)
+                else:
+                    start = None
+                if start is not None:
+                    date_range_start = start.strftime("%Y-%m-%d")
+                    date_range_end = anchor.strftime("%Y-%m-%d")
+            except Exception as e:
+                logger.warning(f"[导出百日新高趋势] preset 范围计算失败，回退: {e}")
+
+        count = count_high_price_rows(self.base_dir, date_str)
+        if count > 0:
+            ok = await save_trend_data(
+                metric_type="high_price",
+                workflow_type="百日新高总趋势",
+                date_str=date_str,
+                count=count,
+                total=0,
+                source="auto",
+            )
+            if not ok:
+                logger.error(f"[导出百日新高趋势] {date_str} DB 写入失败，仍继续出图")
+        else:
+            logger.info(f"[导出百日新高趋势] {date_str} count=0 已跳过入库")
+
+        data = await get_trend_data(
+            metric_type="high_price",
+            start_date=date_range_start,
+            end_date=date_range_end,
+        )
+
+        output_dir = os.path.join(self.base_dir, "百日新高总趋势", date_str)
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, output_filename)
+        export_trend_excel_with_chart(data, output_path, metric_type="high_price")
+        logger.info(f"[导出百日新高趋势] 输出文件: {output_path}, 历史{len(data)}条，当日count={count}")
+
+        return {
+            "success": True,
+            "message": f"百日新高总趋势导出完成：当日{count} + 历史{len(data)}条",
+            "data": data[:100],
+            "columns": list(data[0].keys()) if data else [],
+            "rows": len(data),
+            "file_path": output_path,
+            "today_count": count,
         }
 
     def _apply_filters(self, df: pd.DataFrame, filter_conditions: list, filter_logic: str = "AND") -> pd.DataFrame:
@@ -2450,7 +2527,9 @@ class WorkflowExecutor:
         sort_col_raw = cols[1]    # 排序列（第2列，固定位置）
         # 多行列名只取第一行（如 "成份区间涨跌幅(算术平均)\n[起始交易日期]..." → "成份区间涨跌幅(算术平均)"）
         sort_col_display = str(sort_col_raw).split('\n')[0].strip()
-        logger.info(f"[涨幅排名] 板块列={sector_col}, 排序列={sort_col_display}")
+        # 按用户要求，展示名固定为"今日涨跌幅"（下游所有逻辑按 sort_col 变量处理，换名不影响）
+        sort_col_display = "今日涨跌幅"
+        logger.info(f"[涨幅排名] 板块列={sector_col}, 原始列={str(sort_col_raw).split(chr(10))[0].strip()}, 展示列={sort_col_display}")
 
         # 2. 提取板块名称和排序列，过滤空行，转数值排序
         work_df = df[[sector_col, sort_col_raw]].copy()

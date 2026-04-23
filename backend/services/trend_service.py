@@ -1,15 +1,97 @@
 import logging
+import os
+import glob
 import re as _re
 import pandas as pd
 from typing import Optional, List, Dict, Any
 from sqlalchemy import text
 from core.database import AsyncSessionLocal
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.chart import LineChart, Reference
 from openpyxl.utils import get_column_letter
 import xlsxwriter
 
 logger = logging.getLogger(__name__)
+
+
+_HIGH_PRICE_CODE_KEYS = {"证券代码", "股票代码", "代码"}
+
+# 合法股票代码：6位数字 + 可选交易所后缀（.SH/.SZ/.BJ/.NQ 等），或纯 6 位数字
+_CODE_RE = _re.compile(r"^\d{6}(\.[A-Za-z]{2,4})?$")
+
+
+def _norm_header(s: Any) -> str:
+    return str(s).replace("\n", "").replace(" ", "").strip().lower() if s is not None else ""
+
+
+_HIGH_PRICE_CODE_KEYS_NORM = {_norm_header(k) for k in _HIGH_PRICE_CODE_KEYS}
+
+
+def count_high_price_rows(base_dir: str, date_str: str) -> int:
+    """统计 data/excel/{date_str}/百日新高/ 下所有 xlsx 中，
+    "证券代码/股票代码/代码"列非空单元格的去重代码总数。
+
+    - 列名归一后匹配（去换行/空白/大小写不敏感）
+    - 多文件/多 sheet 取并集去重
+    - 目录不存在 / 无 xlsx / 全部识别失败 → 返回 0（不 raise）
+    - 单个文件或 sheet 错误 → log warning 跳过
+    """
+    target_dir = os.path.join(base_dir, date_str, "百日新高")
+    if not os.path.isdir(target_dir):
+        logger.info(f"[百日新高总趋势] 目录不存在 {target_dir}")
+        return 0
+
+    files = sorted(glob.glob(os.path.join(target_dir, "*.xlsx")))
+    if not files:
+        logger.info(f"[百日新高总趋势] 目录内无 xlsx {target_dir}")
+        return 0
+
+    codes: set = set()
+    for fp in files:
+        try:
+            wb = load_workbook(fp, read_only=True, data_only=True)
+        except Exception as e:
+            logger.warning(f"[百日新高总趋势] 打开文件失败 {fp}: {e}")
+            continue
+        try:
+            for sn in wb.sheetnames:
+                ws = wb[sn]
+                if getattr(ws, "sheet_state", "visible") != "visible":
+                    continue
+                header_row = None
+                for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+                    header_row = row
+                    break
+                if not header_row:
+                    continue
+                code_idx = None
+                for idx, cell in enumerate(header_row):
+                    if cell is None:
+                        continue
+                    if _norm_header(cell) in _HIGH_PRICE_CODE_KEYS_NORM:
+                        code_idx = idx
+                        break
+                if code_idx is None:
+                    logger.warning(f"[百日新高总趋势] {os.path.basename(fp)}::{sn} 未找到代码列，跳过")
+                    continue
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if code_idx >= len(row):
+                        continue
+                    v = row[code_idx]
+                    if v is None:
+                        continue
+                    s = str(v).strip()
+                    if not s:
+                        continue
+                    if not _CODE_RE.match(s):
+                        # 排除水印/说明文字等非股票代码
+                        continue
+                    codes.add(s)
+        finally:
+            wb.close()
+
+    logger.info(f"[百日新高总趋势] {date_str} 扫描 {len(files)} 文件，去重后 {len(codes)} 条")
+    return len(codes)
 
 
 async def save_trend_data(
@@ -298,8 +380,95 @@ def _parse_pledge_side_by_side(file_path: str) -> List[Dict[str, Any]]:
     )
 
 
-def parse_excel_for_trend(file_path: str, workflow_type: str) -> List[Dict[str, Any]]:
+def _parse_high_price_excel(file_path: str) -> List[Dict[str, Any]]:
+    """解析百日新高总趋势两列 Excel：日期 + 数量。
+    其余字段 total=0, ratio=0。空数量行跳过。"""
+    df = pd.read_excel(file_path)
+
+    # 归一列名：去空白/换行/大小写
+    def _norm(c):
+        return str(c).replace("\n", "").replace(" ", "").strip().lower()
+
+    date_col = None
+    count_col = None
+    for col in df.columns:
+        n = _norm(col)
+        if date_col is None and n in ("日期", "date", "数据日期"):
+            date_col = col
+        if count_col is None and n in ("数量", "count", "行数", "站上百日新高数量", "百日新高数量"):
+            count_col = col
+
+    if date_col is None:
+        raise ValueError(f"未找到日期列，可用列: {list(df.columns)}")
+    if count_col is None:
+        raise ValueError(f"未找到数量列（别名：数量/count/行数/百日新高数量），可用列: {list(df.columns)}")
+
+    from datetime import datetime as _dt
+    base_year = _dt.now().year
+    today = _dt.now().date()
+    re_cnd = _re.compile(r'(\d+)\s*月\s*(\d+)\s*日')
+
+    def _parse_date(val):
+        if pd.isna(val):
+            return None
+        # numpy.int64/float64 也走序列号分支
+        try:
+            fv = float(val)
+            if 30000 <= fv <= 60000 and not isinstance(val, str):
+                try:
+                    return (pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(fv))).strftime("%Y-%m-%d")
+                except Exception:
+                    return None
+        except (TypeError, ValueError):
+            pass
+        if isinstance(val, str):
+            s = val.strip()
+            m = re_cnd.match(s)
+            if m:
+                month, day = int(m.group(1)), int(m.group(2))
+                for y in (base_year, base_year - 1):
+                    try:
+                        d = _dt(y, month, day).date()
+                        if d <= today:
+                            return d.strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
+                return None
+        try:
+            return pd.to_datetime(val).strftime("%Y-%m-%d")
+        except Exception:
+            return None
+
+    records = []
+    for _, row in df.iterrows():
+        ds = _parse_date(row[date_col])
+        if not ds:
+            continue
+        cv = row[count_col]
+        if pd.isna(cv):
+            continue
+        s = str(cv).strip()
+        if not s:
+            continue
+        try:
+            count = int(float(s))
+        except (ValueError, TypeError):
+            continue
+        records.append({
+            "workflow_type": "百日新高总趋势",
+            "date_str": ds,
+            "count": count,
+            "total": 0,
+            "ratio": 0,
+        })
+    return records
+
+
+def parse_excel_for_trend(file_path: str, workflow_type: str, metric_type: str = "ma20") -> List[Dict[str, Any]]:
     """解析 Excel 文件为趋势数据记录列表，供前端预览确认"""
+    # metric_type='high_price'：两列格式（日期 + 数量）
+    if metric_type == "high_price":
+        return _parse_high_price_excel(file_path)
     # 特殊类型：质押并排双列
     if workflow_type == "质押(双列并排)":
         return _parse_pledge_side_by_side(file_path)
@@ -423,12 +592,80 @@ async def batch_save_trend_data(metric_type: str, records: List[Dict[str, Any]],
         return 0
 
 
-def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type: str = None):
+def _export_high_price_trend_excel(data: List[Dict], file_path: str):
+    """导出百日新高总趋势 Excel：单系列折线图，Y 轴=数量。"""
+    wb = xlsxwriter.Workbook(file_path)
+    ws = wb.add_worksheet("百日新高总趋势")
+
+    title_fmt = wb.add_format({'bold': True, 'font_size': 13, 'align': 'center', 'valign': 'vcenter'})
+    header_fmt = wb.add_format({'bold': True, 'bg_color': '#F2F2F2', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    data_fmt = wb.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    num_fmt = wb.add_format({'border': 1, 'num_format': '0', 'align': 'center', 'valign': 'vcenter'})
+
+    ws.set_column('A:A', 10)
+    ws.set_column('B:B', 12)
+    ws.set_column('C:C', 14)
+
+    if not data:
+        ws.write(0, 0, "暂无数据")
+        wb.close()
+        return
+
+    items = sorted(data, key=lambda x: x["date_str"])
+
+    ws.merge_range(0, 0, 0, 2, "【11百日新高总趋势】", title_fmt)
+    for col_idx, h in enumerate(["日期", "数量", "完整日期"]):
+        ws.write(1, col_idx, h, header_fmt)
+
+    data_start_row = 2
+    for i, item in enumerate(items):
+        ds = item["date_str"]
+        try:
+            parts = ds.split('-')
+            short_date = f"{int(parts[1])}/{int(parts[2])}"
+        except Exception:
+            short_date = ds
+        r = data_start_row + i
+        ws.write(r, 0, short_date, data_fmt)
+        ws.write(r, 1, int(item.get("count") or 0), num_fmt)
+        ws.write(r, 2, ds, data_fmt)
+    data_end_row = data_start_row + len(items) - 1
+
+    chart = wb.add_chart({'type': 'line'})
+    chart.set_title({'name': "11百日新高总趋势"})
+    chart.set_size({'width': 720, 'height': 380})
+    chart.set_legend({'none': True})
+    chart.add_series({
+        'name': '数量',
+        'categories': ['百日新高总趋势', data_start_row, 0, data_end_row, 0],
+        'values': ['百日新高总趋势', data_start_row, 1, data_end_row, 1],
+        'line': {'width': 2.5, 'color': '#67C23A'},
+        'marker': {'type': 'circle', 'size': 4, 'fill': {'color': '#67C23A'}},
+    })
+    chart.set_y_axis({'name': '数量', 'num_format': '0'})
+
+    num_points = len(items)
+    x_axis_opts = {'name': '日期', 'label_position': 'low'}
+    if num_points > 15:
+        interval = max(1, num_points // 15)
+        x_axis_opts['interval_unit'] = interval
+        x_axis_opts['num_font'] = {'rotation': -45, 'size': 9}
+    chart.set_x_axis(x_axis_opts)
+
+    ws.insert_chart(1, 4, chart)
+
+    wb.close()
+    logger.info(f"[百日新高总趋势] Excel 已导出: {file_path}, {len(items)} 条")
+
+
+def export_trend_excel_with_chart(data: List[Dict], file_path: str, single_type: str = None, metric_type: str = "ma20"):
     """导出趋势数据到 Excel（xlsxwriter）：每个工作流类型的数据 + 双Y轴折线图，兼容 WPS 和 Excel
 
     质押类型特殊处理：DB 里的 '质押(中大盘)' 和 '质押(小盘)' 两个子类型在导出时
     合并成一个 '质押' 逻辑组，同一表格并列两套数据列，共享 1 个双曲线图表。
     """
+    if metric_type == "high_price":
+        return _export_high_price_trend_excel(data, file_path)
     from config.workflow_type_config import WORKFLOW_TYPE_CONFIG
 
     # 按工作流类型分组；质押所有变种统一归入 pledge_sub 两个桶（不入 type_groups）

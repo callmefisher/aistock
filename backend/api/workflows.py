@@ -189,7 +189,7 @@ async def list_workflows(
     current_user: User = Depends(get_current_user)
 ):
     result = await db.execute(
-        select(Workflow).offset(skip).limit(limit)
+        select(Workflow).order_by(Workflow.name.asc()).offset(skip).limit(limit)
     )
     return result.scalars().all()
 

@@ -90,6 +90,7 @@ async def batch_create_trend_data(
 @router.post("/trend-data/upload")
 async def upload_trend_excel(
     workflow_type: str = Form(...),
+    metric_type: str = Form("ma20"),
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
@@ -100,7 +101,7 @@ async def upload_trend_excel(
         with open(tmp_path, "wb") as f:
             f.write(content)
 
-        records = parse_excel_for_trend(tmp_path, workflow_type)
+        records = parse_excel_for_trend(tmp_path, workflow_type, metric_type=metric_type)
         return {"success": True, "records": records, "count": len(records)}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -128,9 +129,12 @@ async def export_trend_data(
     tmp_dir = tempfile.mkdtemp()
     try:
         date_range = f"{start_date or 'all'}_{end_date or 'all'}"
-        filename = f"20日均线趋势_{date_range}.xlsx"
+        if metric_type == "high_price":
+            filename = f"11百日新高趋势图{end_date or date_range}.xlsx"
+        else:
+            filename = f"20日均线趋势_{date_range}.xlsx"
         file_path = os.path.join(tmp_dir, filename)
-        export_trend_excel_with_chart(data, file_path, workflow_type)
+        export_trend_excel_with_chart(data, file_path, workflow_type, metric_type=metric_type)
         if background_tasks:
             background_tasks.add_task(shutil.rmtree, tmp_dir, True)
         return FileResponse(

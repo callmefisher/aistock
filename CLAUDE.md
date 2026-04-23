@@ -8,6 +8,8 @@
 - >3 文件变更必须分解子任务
 - Bug 修复遵循 TDD：写失败测试 → 修复 → 全部通过
 - 用户纠正后在「经验教训」追加规则
+- 代码文件不要超过900行，必要时可以分拆多个子文件
+- 高频模块尽量考虑抽象为公共模块，提高复用率；单个函数实现行数尽量不要超过200行
 
 ## 经验教训
 
@@ -19,6 +21,7 @@
 6. 质押工作流最终输出样式（质押比例红绿、最新公告日首次出现绿标）必须仅在 `_finalize_pledge_output` 一次性施加——中间步骤（match_* 等）的 `to_excel` 会清除 openpyxl 样式，早施加的样式会消失。finalize 由 `api/workflows.py::run_workflow` 循环末尾的 `executor.finalize_pledge_if_needed(last_output_file, date_str)` 统一触发，`_match_sector` / `_pledge_trend_analysis` 末尾**不再**调用 `_sync_pledge_final_to_public`（否则双写）。
 7. 质押来源识别：文件名**前缀**优先（`中大盘{date}.xlsx` / `小盘{date}.xlsx`），sheet 名前缀兜底。用 `startswith` 而非 `in`——`"2026小盘汇总.xlsx"` 这类含子串但非前缀的不应误判。`_derive_pledge_source(file_name, sheet_name)` 签名两者必须都接。
 8. 质押首次出现绿标基准：`_load_pledge_baseline(public_dir)` 合并两源——`/质押/public/` 目录下所有 xlsx（遍历每 sheet，按列名抽 `证券代码` + `最新公告日` / `股权质押公告日期*`）+ `stock_pools` 表 `is_active=True` 记录的 `data` JSON（列表形如 `[{证券代码, 最新公告日, ...}]`）。判定时只看 `证券代码` 键（不分 sheet/来源），若新行 `最新公告日 > baseline` 或 code 未见过 → 绿标。
+9. 百日新高总趋势行数统计：源文件最后一行可能是水印文字（如"数据来源于：i问财网站（iwencai.com）"）被误计入。`count_high_price_rows` 必须按正则 `^\d{6}(\.[A-Za-z]{2,4})?$` 过滤代码格式，否则 2026-04-22 实测会多计 1 行（288 vs 正确 287）。识别列名兼容"证券代码/股票代码/代码"三种，归一后（去换行/空白/大小写）比对。
 
 ## 命令
 

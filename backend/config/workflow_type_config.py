@@ -231,10 +231,26 @@ WORKFLOW_TYPE_CONFIG = {
             "public": "",
         },
         "naming": {
-            "output_template": "10站上20日均线趋势.xlsx",
+            "output_template": "10站上20日均线趋势{date}.xlsx",
         },
         "match_sources": {},
         "allowed_steps": ["export_ma20_trend"],
+    },
+
+    "百日新高总趋势": {
+        "display_name": "百日新高总趋势",
+        "base_subdir": "百日新高总趋势",
+        "is_aggregation": True,
+        "is_export_only": True,
+        "directories": {
+            "upload_date": "百日新高总趋势/{date}",
+            "public": "",
+        },
+        "naming": {
+            "output_template": "11百日新高趋势图{date}.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["export_high_price_trend"],
     },
 
     "涨幅排名": {
