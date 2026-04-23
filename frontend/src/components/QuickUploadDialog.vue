@@ -37,8 +37,8 @@
       <div v-if="previewLoading">加载已有文件列表…</div>
       <div v-else>
         <el-alert
-          :title="`识别 ${resolvedRows.length} 个 / 未识别 ${unresolvedRows.length} 个 / 将覆盖 ${overwriteCount} 个同名文件${missingWorkflowTypes.length ? ' / 缺失 ' + missingWorkflowTypes.length + ' 类工作流' : ''}`"
-          :type="missingWorkflowTypes.length ? 'warning' : 'info'" :closable="false" style="margin-bottom: 12px"
+          :title="`识别 ${resolvedRows.length} 个 / 未识别 ${unresolvedRows.length} 个 / 将覆盖 ${overwriteCount} 个同名文件${totalMissing ? ' / 缺失 ' + totalMissing + ' 类' : ''}`"
+          :type="totalMissing ? 'warning' : 'info'" :closable="false" style="margin-bottom: 12px"
         />
         <el-collapse v-model="openedGroups">
           <el-collapse-item v-for="g in groups" :key="g.key" :name="g.key" :title="`${g.title}（${g.rows.length} 个文件）`">
@@ -57,14 +57,20 @@
             </div>
           </el-collapse-item>
         </el-collapse>
-        <el-divider v-if="missingWorkflowTypes.length" />
-        <div v-if="missingWorkflowTypes.length">
+        <el-divider v-if="missingWorkflowTypes.length || missingPublicSubdirs.length" />
+        <div v-if="missingWorkflowTypes.length || missingPublicSubdirs.length">
           <el-alert type="warning" :closable="false" show-icon>
-            <template #title>
-              本次未识别到以下 {{ missingWorkflowTypes.length }} 个工作流类型的文件：{{ missingWorkflowTypes.join('、') }}
-            </template>
-            <div style="font-size: 12px; margin-top: 4px">
-              这些工作流在批量执行时会读取 2026-04-23 对应日期目录下的文件，若未上传可能执行失败或产生空结果。可返回上一步补齐文件，或继续上传（仅上传已识别文件）。
+            <template #title>缺失检查（仅警告，可继续上传）</template>
+            <div style="font-size: 13px; margin-top: 6px">
+              <div v-if="missingWorkflowTypes.length">
+                <strong>未收到文件的工作流（{{ missingWorkflowTypes.length }} 个）：</strong>
+                {{ missingWorkflowTypes.join('、') }}
+              </div>
+              <div v-if="missingPublicSubdirs.length" style="margin-top: 4px">
+                <strong>未收到文件的公共数据（{{ missingPublicSubdirs.length }} 个）：</strong>
+                {{ missingPublicSubdirs.join('、') }}
+                <span style="color: #909399">（所有工作流共享，缺失时执行会自动从历史日期复制，但当日数据不是最新的）</span>
+              </div>
             </div>
           </el-alert>
         </div>
@@ -166,11 +172,31 @@ const REQUIRED_WORKFLOW_TYPES = [
   '并购重组', '股权转让', '增发实现', '申报并购重组',
   '质押', '减持叠加质押和大宗交易', '涨幅排名', '招投标'
 ]
+// 公共匹配源（并购重组子目录，所有工作流执行时都会读）
+const REQUIRED_PUBLIC_SUBDIRS = ['百日新高', '20日均线', '国企', '一级板块']
 
 const missingWorkflowTypes = computed(() => {
-  const uploaded = new Set(resolvedRows.value.map(r => r.workflow_type).filter(Boolean))
+  // 只统计非子目录文件对应的 workflow_type（子目录文件的 workflow_type 固定是"并购重组"，
+  // 会把"并购重组"类算作已上传——这里过滤掉 sub_dir 不为空的行）
+  const uploaded = new Set(
+    resolvedRows.value
+      .filter(r => !r.sub_dir)
+      .map(r => r.workflow_type)
+      .filter(Boolean)
+  )
   return REQUIRED_WORKFLOW_TYPES.filter(t => !uploaded.has(t))
 })
+
+const missingPublicSubdirs = computed(() => {
+  const uploadedSubdirs = new Set(
+    resolvedRows.value.map(r => r.sub_dir).filter(Boolean)
+  )
+  return REQUIRED_PUBLIC_SUBDIRS.filter(s => !uploadedSubdirs.has(s))
+})
+
+const totalMissing = computed(
+  () => missingWorkflowTypes.value.length + missingPublicSubdirs.value.length
+)
 
 const canGoPreview = computed(() => acceptedFiles.value.length > 0 && dateStr.value)
 
