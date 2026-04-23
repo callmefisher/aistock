@@ -4,6 +4,8 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import logging
 
+from utils.beijing_time import BEIJING_TZ, beijing_today_str
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,9 +118,9 @@ class StockFetcher:
     ) -> pd.DataFrame:
         try:
             if start_year is None:
-                start_year = datetime.now().year - 2
+                start_year = datetime.now(BEIJING_TZ).year - 2
             if end_year is None:
-                end_year = datetime.now().year
+                end_year = datetime.now(BEIJING_TZ).year
 
             df = ak.stock_financial_analysis_indicator_em(
                 symbol=stock_code
@@ -327,9 +329,9 @@ class FundFetcher:
     ) -> pd.DataFrame:
         try:
             if start_date is None:
-                start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+                start_date = (datetime.now(BEIJING_TZ) - timedelta(days=365)).strftime("%Y-%m-%d")
             if end_date is None:
-                end_date = datetime.now().strftime("%Y-%m-%d")
+                end_date = beijing_today_str()
 
             df = ak.fund_open_fund_info_em(fund=fund_code, indicator="单位净值走势")
             df = df.rename(columns={
@@ -348,7 +350,7 @@ class FundFetcher:
     def fetch_fund_holding(self, fund_code: str, year: int = None) -> pd.DataFrame:
         try:
             if year is None:
-                year = datetime.now().year
+                year = datetime.now(BEIJING_TZ).year
 
             df = ak.fund_report_stock(fund=fund_code, year=year)
             df = df.rename(columns={

@@ -1170,6 +1170,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus } from '@element-plus/icons-vue'
 import QuickUploadDialog from '@/components/QuickUploadDialog.vue'
 
+const todayBeijing = () => {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
+}
+
 const formatBeijingTime = (dateStr) => {
   if (!dateStr) return '-'
   const d = new Date(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z')
@@ -1311,13 +1315,13 @@ const getDateStr = (stepIndex = 0) => {
   if (currentWorkflow.value?.steps?.[stepIndex]?.config?.date_str) {
     return currentWorkflow.value.steps[stepIndex].config.date_str
   }
-  return new Date().toISOString().split('T')[0]
+  return todayBeijing()
 }
 
 const defaultStep = () => ({
   type: 'merge_excel',
   config: {
-    date_str: new Date().toISOString().split('T')[0],
+    date_str: todayBeijing(),
     data_source_id: null,
     file_path: '',
     columns: [],
@@ -1400,7 +1404,7 @@ const FILTER_COLUMNS = ['百日新高', '20日均线', '国企', '一级板块']
 const DEFAULT_TYPE_ORDER = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '质押', '招投标']
 
 const defaultIntersectionStep = () => {
-  const today = new Date().toISOString().split('T')[0]
+  const today = todayBeijing()
   return {
     type: 'condition_intersection',
     config: {
@@ -1416,7 +1420,7 @@ const defaultIntersectionStep = () => {
 }
 
 const defaultRankingSteps = () => {
-  const today = new Date().toISOString().split('T')[0]
+  const today = todayBeijing()
   return [
     {
       type: 'merge_excel',
@@ -1441,31 +1445,32 @@ const defaultRankingSteps = () => {
 }
 
 const computeTrendDateRange = (preset, anchorDateStr) => {
-  const anchor = anchorDateStr ? new Date(anchorDateStr) : new Date()
-  if (isNaN(anchor.getTime())) {
-    return { start: '', end: '' }
+  const baseStr = anchorDateStr || todayBeijing()
+  const m0 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(baseStr)
+  if (!m0) return { start: '', end: '' }
+  const ay = Number(m0[1]), am = Number(m0[2]), ad = Number(m0[3])
+  // 用本地 Date 只做"月份回退"算术，随后以 getFullYear/Month/Date 取值；
+  // 由于构造时传的是本地年月日，结果与时区无关（不走 UTC 转换）。
+  let sY, sM, sD
+  const roll = (deltaMonths, deltaYears = 0) => {
+    const d = new Date(ay - deltaYears, am - 1 - deltaMonths, ad)
+    sY = d.getFullYear()
+    sM = d.getMonth() + 1
+    sD = d.getDate()
   }
-  let start
-  if (preset === '1m') {
-    start = new Date(anchor.getFullYear(), anchor.getMonth() - 1, anchor.getDate())
-  } else if (preset === '6m') {
-    start = new Date(anchor.getFullYear(), anchor.getMonth() - 6, anchor.getDate())
-  } else if (preset === '1y') {
-    start = new Date(anchor.getFullYear() - 1, anchor.getMonth(), anchor.getDate())
-  } else {
-    return { start: '', end: '' }
+  if (preset === '1m') roll(1)
+  else if (preset === '6m') roll(6)
+  else if (preset === '1y') roll(0, 1)
+  else return { start: '', end: '' }
+  const pad = (n) => String(n).padStart(2, '0')
+  return {
+    start: `${sY}-${pad(sM)}-${pad(sD)}`,
+    end: `${ay}-${pad(am)}-${pad(ad)}`,
   }
-  const fmt = (d) => {
-    const y = d.getFullYear()
-    const m = String(d.getMonth() + 1).padStart(2, '0')
-    const day = String(d.getDate()).padStart(2, '0')
-    return `${y}-${m}-${day}`
-  }
-  return { start: fmt(start), end: fmt(anchor) }
 }
 
 const defaultMa20TrendStep = () => {
-  const today = new Date().toISOString().split('T')[0]
+  const today = todayBeijing()
   const range = computeTrendDateRange('6m', today)
   return {
     type: 'export_ma20_trend',
@@ -1482,7 +1487,7 @@ const defaultMa20TrendStep = () => {
 }
 
 const defaultHighPriceTrendStep = () => {
-  const today = new Date().toISOString().split('T')[0]
+  const today = todayBeijing()
   const range = computeTrendDateRange('6m', today)
   return {
     type: 'export_high_price_trend',
@@ -1570,7 +1575,7 @@ const moveTypeOrder = (step, idx, direction) => {
 
 const addHighPricePeriod = (step) => {
   if (!step.config.high_price_periods) step.config.high_price_periods = []
-  const today = step.config.date_str || new Date().toISOString().split('T')[0]
+  const today = step.config.date_str || todayBeijing()
   step.config.high_price_periods.push({ start: '2026-03-18', end: today })
 }
 
@@ -1579,7 +1584,7 @@ const removeHighPricePeriod = (step, idx) => {
 }
 
 const onIntersectionDateChange = (step) => {
-  const date = step.config.date_str || new Date().toISOString().split('T')[0]
+  const date = step.config.date_str || todayBeijing()
   step.config.output_filename = `7条件交集${date.replace(/-/g, '')}.xlsx`
   // 只有 1 条周期时自动同步 end 到数据日期
   const periods = step.config.high_price_periods || []
@@ -1662,7 +1667,7 @@ const openCreateDialog = () => {
 const addStep = () => {
   const newStep = defaultStep()
   if (newStep.type === 'match_sector') {
-    const firstStepDate = form.value.steps[0]?.config?.date_str || new Date().toISOString().split('T')[0]
+    const firstStepDate = form.value.steps[0]?.config?.date_str || todayBeijing()
     newStep.config.output_filename = getDefaultFinalFilename(firstStepDate)
   }
   form.value.steps.push(newStep)
@@ -1674,7 +1679,7 @@ const removeStep = (index) => {
 
 // 按工作流类型生成 match_sector 默认输出文件名（与后端 output_template 保持一致）
 const getDefaultFinalFilename = (dateStr) => {
-  const d = (dateStr || new Date().toISOString().split('T')[0]).replace(/-/g, '')
+  const d = (dateStr || todayBeijing()).replace(/-/g, '')
   const wt = form.value.workflow_type || ''
   const map = {
     '': `1并购重组${d}.xlsx`,
@@ -1691,7 +1696,7 @@ const getDefaultFinalFilename = (dateStr) => {
 
 const onStepTypeChange = (step, index) => {
   step.config = {
-    date_str: new Date().toISOString().split('T')[0],
+    date_str: todayBeijing(),
     data_source_id: null,
     file_path: '',
     columns: [],
@@ -1704,7 +1709,7 @@ const onStepTypeChange = (step, index) => {
     exclude_patterns: ['total_', 'output_']
   }
   if (step.type === 'match_sector') {
-    const firstStepDate = form.value.steps[0]?.config?.date_str || new Date().toISOString().split('T')[0]
+    const firstStepDate = form.value.steps[0]?.config?.date_str || todayBeijing()
     step.config.output_filename = getDefaultFinalFilename(firstStepDate)
   }
   if (step.type === 'pledge_trend_analysis') {
@@ -2558,7 +2563,7 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
     form.value.steps.forEach((step) => {
       if (step.type === 'match_sector') {
         const firstStepWithDate = form.value.steps.find(s => s.config?.date_str)
-        const dateStr = firstStepWithDate?.config?.date_str || new Date().toISOString().split('T')[0]
+        const dateStr = firstStepWithDate?.config?.date_str || todayBeijing()
         step.config.output_filename = getDefaultFinalFilename(dateStr)
       }
     })

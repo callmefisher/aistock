@@ -122,8 +122,12 @@ import { resolveTarget, isAcceptableFile, isSilentlyIgnored } from '@/utils/quic
 const props = defineProps({ modelValue: Boolean })
 const emit = defineEmits(['update:modelValue', 'finish'])
 
+function todayLocal() {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
+}
+
 const currentStep = ref(0)
-const dateStr = ref(new Date().toISOString().slice(0, 10))
+const dateStr = ref(todayLocal())
 const acceptedFiles = ref([])
 const skippedCount = ref(0)
 const parsedRows = ref([])
@@ -375,7 +379,7 @@ function handleClose() {
 watch(() => props.modelValue, (v) => {
   if (v) {
     currentStep.value = 0
-    dateStr.value = new Date().toISOString().slice(0, 10)
+    dateStr.value = todayLocal()
     acceptedFiles.value = []
     skippedCount.value = 0
     parsedRows.value = []

@@ -76,12 +76,19 @@ export function resolveTarget(filename, date_str = '{date}') {
     }
   }
   const base = stripExt(filename)
+  // 严格"单数字前缀"：首字符是数字，且第二字符不是数字。
+  // 1adbd.xlsx → '1' 命中；11xxx.xlsx / 88xxx.xlsx → 不命中（交回"未匹配"）。
+  // 带"百日新高/20日均线/国央企/板块"等子目录关键字的文件走 SUBDIR 分支，
+  // 不受此约束影响——`11百日新高.xlsx` 仍能落到 data/excel/{date}/百日新高/。
   const first = base.charAt(0)
+  const second = base.charAt(1)
+  const isSingleDigitPrefix = /^\d$/.test(first) && !/^\d$/.test(second)
 
-  // 例外：8 开头 + 含"涨跌幅"视为"涨幅排名"，绕过"板块"等子目录关键字
+  // 例外：严格单数字 8 + 含"涨跌幅"视为"涨幅排名"，绕过"板块"等子目录关键字
   // (e.g. `8、板块涨跌幅排名 0422.xlsx` 应落入 data/excel/涨幅排名/{date}/，
   //  而不是 data/excel/{date}/一级板块/)
-  if (first === '8' && base.includes('涨跌幅')) {
+  // 88xxx 涨跌幅.xlsx 不会命中（非单数字前缀）
+  if (isSingleDigitPrefix && first === '8' && base.includes('涨跌幅')) {
     const wt = PREFIX_TO_TYPE['8']
     return {
       filename,
@@ -110,8 +117,8 @@ export function resolveTarget(filename, date_str = '{date}') {
     }
   }
 
-  // 优先级 2: 数字前缀
-  if (PREFIX_TO_TYPE[first]) {
+  // 优先级 2: 严格单数字前缀
+  if (isSingleDigitPrefix && PREFIX_TO_TYPE[first]) {
     const wt = PREFIX_TO_TYPE[first]
     return {
       filename,

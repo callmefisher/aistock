@@ -3,6 +3,8 @@ from typing import Optional
 from datetime import datetime
 import os
 
+from utils.beijing_time import beijing_today_str
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "选股池自动化系统"
@@ -42,7 +44,7 @@ class Settings(BaseSettings):
     @staticmethod
     def get_daily_dir(base_dir: str = None, date_str: str = None) -> str:
         if date_str is None:
-            date_str = datetime.now().strftime("%Y-%m-%d")
+            date_str = beijing_today_str()
         if base_dir is None:
             base_dir = Settings().EXCEL_DIR
         daily_dir = os.path.join(base_dir, date_str)

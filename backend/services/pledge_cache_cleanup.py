@@ -8,6 +8,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
+from utils.beijing_time import BEIJING_TZ
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,7 +22,7 @@ def cleanup_expired_pledge_cache(redis_client, max_age_days: int = 370) -> int:
     if redis_client is None:
         return 0
 
-    cutoff = (datetime.now() - timedelta(days=max_age_days)).strftime("%Y-%m-%d")
+    cutoff = (datetime.now(BEIJING_TZ) - timedelta(days=max_age_days)).strftime("%Y-%m-%d")
     deleted = 0
     try:
         cursor = 0

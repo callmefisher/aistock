@@ -9,6 +9,8 @@ import os
 import logging
 from datetime import datetime
 
+from utils.beijing_time import beijing_today_str
+
 from core.config import settings
 from core.database import async_engine, sync_engine
 from api.auth import get_current_user
@@ -37,7 +39,7 @@ async def export_database(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
 
     db = _parse_db_url(settings.DATABASE_URL_SYNC)
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = beijing_today_str()
 
     with tempfile.NamedTemporaryFile(suffix=".sql", delete=False) as tmp:
         sql_path = tmp.name

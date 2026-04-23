@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from config.workflow_type_config import get_type_config
+from utils.beijing_time import beijing_today_str
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class WorkflowPathResolver:
 
     def get_upload_directory(self, date_str: str = None) -> str:
         if date_str is None:
-            date_str = datetime.now().strftime("%Y-%m-%d")
+            date_str = beijing_today_str()
 
         dir_template = self.config["directories"]["upload_date"]
         dir_path = dir_template.format(date=date_str)
@@ -67,7 +68,7 @@ class WorkflowPathResolver:
 
     def _generate_final_output_name(self, date_str: str = None) -> str:
         if date_str is None:
-            date_str = datetime.now().strftime("%Y-%m-%d")
+            date_str = beijing_today_str()
 
         template = self.config["naming"].get("output_template", "{date}.xlsx")
         display_name = self.config.get("display_name", "")

@@ -55,7 +55,7 @@ async function handleExport() {
   exporting.value = true
   exportError.value = ''
   try {
-    const dateStr = new Date().toISOString().slice(0, 10)
+    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
     const response = await api.get(`/database/export?_t=${Date.now()}`, {
       responseType: 'blob',
     })

@@ -30,6 +30,8 @@ from typing import Dict, List, Optional, Any
 import pandas as pd
 from openpyxl import load_workbook
 
+from utils.beijing_time import BEIJING_TZ
+
 logger = logging.getLogger(__name__)
 
 
@@ -370,7 +372,7 @@ def parse_pool_xlsx(file_path: str, min_date: str = "2026-03-18") -> List[Dict[s
         min_d = datetime.strptime(min_date, "%Y-%m-%d").date()
     except Exception:
         raise ValueError(f"min_date 格式错误: {min_date}")
-    year = datetime.now().year
+    year = datetime.now(BEIJING_TZ).year
     wb = load_workbook(file_path, read_only=True, data_only=True)
     try:
         for sn in wb.sheetnames:

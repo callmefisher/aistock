@@ -493,6 +493,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
 import api from '@/utils/api'
+import { beijingYMD, todayBeijing } from '@/utils/dateUtils'
 
 // ===== ECharts 按需引入 =====
 import * as echarts from 'echarts/core'
@@ -642,7 +643,7 @@ const INPUT_WORKFLOW_TYPES = ['并购重组', '股权转让', '增发实现', '�
   '质押(中大盘)', '质押(小盘)', '减持叠加质押和大宗交易', '招投标']
 // 年度父类型：录入时需要同时收集本年 + 上年
 const YEARLY_PARENTS = ['并购重组', '股权转让', '招投标']
-const CURRENT_YEAR = new Date().getFullYear()
+const CURRENT_YEAR = beijingYMD().year
 const PREV_YEAR = CURRENT_YEAR - 1
 const allWorkflowTypes = ref(ALL_WORKFLOW_TYPES)
 
@@ -670,19 +671,27 @@ const isYearlyUpload = computed(() => typeof uploadType.value === 'string' && up
 const uploadParent = computed(() => isYearlyUpload.value ? uploadType.value.slice(3, -1) : '')
 
 // 日期快捷
+const pad2 = (n) => String(n).padStart(2, '0')
+const bjDatePresetRange = (preset) => {
+  const { year, month } = beijingYMD()
+  const today = todayBeijing()
+  if (preset === 'month') {
+    return [`${year}-${pad2(month)}-01`, today]
+  }
+  if (preset === 'lastMonth') {
+    const pY = month === 1 ? year - 1 : year
+    const pM = month === 1 ? 12 : month - 1
+    // 上月最后一天 = 本月 1 日 - 1 天。用 UTC 构造避免 DST：北京无 DST，等价直接减 1 天
+    const lastDay = new Date(Date.UTC(year, month - 1, 0)).getUTCDate()
+    return [`${pY}-${pad2(pM)}-01`, `${pY}-${pad2(pM)}-${pad2(lastDay)}`]
+  }
+  // year
+  return [`${year}-01-01`, today]
+}
+
 const setDatePreset = (preset) => {
   datePreset.value = preset
-  const now = new Date()
-  const y = now.getFullYear()
-  const m = now.getMonth()
-  const fmt = d => d.toISOString().split('T')[0]
-  if (preset === 'month') {
-    trendDateRange.value = [fmt(new Date(y, m, 1)), fmt(now)]
-  } else if (preset === 'lastMonth') {
-    trendDateRange.value = [fmt(new Date(y, m - 1, 1)), fmt(new Date(y, m, 0))]
-  } else {
-    trendDateRange.value = [fmt(new Date(y, 0, 1)), fmt(now)]
-  }
+  trendDateRange.value = bjDatePresetRange(preset)
   fetchTrendData()
 }
 
@@ -1141,17 +1150,7 @@ let hpChartInstance = null
 
 const hpSetDatePreset = (preset) => {
   hpDatePreset.value = preset
-  const now = new Date()
-  const y = now.getFullYear()
-  const m = now.getMonth()
-  const fmt = d => d.toISOString().split('T')[0]
-  if (preset === 'month') {
-    hpDateRange.value = [fmt(new Date(y, m, 1)), fmt(now)]
-  } else if (preset === 'lastMonth') {
-    hpDateRange.value = [fmt(new Date(y, m - 1, 1)), fmt(new Date(y, m, 0))]
-  } else {
-    hpDateRange.value = [fmt(new Date(y, 0, 1)), fmt(now)]
-  }
+  hpDateRange.value = bjDatePresetRange(preset)
   hpFetchTrendData()
 }
 
@@ -1286,7 +1285,7 @@ const hpExportAll = async () => {
     const params = new URLSearchParams({ metric_type: 'high_price' })
     if (hpDateRange.value?.[0]) params.append('start_date', hpDateRange.value[0])
     if (hpDateRange.value?.[1]) params.append('end_date', hpDateRange.value[1])
-    const endDate = hpDateRange.value?.[1] || new Date().toISOString().split('T')[0]
+    const endDate = hpDateRange.value?.[1] || todayBeijing()
     await api.download(`/statistics/trend/trend-data/export?${params}`, `11百日新高趋势图${endDate}.xlsx`)
     ElMessage.success('已导出（含趋势图）')
   } catch { ElMessage.error('导出失败') }

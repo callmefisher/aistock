@@ -7,6 +7,8 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+from utils.beijing_time import BEIJING_TZ
+
 logger = logging.getLogger(__name__)
 
 
@@ -155,11 +157,11 @@ class ExcelProcessor:
         additional_info: Optional[Dict] = None
     ) -> Dict[str, Any]:
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(BEIJING_TZ).strftime("%Y%m%d_%H%M%S")
             filename = f"stock_pool_{task_name}_{timestamp}.xlsx"
-            
+
             summary_data = {
-                "生成时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "生成时间": datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 "任务名称": task_name,
                 "股票总数": len(df),
                 "列数": len(df.columns)

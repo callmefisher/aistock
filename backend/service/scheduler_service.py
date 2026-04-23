@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 import pandas as pd
 
+from utils.beijing_time import BEIJING_TZ, beijing_today_str
+
 logger = logging.getLogger(__name__)
 
 
@@ -159,8 +161,8 @@ class SchedulerService:
                     try:
                         df = stock_fetcher.fetch_daily_bar(
                             stock_code=code,
-                            start_date=start_date or (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'),
-                            end_date=end_date or datetime.now().strftime('%Y-%m-%d')
+                            start_date=start_date or (datetime.now(BEIJING_TZ) - timedelta(days=30)).strftime('%Y-%m-%d'),
+                            end_date=end_date or beijing_today_str()
                         )
                         if not df.empty:
                             count = await db_writer.write_daily_bar(df)
@@ -207,8 +209,8 @@ class SchedulerService:
             elif data_type == "index_bar":
                 df = index_fetcher.fetch_index_bar(
                     index_code=stock_code or "000001",
-                    start_date=start_date or (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'),
-                    end_date=end_date or datetime.now().strftime('%Y-%m-%d')
+                    start_date=start_date or (datetime.now(BEIJING_TZ) - timedelta(days=30)).strftime('%Y-%m-%d'),
+                    end_date=end_date or beijing_today_str()
                 )
                 if not df.empty:
                     result["records_updated"] = len(df)

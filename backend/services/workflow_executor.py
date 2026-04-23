@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 
 from services.path_resolver import get_resolver
+from utils.beijing_time import beijing_today_str
 from utils.stock_code_normalizer import (
     normalize_stock_code,
     extract_numeric_code,
@@ -146,7 +147,7 @@ class WorkflowExecutor:
         self.base_dir = base_dir
         self.workflow_type = workflow_type
         self.resolver = get_resolver(base_dir, workflow_type)
-        self.today = datetime.now().strftime("%Y-%m-%d")
+        self.today = beijing_today_str()
         os.makedirs(self.base_dir, exist_ok=True)
 
     def _load_match_source(self, source_path: str, code_col_candidates: List[str], name_col_candidates: List[str]) -> Dict[str, str]:

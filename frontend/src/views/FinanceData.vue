@@ -257,8 +257,8 @@ const showAIQueryDialog = ref(false)
 const updateForm = reactive({
   data_type: 'stock_daily',
   stock_code: '',
-  start_date: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-  end_date: new Date().toISOString().split('T')[0]
+  start_date: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }),
+  end_date: new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
 })
 
 const newRetentionConfig = reactive({

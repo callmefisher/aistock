@@ -15,6 +15,7 @@ import uuid
 import json
 from fastapi.responses import FileResponse
 from services.workflow_executor import clean_df_for_json
+from utils.beijing_time import beijing_today_str
 from core.database import get_async_db
 from models.models import Workflow, BatchExecution
 from api.auth import get_current_user
@@ -534,7 +535,7 @@ async def run_workflow(
         if d:
             first_step_date = d
             break
-    output_date_str = first_step_date or datetime.now().strftime("%Y-%m-%d")
+    output_date_str = first_step_date or beijing_today_str()
 
     start_time = datetime.now()
     input_data = None
@@ -928,7 +929,7 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                     if d:
                         first_step_date = d
                         break
-                output_date_str = first_step_date or datetime.now().strftime("%Y-%m-%d")
+                output_date_str = first_step_date or beijing_today_str()
 
                 # 强制用最新配置的文件名覆盖最后一步
                 if steps and steps[-1].get("type") == "match_sector":
@@ -1183,7 +1184,7 @@ async def download_workflow_result(
             output_date_str = sd
             break
     if not output_date_str:
-        output_date_str = datetime.now().strftime("%Y-%m-%d")
+        output_date_str = beijing_today_str()
 
     if step_index is not None and step_index < len(steps):
         step = steps[step_index]

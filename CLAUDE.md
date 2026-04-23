@@ -2,72 +2,57 @@
 
 ## 流程
 
-设计 → 实施 → review(逻辑/边界/错误处理) → 测试 → `./deploy.sh build && ./deploy.sh restart` → 更新 codebase.md
+设计 → 实施 → review → 测试 → `./deploy.sh build && ./deploy.sh restart`
 
 - 需求不明确先澄清，不猜测编码
-- >3 文件变更必须分解子任务
+- >3 文件变更分解子任务
 - Bug 修复遵循 TDD：写失败测试 → 修复 → 全部通过
 - 用户纠正后在「经验教训」追加规则
-- 代码文件不要超过900行，必要时可以分拆多个子文件
-- 高频模块尽量考虑抽象为公共模块，提高复用率；单个函数实现行数尽量不要超过200行
+- 文件 <900 行、函数 <200 行；高频模块抽公共
+- 前后端统一北京时区
 
 ## 经验教训
 
-1. Excel 源文件可能有双行表头（第1行分组头，第2行实际列名）。`_merge_excel` 动态查找序号=1行，检测前一行是否含已知列名再决定是否重映射。禁止硬编码 iloc 分割。
-2. 列名重映射仅在前一行含已知列名（证券代码/证券简称/最新公告日等）时触发，否则元数据值会被误当列名。
-3. 双行表头子列名可能重复（如受让方/转让方各有"名称"列），重映射后必须去重列名（追加 `_1` 后缀），否则 `pd.concat` 报 Reindexing 错误。
-4. Mann-Kendall 在 n=4 严格单调时 p≈0.089 > 0.05 会漏判（002768.SZ 实测：4 点递减序列）。`_detect_trend_mk` 必须增加"小样本严格单调兜底"：3≤n<10 且 diffs 全同向 → 直接判 up/down。
-5. 质押数据源：东方财富 `datacenter-web/api/data/v1/get` 用 `reportName=RPTA_APP_ACCUMDETAILS + filter=(SECURITY_CODE="xxx")` 可单股拉全量历史（含 `ACCUM_PLEDGE_TSR` 本次/前次累计质押比例），0.18s 返回。AkShare `stock_gpzy_pledge_ratio_detail_em` 拉全市场要 3.5 分钟——不适合单股查询，只作降级用（且缺少 ACCUM/PRE_ACCUM 字段）。
-6. 质押工作流最终输出样式（质押比例红绿、最新公告日首次出现绿标）必须仅在 `_finalize_pledge_output` 一次性施加——中间步骤（match_* 等）的 `to_excel` 会清除 openpyxl 样式，早施加的样式会消失。finalize 由 `api/workflows.py::run_workflow` 循环末尾的 `executor.finalize_pledge_if_needed(last_output_file, date_str)` 统一触发，`_match_sector` / `_pledge_trend_analysis` 末尾**不再**调用 `_sync_pledge_final_to_public`（否则双写）。
-7. 质押来源识别：文件名**前缀**优先（`中大盘{date}.xlsx` / `小盘{date}.xlsx`），sheet 名前缀兜底。用 `startswith` 而非 `in`——`"2026小盘汇总.xlsx"` 这类含子串但非前缀的不应误判。`_derive_pledge_source(file_name, sheet_name)` 签名两者必须都接。
-8. 质押首次出现绿标基准：`_load_pledge_baseline(public_dir)` 合并两源——`/质押/public/` 目录下所有 xlsx（遍历每 sheet，按列名抽 `证券代码` + `最新公告日` / `股权质押公告日期*`）+ `stock_pools` 表 `is_active=True` 记录的 `data` JSON（列表形如 `[{证券代码, 最新公告日, ...}]`）。判定时只看 `证券代码` 键（不分 sheet/来源），若新行 `最新公告日 > baseline` 或 code 未见过 → 绿标。
-9. 百日新高总趋势行数统计：源文件最后一行可能是水印文字（如"数据来源于：i问财网站（iwencai.com）"）被误计入。`count_high_price_rows` 必须按正则 `^\d{6}(\.[A-Za-z]{2,4})?$` 过滤代码格式，否则 2026-04-22 实测会多计 1 行（288 vs 正确 287）。识别列名兼容"证券代码/股票代码/代码"三种，归一后（去换行/空白/大小写）比对。
-10. 快捷批量上传（前端）：`resolveTarget(filename)` 匹配优先级为"子目录关键字 > 数字前缀"。含"百日新高/20日均线/国央企/板块"的文件都归并购重组的子目录（即 `data/excel/{date}/百日新高/` 等），不管数字前缀。未识别文件软校验跳过，不阻断。`POST /workflows/upload-step-file/` 的 `workflow_id` 允许传 `0`，仅按 `workflow_type + date_str` 落盘。
-11. 批量同步日期接口 `PUT /workflows/bulk-set-date`：同时更新 `Workflow.date_str` 和每个 step 的 `config.date_str`（后者通过 `copy.deepcopy` 构建 `new_steps` 后整体赋值 `wf.steps = new_steps`，避免 SQLAlchemy JSON in-place 修改失效）。
-12. FastAPI 路由顺序：literal-path 端点（如 `/bulk-set-date`）必须注册在参数化路径（`/{workflow_id}` 把 `bulk-set-date` 当 int 解析）之前，否则会被 422 拦截。
+1. **Excel 双行表头**（第1行分组头、第2行实际列名）：`_merge_excel` 动态查找"序号=1"所在行，检测前一行是否含已知列名（证券代码/证券简称/最新公告日等）再决定是否重映射；子列名重复必须去重（追加 `_1` 后缀），否则 `pd.concat` Reindex 报错。禁止硬编码 iloc。
+2. **Mann-Kendall 小样本兜底**：n=4 严格单调时 p≈0.089 会漏判。`_detect_trend_mk` 在 3≤n<10 且 diffs 全同向时直接判 up/down。
+3. **质押数据源**：东方财富 `datacenter-web/api/data/v1/get?reportName=RPTA_APP_ACCUMDETAILS&filter=(SECURITY_CODE="xxx")` 单股 0.18s 拉全量（含 `ACCUM_PLEDGE_TSR`）。AkShare `stock_gpzy_pledge_ratio_detail_em` 仅作降级（拉全市场 3.5min，缺 ACCUM 字段）。
+4. **质押输出样式一次性施加**：红绿标色只在 `_finalize_pledge_output` 里做——中间 `to_excel` 会清样式。finalize 由 `api/workflows.py::run_workflow` 末尾 `executor.finalize_pledge_if_needed(...)` 统一触发，`_match_sector` / `_pledge_trend_analysis` **不再**调用 `_sync_pledge_final_to_public`（避免双写）。
+5. **质押来源识别**：文件名前缀优先（`中大盘{date}.xlsx` / `小盘{date}.xlsx`），sheet 名前缀兜底。用 `startswith` 而非 `in`（`2026小盘汇总.xlsx` 不应误判）。`_derive_pledge_source(file_name, sheet_name)` 两参数必须都接。
+6. **质押绿标基准** `_load_pledge_baseline(public_dir)`：合并 `/质押/public/` 所有 xlsx（遍历每 sheet 抽 `证券代码` + `最新公告日`/`股权质押公告日期*`）+ `stock_pools` 表 `is_active=True` 的 `data` JSON。只看 `证券代码` 键，新行日期 > baseline 或 code 未见过 → 绿标。
+7. **百日新高行数统计** `count_high_price_rows`：源文件末行水印（"数据来源于..."）会误计入，必须按 `^\d{6}(\.[A-Za-z]{2,4})?$` 过滤。列名兼容"证券代码/股票代码/代码"（归一后比对）。
+8. **快捷批量上传前缀匹配** `resolveTarget(filename)`：优先级"8+含涨跌幅例外 > 子目录关键字 > 严格单数字前缀"。严格单数字 = 首字符数字且第二字符非数字（`1adbd.xlsx`→并购重组；`11xxx.xlsx`/`88xxx.xlsx`→未匹配）。例外：`8、板块涨跌幅排名.xlsx` 按涨幅排名处理。含百日新高/20日均线/国央企/板块的文件（除例外外）归并购重组子目录。不影响后端 `is_public_file`（按路径判）。`POST /workflows/upload-step-file/` 的 `workflow_id` 允许 0。
+9. **批量同步日期** `PUT /workflows/bulk-set-date`：同时更新 `Workflow.date_str` 和每 step `config.date_str`（后者必须 `copy.deepcopy` 构 `new_steps` 后整体赋值，否则 SQLAlchemy JSON in-place 失效）。
+10. **FastAPI 路由顺序**：literal-path（如 `/bulk-set-date`）必须注册在 `/{workflow_id}` 之前，否则被当 int 解析 422。
+11. **时区策略**（容器 UTC，**不要改 docker TZ**）：
+    - 生成今日 `date_str`：前端用 `todayBeijing()` / `new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Shanghai'})`；后端用 `utils.beijing_time.beijing_today_str()`。禁用 `toISOString()` 和 `datetime.now().strftime('%Y-%m-%d')`。
+    - 时间戳字段（`created_at`/`last_run_time` 等）：保持 `datetime.now()` 写入 UTC，前端 `formatBeijingTime(s)` 依赖"字符串 +Z 当 UTC +8 显示"假设，改写会双偏移到未来 16h。
+    - `formatBeijingTime` 输出格式 `YYYY-MM-DD HH:mm:ss` 不得改。
 
 ## 命令
 
 ```bash
-./deploy.sh build          # 构建镜像
-./deploy.sh restart        # 重启服务
-./deploy.sh ps             # 状态
-./deploy.sh logs [service] # 日志
-cd backend && python -m pytest tests/ -v  # 后端测试
-cd frontend && npm test                   # 前端测试
+./deploy.sh build | restart | ps | logs [service]
+cd backend && python -m pytest tests/ -v
+cd frontend && npm test
 ```
 
 | 服务 | 地址 |
 |------|------|
 | 前端 | http://localhost:7654 |
 | API  | http://localhost:8000/docs |
-| MySQL | localhost:3306 |
-| Redis | localhost:6379 |
+| MySQL | :3306  |  Redis | :6379 |
 
 ## 架构
 
-```
-Nginx(:7654) → Vue 3 SPA + /api/* proxy → FastAPI(:8000) → MySQL/Redis/FileStorage
-```
+`Nginx(:7654) → Vue 3 SPA + /api/* → FastAPI(:8000) → MySQL/Redis/FileStorage`
 
-## 目录
-
-```
-backend/
-  main.py                        # FastAPI 入口
-  core/config.py, database.py    # 配置(.env) + SQLAlchemy
-  api/                           # 7 路由: auth, workflows, tasks, rules, data_sources, stock_pools, data_api
-  models/models.py               # 8 ORM: User, Workflow, Rule, Task, ExecutionLog, StockPool, BatchExecution, DataSource
-  services/workflow_executor.py  # 核心: 11 步骤类型 (merge/dedup/match_*/condition_intersection)
-  services/path_resolver.py      # 按 workflow_type 动态路径
-  services/rule_engine.py        # NL→Excel公式 (OpenAI+fallback)
-  config/workflow_type_config.py # 工作流类型定义(7类型+条件交集)
-  utils/stock_code_normalizer.py # 证券代码标准化
-frontend/src/
-  views/Workflows.vue            # 核心页面(~900行): 步骤构建/执行/批量/下载
-  stores/auth.js                 # Pinia JWT 状态
-  utils/api.js                   # Axios 拦截器
-```
+关键文件：
+- `backend/services/workflow_executor.py`：11 步骤类型（merge/dedup/match_*/condition_intersection）
+- `backend/services/path_resolver.py`：按 workflow_type 动态路径
+- `backend/config/workflow_type_config.py`：7 类型 + 条件交集定义
+- `backend/utils/beijing_time.py`：北京时区工具
+- `frontend/src/views/Workflows.vue`：核心页面（含 `todayBeijing()`）
+- `frontend/src/utils/quickUploadRules.js`：前缀匹配规则
 
 ## 工作流
 
@@ -76,34 +61,17 @@ frontend/src/
 | 并购重组 | `data/excel/{date}/` | `data/excel/2025public/` |
 | 股权转让 | `data/excel/股权转让/{date}/` | `data/excel/股权转让/public/` |
 
-步骤链: `merge_excel → smart_dedup → extract_columns → match_high_price → match_ma20 → match_soe → match_sector`
+标准步骤链：`merge_excel → smart_dedup → extract_columns → match_high_price → match_ma20 → match_soe → match_sector`
 
-## 条件交集工作流
+**条件交集**（聚合类，读其他工作流 DB 结果）：仅 `condition_intersection` 一步；过滤百日新高/20日均线/国企/一级板块（全局 AND/OR）；输出双 Sheet，Sheet2 交集选股池写 `stock_pools` 表。**唯一性约束**：同 `workflow_type + date_str` 全局只允许一个。
 
-- **类型**: 条件交集，聚合类工作流，不处理自己的数据，从其他工作流的 DB 结果中读取
-- **步骤**: 仅 `condition_intersection` 一个步骤
-- **过滤条件**: 百日新高(默认)/20日均线/国企/一级板块，全局 AND/OR
-- **输出**: 双 Sheet Excel (`7条件交集{date}.xlsx`)
-  - Sheet1: 所有类型过滤后合并，列: 序号/证券代码/证券简称/最新公告日/百日新高/站上20日线/国央企/所属板块/资本运作行为
-  - Sheet2: 交集选股池(xx年xx月选股池)，保存到 stock_pools 表
-- **工作流顺序**: 默认 并购重组→股权转让→增发实现→申报并购重组→减持叠加质押和大宗交易→招投标，UI 可调
-- **唯一性约束**: 同 workflow_type + 同 date_str 只允许一个工作流（全局生效）
-- **列名映射**: 20日均线→站上20日线, 国企→国央企, 一级板块→所属板块（仅输出重命名，原始数据不动）
-
-## 关键逻辑
-
-- **merge_excel**: 公共文件 skiprows=1；非公共文件查找序号=1行开始，双行表头自动列名重映射
-- **smart_dedup**: 按日期降序 + `drop_duplicates(subset=证券代码, keep=first)` 保留最新日期，过滤 .NQ
-- **股权转让列映射**: 代码→证券代码, 名称→证券简称, 公告日期→最新公告日
-- **证券代码匹配**: `normalize_stock_code()` 统一格式，`match_stock_code_flexible()` 跨格式比对
-- **认证**: JWT HS256, 7天过期, localStorage 存储
-- **环境变量**: `.env`(gitignored), 必需: MYSQL_*, SECRET_KEY; 可选: OPENAI_API_KEY, SMTP_*
+**关键逻辑**：`merge_excel` 公共文件 skiprows=1、非公共文件动态查找序号=1行；`smart_dedup` 按日期降序 + 按证券代码 keep=first，过滤 .NQ；股权转让列映射 代码→证券代码/名称→证券简称/公告日期→最新公告日；`normalize_stock_code()` + `match_stock_code_flexible()` 跨格式匹配；JWT HS256 7天过期；`.env` 必需 MYSQL_*/SECRET_KEY，可选 OPENAI_API_KEY/SMTP_*。
 
 ## 数据目录
 
 ```
 data/excel/
-  2025public/    百日新高/    20日均线/    国企/    一级板块/
-  {date}/        # 日上传 + 步骤输出(total_1.xlsx, deduped.xlsx, output_*.xlsx)
+  2025public/  百日新高/  20日均线/  国企/  一级板块/
+  {date}/                    # 日上传 + 步骤输出
   股权转让/public/  股权转让/{date}/
 ```
