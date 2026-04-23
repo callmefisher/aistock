@@ -2193,6 +2193,17 @@ const handleEdit = (row) => {
     }
     // 对 condition_intersection 步骤：仅 1 条高价周期时自动同步 end 到 date_str
     if (step.type === 'condition_intersection' && step.config?.date_str) {
+      // 兼容旧工作流：若 type_order 缺"质押"（2026-04 新增），自动补上
+      if (step.config && Array.isArray(step.config.type_order) && !step.config.type_order.includes('质押')) {
+        const order = [...step.config.type_order]
+        let insertAt = order.indexOf('减持叠加质押和大宗交易')
+        if (insertAt >= 0) {
+          order.splice(insertAt + 1, 0, '质押')
+        } else {
+          order.push('质押')
+        }
+        step.config.type_order = order
+      }
       const periods = step.config.high_price_periods || []
       if (periods.length === 1) {
         periods[0].end = step.config.date_str

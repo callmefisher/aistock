@@ -1890,6 +1890,16 @@ class WorkflowExecutor:
         filter_conditions = config.get("filter_conditions", [{"column": "百日新高", "enabled": True}])
         filter_logic = config.get("filter_logic", "AND")
         type_order = config.get("type_order", WORKFLOW_TYPE_CONFIG.get("条件交集", {}).get("default_type_order", []))
+        # 兼容旧工作流：若 type_order 缺"质押"（2026-04 新增），自动追加到默认位置（6 号：减持后）
+        if "质押" not in type_order:
+            insert_at = len(type_order)
+            for i, t in enumerate(type_order):
+                if t == "减持叠加质押和大宗交易":
+                    insert_at = i + 1
+                    break
+            type_order = list(type_order)
+            type_order.insert(insert_at, "质押")
+            logger.info(f"[条件交集] 旧工作流缺'质押'，自动追加到位置 {insert_at}：{type_order}")
         output_filename = config.get("output_filename") or f"7条件交集{date_str.replace('-', '')}.xlsx"
         workflow_id = config.get("_workflow_id")
 
@@ -1956,10 +1966,20 @@ class WorkflowExecutor:
             df = filtered_dfs[wtype]
             # 提取标准列
             SECTOR_ALIASES = ['所属板块', '一级板块', '所属一级板块', '板块', '二级板块', '所属二级板块']
+            # 质押类型 match_* 产出列名是权威名（"站上20日线"/"国央企"），和其他类型的
+            # 源列名（"20日均线"/"国企"）不同。在此做反向 alias：查找 df 时如果源列名
+            # 不存在，尝试其对应的权威名（INTERSECTION_COLUMN_RENAME 的 value）。
+            REVERSE_RENAME_ALIASES = {
+                "20日均线": ["20日均线", "站上20日线"],
+                "国企": ["国企", "国央企"],
+            }
             extracted = pd.DataFrame()
             for col in INTERSECTION_SOURCE_COLUMNS:
                 if col in df.columns:
                     extracted[col] = df[col]
+                elif col in REVERSE_RENAME_ALIASES:
+                    alias_found = next((a for a in REVERSE_RENAME_ALIASES[col] if a in df.columns), None)
+                    extracted[col] = df[alias_found] if alias_found else ""
                 elif col in SECTOR_ALIASES:
                     found = next((a for a in SECTOR_ALIASES if a in df.columns), None)
                     extracted[col] = df[found] if found else ""
