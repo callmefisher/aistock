@@ -163,11 +163,19 @@ const uploadStatus = computed(() => {
   return undefined
 })
 
+// Safari 的 webkitdirectory 模式下 file.name 会带相对路径（"0422/foo.xlsx"），
+// Chrome/Firefox 下只有 file.webkitRelativePath 带路径、file.name 仍是叶子名。
+// 统一用 name 的最后一段作为"叶子文件名"，供解析/分组/上传 filename 使用。
+function leafName(file) {
+  const raw = file.name || ''
+  return raw.split(/[\\/]/).pop()
+}
+
 function onFilesPicked(e) {
   const all = Array.from(e.target.files || [])
   // Drop hidden/OS/Office-lock files first — they never count as "非 Excel"
-  const visible = all.filter(f => !isSilentlyIgnored(f.name))
-  const accepted = visible.filter(f => isAcceptableFile(f.name))
+  const visible = all.filter(f => !isSilentlyIgnored(leafName(f)))
+  const accepted = visible.filter(f => isAcceptableFile(leafName(f)))
   acceptedFiles.value = accepted
   skippedCount.value = visible.length - accepted.length
 }
@@ -175,8 +183,9 @@ function onFilesPicked(e) {
 async function goPreview() {
   fileMap.clear()
   parsedRows.value = acceptedFiles.value.map(f => {
-    fileMap.set(f.name, f)
-    return { ...resolveTarget(f.name, dateStr.value) }
+    const name = leafName(f)
+    fileMap.set(name, f)
+    return { ...resolveTarget(name, dateStr.value) }
   })
   previewLoading.value = true
   await loadExistingFiles()
@@ -254,7 +263,12 @@ async function startUpload(rowsToUpload = null) {
       console.log(`[QuickUpload] worker#${workerId} POST ${row.filename} → ${row.workflow_type}/${row.step_type}`)
       try {
         const fd = new FormData()
-        fd.append('file', file)
+        // row.filename 已经是叶子名（resolveTarget 用 file.name 解析时就是）；
+        // 但某些浏览器在 webkitdirectory 下 file.name 可能带相对路径，
+        // 所以显式传第三个参数强制使用叶子名，避免后端拼出
+        // /app/data/excel/{wt}/{date}/<subdir>/<filename> 里混入多余目录层。
+        const leafName = row.filename.split(/[\\/]/).pop()
+        fd.append('file', file, leafName)
         fd.append('workflow_id', '0')
         fd.append('step_index', '0')
         fd.append('step_type', row.step_type)
