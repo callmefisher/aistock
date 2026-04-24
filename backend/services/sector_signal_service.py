@@ -41,12 +41,23 @@ INVALID_SECTOR_MARKER = "妙想Choice"
 
 def parse_date_columns(df: pd.DataFrame) -> list:
     """识别日期列（列头为 datetime），按时间降序返回列名列表。"""
-    raise NotImplementedError
+    date_cols = [c for c in df.columns if isinstance(c, datetime)]
+    date_cols.sort(reverse=True)  # 最新在前
+    return date_cols
 
 
 def filter_invalid_rows(df: pd.DataFrame, sector_col: str = "板块名称") -> pd.DataFrame:
     """过滤板块名为空 / 含 '妙想Choice' / 全列 NaN 的行。"""
-    raise NotImplementedError
+    if sector_col not in df.columns:
+        return df.iloc[0:0].copy()
+    s = df[sector_col].astype(str).str.strip()
+    mask = (
+        df[sector_col].notna()
+        & (s != "")
+        & (s.str.lower() != "nan")
+        & (~s.str.contains(INVALID_SECTOR_MARKER, na=False, regex=False))
+    )
+    return df[mask].reset_index(drop=True)
 
 
 def _rank_to_pct_score(rank: float, n: int) -> float:
