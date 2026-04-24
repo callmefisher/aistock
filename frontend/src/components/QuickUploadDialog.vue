@@ -47,25 +47,62 @@
           :type="totalMissing ? 'warning' : 'info'" :closable="false" style="margin-bottom: 12px"
         />
         <el-collapse v-model="openedGroups">
-          <el-collapse-item v-for="g in groups" :key="g.key" :name="g.key" :title="`${g.title}（${g.rows.length} 个文件）`">
+          <el-collapse-item v-for="g in groups" :key="g.key" :name="g.key">
+            <template #title>
+              <div style="display:flex; justify-content:space-between; align-items:center; width:100%; padding-right:16px;">
+                <span>{{ g.title }}（{{ g.rows.length }} 个待上传）</span>
+                <el-button
+                  size="small" type="danger" plain
+                  :icon="Delete"
+                  :loading="clearingDirs.has(g.key)"
+                  :disabled="(existingFilesMap[g.key] || []).length === 0 || uploading"
+                  @click.stop="clearDirectory(g.key)"
+                >
+                  清空本目录（{{ (existingFilesMap[g.key] || []).length }}）
+                </el-button>
+              </div>
+            </template>
             <el-table :data="g.rows" size="small">
               <el-table-column prop="filename" label="文件" />
               <el-table-column prop="target_dir" label="目标目录" />
               <el-table-column label="状态" width="120">
-                <template #default="{ row }">
-                  <el-tag v-if="row.will_overwrite" type="danger" size="small">将覆盖</el-tag>
+                <template #default="scope">
+                  <el-tag v-if="scope?.row?.will_overwrite" type="danger" size="small">将覆盖</el-tag>
                   <el-tag v-else type="success" size="small">新增</el-tag>
                 </template>
               </el-table-column>
               <el-table-column label="操作" width="80" align="center">
-                <template #default="{ row }">
+                <template #default="scope">
                   <el-button size="small" type="danger" link :disabled="uploading"
-                    @click="removeParsedRow(row)">移除</el-button>
+                    @click="removeParsedRow(scope?.row)">移除</el-button>
                 </template>
               </el-table-column>
             </el-table>
-            <div v-if="g.existingFiles?.length" style="margin-top: 8px; color: #909399; font-size: 12px">
-              目录已有文件：{{ g.existingFiles.map(f => f.filename).join('、') }}
+            <!-- 目录已有文件（可删除） -->
+            <div v-if="(existingFilesMap[g.key] || []).length > 0" style="margin-top:12px;">
+              <div style="font-size:13px;color:#909399;margin-bottom:6px;">
+                目录已有（{{ (existingFilesMap[g.key] || []).length }} 个）：
+              </div>
+              <el-table :data="existingFilesMap[g.key] || []" size="small">
+                <el-table-column prop="filename" label="文件名" />
+                <el-table-column prop="modified_time" label="修改时间" width="170" />
+                <el-table-column label="操作" width="80" align="center">
+                  <template #default="scope">
+                    <el-popconfirm
+                      :title="`确认删除 ${scope?.row?.filename}？`"
+                      confirm-button-text="删除"
+                      cancel-button-text="取消"
+                      @confirm="deleteExistingFile(g.key, scope?.row?.path)"
+                    >
+                      <template #reference>
+                        <el-button size="small" type="danger" link
+                          :loading="deletingFiles.has(scope?.row?.path)"
+                          :disabled="uploading">删除</el-button>
+                      </template>
+                    </el-popconfirm>
+                  </template>
+                </el-table-column>
+              </el-table>
             </div>
           </el-collapse-item>
         </el-collapse>
@@ -138,7 +175,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshRight } from '@element-plus/icons-vue'
+import { Delete, RefreshRight } from '@element-plus/icons-vue'
 import api from '@/utils/api'
 import { resolveTarget, isAcceptableFile, isSilentlyIgnored, isPublicTarget } from '@/utils/quickUploadRules'
 

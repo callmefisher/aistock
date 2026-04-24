@@ -335,3 +335,40 @@ describe('QuickUploadDialog · refreshFromDirectoryPicker', () => {
     expect(() => wrapper.vm.refreshFromDirectoryPicker()).not.toThrow()
   })
 })
+
+describe('QuickUploadDialog · template integration', () => {
+  it('renders clear/delete buttons when on preview step with existing files', async () => {
+    // Use a stub that renders both default and title slots so we can inspect the content
+    const wrapper = mount(QuickUploadDialog, {
+      props: { modelValue: true },
+      global: {
+        stubs: {
+          teleport: true,
+          ElCollapseItem: {
+            template: `<div><slot name="title" /><slot /></div>`,
+          },
+        },
+      },
+    })
+    const vm = wrapper.vm
+    vm.parsedRows.push({
+      filename: 'new.xlsx',
+      target_dir: 'data/excel/2026-04-24/',
+      step_type: 'merge_excel',
+      workflow_type: '并购重组',
+      sub_dir: null,
+      status: 'resolved',
+    })
+    vm.existingFilesMap['data/excel/2026-04-24/'] = [
+      { filename: 'old.xlsx', path: '/p/old.xlsx', modified_time: '2026-04-23 10:00' },
+    ]
+    vm.currentStep = 1  // preview step
+    await nextTick()
+    const text = wrapper.text()
+    expect(text).toContain('清空本目录')
+    expect(text).toContain('目录已有')
+    expect(text).toContain('移除')
+    // old.xlsx appears in existingFilesMap; verify data-level
+    expect(vm.existingFilesMap['data/excel/2026-04-24/'][0].filename).toBe('old.xlsx')
+  })
+})
