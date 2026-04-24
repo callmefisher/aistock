@@ -288,6 +288,31 @@ function removeParsedRow(row) {
   fileMap.delete(row.filename)
 }
 
+// 重扫单个 target_dir 的已有文件（删除/清空成功后调用）
+// 更新 existingFilesMap 后，groups computed 会自动重算 will_overwrite
+async function refreshDirectoryListing(targetDir) {
+  const sample = parsedRows.value.find(r => r.target_dir === targetDir)
+  if (!sample) return
+  const endpoint = isPublicTarget(targetDir)
+    ? '/workflows/public-files/'
+    : '/workflows/step-files/'
+  try {
+    const resp = await api.get(endpoint, {
+      params: {
+        step_type: sample.step_type,
+        workflow_type: sample.workflow_type,
+        date_str: dateStr.value,
+      },
+    })
+    existingFilesMap.value = {
+      ...existingFilesMap.value,
+      [targetDir]: resp?.files || [],
+    }
+  } catch (e) {
+    console.warn('refreshDirectoryListing failed', targetDir, e)
+  }
+}
+
 async function startUpload(rowsToUpload = null) {
   const isRetry = Array.isArray(rowsToUpload)
   const rows = isRetry ? rowsToUpload : resolvedRows.value
@@ -418,6 +443,6 @@ defineExpose({
   acceptedFiles, parsedRows, existingFilesMap, fileMap,
   deletingFiles, clearingDirs, uploading, currentStep,
   // methods
-  removeParsedRow,
+  removeParsedRow, refreshDirectoryListing,
 })
 </script>

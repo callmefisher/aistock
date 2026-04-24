@@ -86,3 +86,53 @@ describe('QuickUploadDialog · removeParsedRow', () => {
     expect(api.post).not.toHaveBeenCalled()
   })
 })
+
+describe('QuickUploadDialog · refreshDirectoryListing', () => {
+  it('calls step-files endpoint for non-public dir and updates map', async () => {
+    const wrapper = mountDialog()
+    const vm = wrapper.vm
+    vm.parsedRows.push({
+      filename: 'a.xlsx',
+      target_dir: 'data/excel/2026-04-24/',
+      step_type: 'merge_excel',
+      workflow_type: '并购重组',
+      status: 'resolved',
+    })
+    api.get.mockResolvedValueOnce({
+      files: [{ filename: 'old.xlsx', path: '/app/data/excel/2026-04-24/old.xlsx', modified_time: '2026-04-23 10:00' }],
+    })
+
+    await vm.refreshDirectoryListing('data/excel/2026-04-24/')
+
+    expect(api.get).toHaveBeenCalledWith('/workflows/step-files/', {
+      params: { step_type: 'merge_excel', workflow_type: '并购重组', date_str: expect.any(String) },
+    })
+    expect(vm.existingFilesMap['data/excel/2026-04-24/']).toHaveLength(1)
+    expect(vm.existingFilesMap['data/excel/2026-04-24/'][0].filename).toBe('old.xlsx')
+  })
+
+  it('calls public-files endpoint for public dir', async () => {
+    const wrapper = mountDialog()
+    const vm = wrapper.vm
+    vm.parsedRows.push({
+      filename: '百日新高.xlsx',
+      target_dir: 'data/excel/股权转让/public/',
+      step_type: 'merge_excel',
+      workflow_type: '股权转让',
+      status: 'resolved',
+    })
+    api.get.mockResolvedValueOnce({ files: [] })
+
+    await vm.refreshDirectoryListing('data/excel/股权转让/public/')
+
+    expect(api.get).toHaveBeenCalledWith('/workflows/public-files/', expect.any(Object))
+  })
+
+  it('no-op when target_dir not in parsedRows', async () => {
+    const wrapper = mountDialog()
+    const vm = wrapper.vm
+    // 不加任何 parsedRows
+    await vm.refreshDirectoryListing('data/excel/不存在/')
+    expect(api.get).not.toHaveBeenCalled()
+  })
+})
