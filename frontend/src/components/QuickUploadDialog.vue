@@ -51,6 +51,12 @@
                   <el-tag v-else type="success" size="small">新增</el-tag>
                 </template>
               </el-table-column>
+              <el-table-column label="操作" width="80" align="center">
+                <template #default="{ row }">
+                  <el-button size="small" type="danger" link :disabled="uploading"
+                    @click="removeParsedRow(row)">移除</el-button>
+                </template>
+              </el-table-column>
             </el-table>
             <div v-if="g.existingFiles?.length" style="margin-top: 8px; color: #909399; font-size: 12px">
               目录已有文件：{{ g.existingFiles.map(f => f.filename).join('、') }}
@@ -273,6 +279,15 @@ async function loadExistingFiles() {
   existingFilesMap.value = map
 }
 
+// 预览页 · 移除单个待上传文件（纯前端，不调 API）
+function removeParsedRow(row) {
+  const pi = parsedRows.value.indexOf(row)
+  if (pi !== -1) parsedRows.value.splice(pi, 1)
+  const fi = acceptedFiles.value.findIndex(f => leafName(f) === row.filename)
+  if (fi !== -1) acceptedFiles.value.splice(fi, 1)
+  fileMap.delete(row.filename)
+}
+
 async function startUpload(rowsToUpload = null) {
   const isRetry = Array.isArray(rowsToUpload)
   const rows = isRetry ? rowsToUpload : resolvedRows.value
@@ -395,5 +410,14 @@ watch(() => props.modelValue, (v) => {
     doneInBatch.value = 0
     fileMap.clear()
   }
+})
+
+// 仅测试用：暴露内部状态/方法便于单测断言（非正式 API）
+defineExpose({
+  // state
+  acceptedFiles, parsedRows, existingFilesMap, fileMap,
+  deletingFiles, clearingDirs, uploading, currentStep,
+  // methods
+  removeParsedRow,
 })
 </script>
