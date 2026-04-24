@@ -61,8 +61,10 @@ def filter_invalid_rows(df: pd.DataFrame, sector_col: str = "板块名称") -> p
 
 
 def _rank_to_pct_score(rank: float, n: int) -> float:
-    """升序排名 → 降序分位分（越小越靠前越高分）。"""
-    raise NotImplementedError
+    """升序排名 → 降序分位分。rank ∈ [1, N]，返回 ∈ (0, 100]。"""
+    if n <= 0:
+        return 0.0
+    return round(100.0 * (n - rank + 1) / n, 4)
 
 
 def compute_strong_score(row: dict, n: int) -> Optional[dict]:
@@ -73,7 +75,29 @@ def compute_strong_score(row: dict, n: int) -> Optional[dict]:
       top20_count, long_valid_days, recent_valid_days
     返回: {"strong_score": 82.45, "sub_scores": {...}}
     """
-    raise NotImplementedError
+    # 硬门槛
+    if row.get("recent_valid_days", 0) < MIN_RECENT_VALID:
+        return None
+    if row.get("long_valid_days", 0) < MIN_LONG_VALID:
+        return None
+
+    score_long = _rank_to_pct_score(row["long_avg_rank"], n)
+    score_recent = _rank_to_pct_score(row["recent_avg_rank"], n)
+    # 月初/年初：源表给的是 asc_rank（1=涨幅最小），"值大=强"的降序分位 = 100*asc_rank/n
+    score_mtd = round(100.0 * row["mtd_asc_rank"] / n, 4)
+    score_ytd = round(100.0 * row["ytd_asc_rank"] / n, 4)
+
+    score_stability = round(100.0 * row["top20_count"] / WINDOW_LONG, 4)
+
+    sub = {
+        "long_rank": score_long,
+        "recent_rank": score_recent,
+        "mtd": score_mtd,
+        "ytd": score_ytd,
+        "stability": min(score_stability, 100.0),
+    }
+    total = sum(WEIGHTS_STRONG[k] * sub[k] for k in WEIGHTS_STRONG)
+    return {"strong_score": round(total, 2), "sub_scores": sub}
 
 
 def compute_reversal_score(row: dict, n: int, ytd_median_pct: float) -> Optional[dict]:
@@ -85,7 +109,30 @@ def compute_reversal_score(row: dict, n: int, ytd_median_pct: float) -> Optional
     row 需含: recent_avg_rank, early_avg_rank, ytd_pct, ytd_asc_rank, mtd_asc_rank
     返回: {"reversal_gap_raw": 80.5, "sub_raw": {...}}  批次归一化前的中间结果
     """
-    raise NotImplementedError
+    # 硬门槛 1: 年初涨幅必须低于全市场中位数
+    if row["ytd_pct"] >= ytd_median_pct:
+        return None
+    # 硬门槛 2: 近 5 日均排名 ≤ N/2
+    if row["recent_avg_rank"] > n * 0.5:
+        return None
+    # 硬门槛 3: 前半段均排名 ≥ N/2
+    if row["early_avg_rank"] < n * 0.5:
+        return None
+
+    gap_raw = row["early_avg_rank"] - row["recent_avg_rank"]
+    score_recent = _rank_to_pct_score(row["recent_avg_rank"], n)
+    ytd_desc_pct = 100.0 * row["ytd_asc_rank"] / n
+    score_ytd_low = 100.0 - ytd_desc_pct
+    score_mtd = 100.0 * row["mtd_asc_rank"] / n
+
+    return {
+        "reversal_gap_raw": round(gap_raw, 4),
+        "sub_raw": {
+            "recent_rank": score_recent,
+            "ytd_low": round(score_ytd_low, 4),
+            "mtd": round(score_mtd, 4),
+        },
+    }
 
 
 def compute_all(df: pd.DataFrame) -> dict:
