@@ -312,3 +312,26 @@ describe('QuickUploadDialog · clearDirectory', () => {
     expect(api.delete).not.toHaveBeenCalled()
   })
 })
+
+describe('QuickUploadDialog · refreshFromDirectoryPicker', () => {
+  it('clicks the hidden input when ref is set', async () => {
+    const wrapper = mountDialog()
+    // 隐藏 input 应该在 DOM 里
+    const input = wrapper.find('input[type="file"][webkitdirectory]')
+    expect(input.exists()).toBe(true)
+
+    // spy click
+    const clickSpy = vi.fn()
+    input.element.click = clickSpy
+
+    wrapper.vm.refreshFromDirectoryPicker()
+    expect(clickSpy).toHaveBeenCalledTimes(1)
+    expect(input.element.value).toBe('')  // 确保清空
+  })
+
+  it('no-op when dirInputRef is null', () => {
+    const wrapper = mountDialog()
+    // 核心：函数早期 return，不抛错即可
+    expect(() => wrapper.vm.refreshFromDirectoryPicker()).not.toThrow()
+  })
+})

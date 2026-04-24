@@ -36,6 +36,12 @@
     <div v-if="currentStep === 1">
       <div v-if="previewLoading">加载已有文件列表…</div>
       <div v-else>
+        <div class="preview-toolbar" style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+          <span>第 2 步：预览与确认</span>
+          <el-button size="small" :icon="RefreshRight" @click="refreshFromDirectoryPicker" :disabled="uploading">
+            重新读取目录
+          </el-button>
+        </div>
         <el-alert
           :title="`识别 ${resolvedRows.length} 个 / 未识别 ${unresolvedRows.length} 个 / 将覆盖 ${overwriteCount} 个同名文件${totalMissing ? ' / 缺失 ' + totalMissing + ' 类' : ''}`"
           :type="totalMissing ? 'warning' : 'info'" :closable="false" style="margin-bottom: 12px"
@@ -117,11 +123,22 @@
       <el-button @click="handleClose">取消</el-button>
     </template>
   </el-dialog>
+
+  <input
+    ref="dirInputRef"
+    type="file"
+    webkitdirectory
+    directory
+    multiple
+    style="display: none"
+    @change="onDirectoryReselected"
+  />
 </template>
 
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { RefreshRight } from '@element-plus/icons-vue'
 import api from '@/utils/api'
 import { resolveTarget, isAcceptableFile, isSilentlyIgnored, isPublicTarget } from '@/utils/quickUploadRules'
 
@@ -384,6 +401,27 @@ async function clearDirectory(targetDir) {
   }
 }
 
+function refreshFromDirectoryPicker() {
+  if (!dirInputRef.value) return
+  dirInputRef.value.value = ''   // 清空以确保同目录选择也触发 change
+  dirInputRef.value.click()
+}
+
+function onDirectoryReselected(e) {
+  // 复用第 1 步的 onFilesPicked 逻辑，然后自动进预览
+  const all = Array.from(e.target.files || [])
+  const visible = all.filter(f => !isSilentlyIgnored(leafName(f)))
+  const accepted = visible.filter(f => isAcceptableFile(leafName(f)))
+  if (accepted.length === 0) {
+    ElMessage.warning('未找到 Excel 文件')
+    return
+  }
+  acceptedFiles.value = accepted
+  skippedCount.value = visible.length - accepted.length
+  // 重新生成 parsedRows + existingFilesMap
+  goPreview()
+}
+
 async function startUpload(rowsToUpload = null) {
   const isRetry = Array.isArray(rowsToUpload)
   const rows = isRetry ? rowsToUpload : resolvedRows.value
@@ -515,5 +553,6 @@ defineExpose({
   deletingFiles, clearingDirs, uploading, currentStep,
   // methods
   removeParsedRow, refreshDirectoryListing, deleteExistingFile, clearDirectory,
+  refreshFromDirectoryPicker,
 })
 </script>
