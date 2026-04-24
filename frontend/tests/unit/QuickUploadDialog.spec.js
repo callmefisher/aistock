@@ -136,3 +136,74 @@ describe('QuickUploadDialog · refreshDirectoryListing', () => {
     expect(api.get).not.toHaveBeenCalled()
   })
 })
+
+describe('QuickUploadDialog · deleteExistingFile', () => {
+  function setupDialogWithRow(targetDir = 'data/excel/2026-04-24/', workflowType = '并购重组') {
+    const wrapper = mountDialog()
+    const vm = wrapper.vm
+    vm.parsedRows.push({
+      filename: 'a.xlsx',
+      target_dir: targetDir,
+      step_type: 'merge_excel',
+      workflow_type: workflowType,
+      status: 'resolved',
+    })
+    return vm
+  }
+
+  it('success: ElMessage.success + refresh', async () => {
+    const vm = setupDialogWithRow()
+    api.delete.mockResolvedValueOnce({ success: true })
+    api.get.mockResolvedValueOnce({ files: [] })
+
+    await vm.deleteExistingFile('data/excel/2026-04-24/', '/app/data/excel/2026-04-24/a.xlsx')
+
+    expect(api.delete).toHaveBeenCalledWith('/workflows/step-files/', {
+      params: { file_path: '/app/data/excel/2026-04-24/a.xlsx' },
+    })
+    expect(ElMessage.success).toHaveBeenCalledWith('已删除')
+    expect(api.get).toHaveBeenCalled()
+  })
+
+  it('file already gone: ElMessage.info + refresh', async () => {
+    const vm = setupDialogWithRow()
+    api.delete.mockResolvedValueOnce({ success: false, message: '文件不存在' })
+    api.get.mockResolvedValueOnce({ files: [] })
+
+    await vm.deleteExistingFile('data/excel/2026-04-24/', '/p/a.xlsx')
+
+    expect(ElMessage.info).toHaveBeenCalledWith('文件已被删除')
+    expect(api.get).toHaveBeenCalled()
+  })
+
+  it('business error: ElMessage.error + refresh', async () => {
+    const vm = setupDialogWithRow()
+    api.delete.mockResolvedValueOnce({ success: false, message: '删除失败: Permission denied' })
+    api.get.mockResolvedValueOnce({ files: [] })
+
+    await vm.deleteExistingFile('data/excel/2026-04-24/', '/p/a.xlsx')
+
+    expect(ElMessage.error).toHaveBeenCalledWith('删除失败: Permission denied')
+    expect(api.get).toHaveBeenCalled()
+  })
+
+  it('network error: ElMessage.error 网络异常 + NO refresh', async () => {
+    const vm = setupDialogWithRow()
+    api.delete.mockRejectedValueOnce(new Error('Network down'))
+
+    await vm.deleteExistingFile('data/excel/2026-04-24/', '/p/a.xlsx')
+
+    expect(ElMessage.error).toHaveBeenCalledWith('网络异常')
+    expect(api.get).not.toHaveBeenCalled()
+  })
+
+  it('routes public endpoint when target dir is public', async () => {
+    const vm = setupDialogWithRow('data/excel/股权转让/public/', '股权转让')
+    api.delete.mockResolvedValueOnce({ success: true })
+    api.get.mockResolvedValueOnce({ files: [] })
+
+    await vm.deleteExistingFile('data/excel/股权转让/public/', '/p/b.xlsx')
+
+    expect(api.delete).toHaveBeenCalledWith('/workflows/public-files/', expect.any(Object))
+  })
+})

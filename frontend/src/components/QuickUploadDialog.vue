@@ -279,6 +279,16 @@ async function loadExistingFiles() {
   existingFilesMap.value = map
 }
 
+// Set ref 响应式更新助手（Vue 3 对 Set.add/delete 的追踪不完美，新建 Set 更稳）
+function addToSetRef(setRef, item) {
+  setRef.value = new Set([...setRef.value, item])
+}
+function removeFromSetRef(setRef, item) {
+  const next = new Set(setRef.value)
+  next.delete(item)
+  setRef.value = next
+}
+
 // 预览页 · 移除单个待上传文件（纯前端，不调 API）
 function removeParsedRow(row) {
   const pi = parsedRows.value.indexOf(row)
@@ -310,6 +320,28 @@ async function refreshDirectoryListing(targetDir) {
     }
   } catch (e) {
     console.warn('refreshDirectoryListing failed', targetDir, e)
+  }
+}
+
+async function deleteExistingFile(targetDir, filePath) {
+  addToSetRef(deletingFiles, filePath)
+  const endpoint = isPublicTarget(targetDir)
+    ? '/workflows/public-files/'
+    : '/workflows/step-files/'
+  try {
+    const res = await api.delete(endpoint, { params: { file_path: filePath } })
+    if (res?.success) {
+      ElMessage.success('已删除')
+    } else if (res?.message?.includes('不存在')) {
+      ElMessage.info('文件已被删除')
+    } else {
+      ElMessage.error(res?.message || '删除失败')
+    }
+    await refreshDirectoryListing(targetDir)
+  } catch (e) {
+    ElMessage.error('网络异常')
+  } finally {
+    removeFromSetRef(deletingFiles, filePath)
   }
 }
 
@@ -443,6 +475,6 @@ defineExpose({
   acceptedFiles, parsedRows, existingFilesMap, fileMap,
   deletingFiles, clearingDirs, uploading, currentStep,
   // methods
-  removeParsedRow, refreshDirectoryListing,
+  removeParsedRow, refreshDirectoryListing, deleteExistingFile,
 })
 </script>
