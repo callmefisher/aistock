@@ -310,6 +310,9 @@
       <!-- ===== Tab 4: 板块涨幅分析 ===== -->
       <el-tab-pane label="板块涨幅分析" name="ranking">
         <div v-loading="rankingLoading">
+          <!-- 板块信号榜（新增） -->
+          <SectorSignalPanel :date="rankingSelectedDate" />
+
           <!-- 数据选择器 -->
           <div class="ranking-toolbar">
             <el-select v-model="rankingResultId" placeholder="选择数据" @change="loadRankingById" size="small" style="width: 340px">
@@ -494,6 +497,7 @@ import { Download } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
 import api from '@/utils/api'
 import { beijingYMD, todayBeijing } from '@/utils/dateUtils'
+import SectorSignalPanel from '@/components/SectorSignalPanel.vue'
 
 // ===== ECharts 按需引入 =====
 import * as echarts from 'echarts/core'
@@ -1303,6 +1307,11 @@ const rkTrendChartRef = ref(null)
 const rkChartInstances = {}
 
 const RANK_COLORS = ['#c00000', '#409eff', '#67c23a', '#e6a23c', '#9c27b0', '#00bcd4', '#ff5722', '#795548', '#607d8b', '#e91e63']
+
+const rankingSelectedDate = computed(() => {
+  const hit = rankingAvailable.value?.find(x => x.id === rankingResultId.value)
+  return hit?.date_str || null
+})
 
 // 解析排名数据
 const rankingParsed = computed(() => {
