@@ -121,7 +121,7 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api'
 import { resolveTarget, isAcceptableFile, isSilentlyIgnored, isPublicTarget } from '@/utils/quickUploadRules'
 
@@ -345,6 +345,45 @@ async function deleteExistingFile(targetDir, filePath) {
   }
 }
 
+async function clearDirectory(targetDir) {
+  const files = existingFilesMap.value[targetDir] || []
+  if (files.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `将删除目录 ${targetDir} 下的 ${files.length} 个文件，是否继续？`,
+      '确认清空',
+      { confirmButtonText: '确认清空', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return  // 用户取消
+  }
+  addToSetRef(clearingDirs, targetDir)
+  const endpoint = isPublicTarget(targetDir)
+    ? '/workflows/public-files/'
+    : '/workflows/step-files/'
+  const failed = []
+  try {
+    for (const f of files) {
+      try {
+        const res = await api.delete(endpoint, { params: { file_path: f.path } })
+        if (!res?.success && !res?.message?.includes('不存在')) {
+          failed.push(f.filename)
+        }
+      } catch {
+        failed.push(f.filename)
+      }
+    }
+    if (failed.length === 0) {
+      ElMessage.success(`已清空 ${files.length} 个文件`)
+    } else {
+      ElMessage.warning(`清空完成，${failed.length} 个失败：${failed.slice(0, 3).join(', ')}`)
+    }
+    await refreshDirectoryListing(targetDir)
+  } finally {
+    removeFromSetRef(clearingDirs, targetDir)
+  }
+}
+
 async function startUpload(rowsToUpload = null) {
   const isRetry = Array.isArray(rowsToUpload)
   const rows = isRetry ? rowsToUpload : resolvedRows.value
@@ -475,6 +514,6 @@ defineExpose({
   acceptedFiles, parsedRows, existingFilesMap, fileMap,
   deletingFiles, clearingDirs, uploading, currentStep,
   // methods
-  removeParsedRow, refreshDirectoryListing, deleteExistingFile,
+  removeParsedRow, refreshDirectoryListing, deleteExistingFile, clearDirectory,
 })
 </script>

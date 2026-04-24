@@ -207,3 +207,108 @@ describe('QuickUploadDialog · deleteExistingFile', () => {
     expect(api.delete).toHaveBeenCalledWith('/workflows/public-files/', expect.any(Object))
   })
 })
+
+describe('QuickUploadDialog · clearDirectory', () => {
+  function setupDialogWithDir() {
+    const wrapper = mountDialog()
+    const vm = wrapper.vm
+    vm.parsedRows.push({
+      filename: 'new.xlsx',
+      target_dir: 'data/excel/2026-04-24/',
+      step_type: 'merge_excel',
+      workflow_type: '并购重组',
+      status: 'resolved',
+    })
+    vm.existingFilesMap['data/excel/2026-04-24/'] = [
+      { filename: 'a.xlsx', path: '/p/a.xlsx' },
+      { filename: 'b.xlsx', path: '/p/b.xlsx' },
+      { filename: 'c.xlsx', path: '/p/c.xlsx' },
+    ]
+    return vm
+  }
+
+  it('confirm + all success → ElMessage.success', async () => {
+    const vm = setupDialogWithDir()
+    api.delete
+      .mockResolvedValueOnce({ success: true })
+      .mockResolvedValueOnce({ success: true })
+      .mockResolvedValueOnce({ success: true })
+    api.get.mockResolvedValueOnce({ files: [] })
+
+    await vm.clearDirectory('data/excel/2026-04-24/')
+
+    expect(ElMessageBox.confirm).toHaveBeenCalled()
+    const confirmArgs = ElMessageBox.confirm.mock.calls[0]
+    expect(confirmArgs[0]).toContain('3 个文件')
+    expect(api.delete).toHaveBeenCalledTimes(3)
+    expect(ElMessage.success).toHaveBeenCalledWith('已清空 3 个文件')
+  })
+
+  it('partial failure → warning with top 3', async () => {
+    const wrapper = mountDialog()
+    const vm = wrapper.vm
+    vm.parsedRows.push({
+      filename: 'new.xlsx',
+      target_dir: 'data/excel/2026-04-24/',
+      step_type: 'merge_excel',
+      workflow_type: '并购重组',
+      status: 'resolved',
+    })
+    vm.existingFilesMap['data/excel/2026-04-24/'] = [
+      { filename: 'a.xlsx', path: '/p/a.xlsx' },
+      { filename: 'b.xlsx', path: '/p/b.xlsx' },
+      { filename: 'c.xlsx', path: '/p/c.xlsx' },
+      { filename: 'd.xlsx', path: '/p/d.xlsx' },
+      { filename: 'e.xlsx', path: '/p/e.xlsx' },
+    ]
+    api.delete
+      .mockResolvedValueOnce({ success: true })
+      .mockResolvedValueOnce({ success: false, message: '删除失败: IO error' })
+      .mockResolvedValueOnce({ success: false, message: '删除失败: IO error' })
+      .mockResolvedValueOnce({ success: false, message: '删除失败: IO error' })
+      .mockResolvedValueOnce({ success: false, message: '删除失败: IO error' })
+    api.get.mockResolvedValueOnce({ files: [] })
+
+    await vm.clearDirectory('data/excel/2026-04-24/')
+
+    expect(ElMessage.warning).toHaveBeenCalled()
+    const msg = ElMessage.warning.mock.calls[0][0]
+    expect(msg).toContain('4 个失败')
+    expect(msg).toContain('b.xlsx')
+    expect(msg).toContain('c.xlsx')
+    expect(msg).toContain('d.xlsx')
+    expect(msg).not.toContain('e.xlsx')  // only top 3
+  })
+
+  it('all 文件不存在 → success (counts as gone)', async () => {
+    const vm = setupDialogWithDir()
+    api.delete
+      .mockResolvedValueOnce({ success: false, message: '文件不存在' })
+      .mockResolvedValueOnce({ success: false, message: '文件不存在' })
+      .mockResolvedValueOnce({ success: false, message: '文件不存在' })
+    api.get.mockResolvedValueOnce({ files: [] })
+
+    await vm.clearDirectory('data/excel/2026-04-24/')
+
+    expect(ElMessage.success).toHaveBeenCalledWith('已清空 3 个文件')
+  })
+
+  it('user cancels confirm → no api call', async () => {
+    const vm = setupDialogWithDir()
+    ElMessageBox.confirm.mockRejectedValueOnce('cancel')
+
+    await vm.clearDirectory('data/excel/2026-04-24/')
+
+    expect(api.delete).not.toHaveBeenCalled()
+  })
+
+  it('empty dir → no-op', async () => {
+    const vm = setupDialogWithDir()
+    vm.existingFilesMap['data/excel/2026-04-24/'] = []
+
+    await vm.clearDirectory('data/excel/2026-04-24/')
+
+    expect(ElMessageBox.confirm).not.toHaveBeenCalled()
+    expect(api.delete).not.toHaveBeenCalled()
+  })
+})
