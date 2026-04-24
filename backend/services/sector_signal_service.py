@@ -39,6 +39,23 @@ INVALID_SECTOR_MARKER = "妙想Choice"
 
 # ---------- 纯函数：解析 + 算分 ----------
 
+# 列名别名：生产 Excel 列头较冗长（"B列的数值升序排序结果"），fixture / 早期测试用简化名
+# 按子串匹配，首个命中的列名作为实际列名。顺序即优先级。
+COLUMN_ALIASES = {
+    "ytd_asc": ["B列的数值升序排序结果", "B列升序"],
+    "mtd_asc": ["D列的数值升序排序结果", "D列升序"],
+    "top5_count": ["迄今为止排进前5(次数)", "迄今前5次数"],
+}
+
+
+def _resolve_column(df: pd.DataFrame, key: str) -> str:
+    """按别名列表查找实际存在的列名。未找到抛 KeyError。"""
+    for name in COLUMN_ALIASES[key]:
+        if name in df.columns:
+            return name
+    raise KeyError(f"无法定位 {key} 列，尝试过 {COLUMN_ALIASES[key]}, 现有列={list(df.columns)[:10]}")
+
+
 def parse_date_columns(df: pd.DataFrame) -> list:
     """识别日期列（列头为 datetime），按时间降序返回列名列表。"""
     date_cols = [c for c in df.columns if isinstance(c, datetime)]
@@ -207,8 +224,8 @@ def compute_all(df: pd.DataFrame) -> dict:
     today_rank = _numeric_series(df[today_col])
     today_date_str = today_col.strftime("%Y-%m-%d")
     today_pct = _numeric_series(df["今日涨跌幅"])
-    mtd_asc = _numeric_series(df["D列升序"])
-    ytd_asc = _numeric_series(df["B列升序"])
+    mtd_asc = _numeric_series(df[_resolve_column(df, "mtd_asc")])
+    ytd_asc = _numeric_series(df[_resolve_column(df, "ytd_asc")])
     mtd_pct = _numeric_series(df["月初涨跌幅"])
 
     # 逐行算两榜

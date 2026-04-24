@@ -236,6 +236,35 @@ def test_compute_all_insufficient_history_raises():
         sig_svc.compute_all(df)
 
 
+def test_compute_all_accepts_production_column_names():
+    """真实 Excel 用冗长列名（"B列的数值升序排序结果"），必须也能解析。"""
+    n_sectors, n_days = 15, 25
+    date_cols = [datetime(2026, 4, 23) - timedelta(days=i) for i in range(n_days)]
+    rows = []
+    for i in range(n_sectors):
+        r = {
+            "板块名称": f"板块{i:02d}",
+            "年初涨跌幅": round(30 - i * 2.5, 2),
+            "B列的数值升序排序结果": n_sectors - i,      # 生产列名
+            "月初涨跌幅": round(10 - i * 0.8, 2),
+            "D列的数值升序排序结果": n_sectors - i,      # 生产列名
+            "今日涨跌幅": round(3 - i * 0.2, 2),
+            "迄今为止排进前5(次数)": max(0, 10 - i),      # 生产列名
+        }
+        for d in date_cols:
+            r[d] = i + 1
+        rows.append(r)
+    base_cols = ["板块名称", "年初涨跌幅", "B列的数值升序排序结果", "月初涨跌幅",
+                 "D列的数值升序排序结果", "今日涨跌幅", "迄今为止排进前5(次数)"]
+    data = {c: [r[c] for r in rows] for c in base_cols}
+    for d in date_cols:
+        data[d] = [r[d] for r in rows]
+    df = pd.DataFrame(data)
+    result = sig_svc.compute_all(df)
+    assert result["sector_count"] == n_sectors
+    assert result["top_strong"], "应有 A 榜成员"
+
+
 # ---------- Excel I/O ----------
 
 def test_find_source_excel_missing_returns_none(tmp_path):
