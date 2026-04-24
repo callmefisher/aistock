@@ -100,9 +100,10 @@ def compute_strong_score(row: dict, n: int) -> Optional[dict]:
 
     score_long = _rank_to_pct_score(row["long_avg_rank"], n)
     score_recent = _rank_to_pct_score(row["recent_avg_rank"], n)
-    # 月初/年初：源表给的是 asc_rank（1=涨幅最小），"值大=强"的降序分位 = 100*asc_rank/n
-    score_mtd = round(100.0 * row["mtd_asc_rank"] / n, 4)
-    score_ytd = round(100.0 * row["ytd_asc_rank"] / n, 4)
+    # 月初/年初：源表的 B/D 列虽然名字叫"升序"，实际是**降序排名**（1=涨幅最大），
+    # 所以直接用 _rank_to_pct_score（rank=1 → 100 分）
+    score_mtd = _rank_to_pct_score(row["mtd_asc_rank"], n)
+    score_ytd = _rank_to_pct_score(row["ytd_asc_rank"], n)
 
     score_stability = round(100.0 * row["top20_count"] / WINDOW_LONG, 4)
 
@@ -138,9 +139,11 @@ def compute_reversal_score(row: dict, n: int, ytd_median_pct: float) -> Optional
 
     gap_raw = row["early_avg_rank"] - row["recent_avg_rank"]
     score_recent = _rank_to_pct_score(row["recent_avg_rank"], n)
-    ytd_desc_pct = 100.0 * row["ytd_asc_rank"] / n
-    score_ytd_low = 100.0 - ytd_desc_pct
-    score_mtd = 100.0 * row["mtd_asc_rank"] / n
+    # B/D 列是降序排名（1=涨幅最大）；rank 越大 = 越弱 = 越"低位"
+    # score_ytd_low：年初越弱得分越高 → 用 (rank-1)/(n-1)*100
+    score_ytd_low = round(100.0 * (row["ytd_asc_rank"] - 1) / max(n - 1, 1), 4)
+    # score_mtd：月初涨幅降序分位（rank=1 最强得 100）
+    score_mtd = _rank_to_pct_score(row["mtd_asc_rank"], n)
 
     return {
         "reversal_gap_raw": round(gap_raw, 4),

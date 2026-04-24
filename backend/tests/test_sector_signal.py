@@ -125,6 +125,23 @@ def test_strong_hard_threshold_insufficient_long():
     assert result is None, "近 20 日有效 < 10 必须不入榜"
 
 
+def test_strong_score_ytd_mtd_direction():
+    """关键回归：B/D 列是降序排名（rank=1 → 年初/月初涨幅最大 → 应得高分）。
+    不能当升序用（老 bug：涨幅最大的反而最低分）。"""
+    n = 100
+    common = dict(long_avg_rank=50.0, recent_avg_rank=50.0,
+                  top20_count=10, long_valid_days=20, recent_valid_days=5)
+    top = sig_svc.compute_strong_score({**common, "ytd_asc_rank": 1, "mtd_asc_rank": 1}, n)
+    bot = sig_svc.compute_strong_score({**common, "ytd_asc_rank": 100, "mtd_asc_rank": 100}, n)
+    assert top["sub_scores"]["ytd"] > bot["sub_scores"]["ytd"], (
+        f"年初排名第 1（最强）的 ytd 子分必须 > 第 100（最弱）。"
+        f"top={top['sub_scores']}, bot={bot['sub_scores']}"
+    )
+    assert top["sub_scores"]["mtd"] > bot["sub_scores"]["mtd"]
+    assert top["sub_scores"]["ytd"] == pytest.approx(100.0)
+    assert bot["sub_scores"]["ytd"] == pytest.approx(1.0)
+
+
 def test_compute_reversal_gap_raw_positive_when_reversal():
     n = 100
     result = sig_svc.compute_reversal_score({
