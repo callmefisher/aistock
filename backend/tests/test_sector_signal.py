@@ -385,3 +385,125 @@ async def test_config_snapshot_preserved(tmp_path, monkeypatch):
     monkeypatch.setattr(sig_svc, "WEIGHTS_STRONG", {"long_rank": 0.5, "recent_rank": 0.5, "mtd": 0, "ytd": 0, "stability": 0})
     r2 = await sig_svc.get_or_compute("2026-04-23")  # 命中缓存
     assert r2["config_snapshot"] == snap_before
+
+
+# ---------- API 端点测试 ----------
+
+from httpx import AsyncClient, ASGITransport
+
+
+def _make_app_with_fake_user():
+    """设置 dependency_override；返回 app。调用方负责在 finally 里 clear。"""
+    from main import app
+    from api import auth as auth_mod
+    from models.models import User
+
+    async def _fake_user():
+        return User(id=1, username="test", email="t@t", hashed_password="x")
+
+    app.dependency_overrides[auth_mod.get_current_user] = _fake_user
+    return app
+
+
+_SS_PREFIX = "/api/v1/sector-signal"
+
+
+@pytest.mark.asyncio
+async def test_api_sector_signal_happy(tmp_path, monkeypatch):
+    monkeypatch.setattr(sig_svc, "BASE_EXCEL_DIR", str(tmp_path))
+    fixture_src = os.path.join(os.path.dirname(__file__), "fixtures", "sector_signal_sample.xlsx")
+    import shutil
+    d = tmp_path / "2026-04-23" / "public"
+    d.mkdir(parents=True)
+    shutil.copy(fixture_src, d / "8涨幅排名-20260423.xlsx")
+
+    app = _make_app_with_fake_user()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.get(f"{_SS_PREFIX}/?date=2026-04-23&top_n=10")
+            assert r.status_code == 200, r.text
+            data = r.json()
+            assert data["date"] == "2026-04-23"
+            assert len(data["top_strong"]) <= 10
+            assert len(data["top_reversal"]) <= 10
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_api_sector_signal_invalid_top_n():
+    app = _make_app_with_fake_user()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.get(f"{_SS_PREFIX}/?top_n=15")
+            assert r.status_code == 400
+            assert r.json()["detail"]["code"] == "INVALID_TOP_N"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_api_sector_signal_source_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(sig_svc, "BASE_EXCEL_DIR", str(tmp_path))
+    app = _make_app_with_fake_user()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.get(f"{_SS_PREFIX}/?date=2026-04-23")
+            assert r.status_code == 404
+            assert r.json()["detail"]["code"] == "SOURCE_FILE_MISSING"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_api_recompute_overwrites(tmp_path, monkeypatch):
+    monkeypatch.setattr(sig_svc, "BASE_EXCEL_DIR", str(tmp_path))
+    fixture_src = os.path.join(os.path.dirname(__file__), "fixtures", "sector_signal_sample.xlsx")
+    import shutil
+    d = tmp_path / "2026-04-23" / "public"
+    d.mkdir(parents=True)
+    shutil.copy(fixture_src, d / "8涨幅排名-20260423.xlsx")
+
+    app = _make_app_with_fake_user()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.get(f"{_SS_PREFIX}/?date=2026-04-23")
+            r = await client.post(f"{_SS_PREFIX}/recompute", json={"date": "2026-04-23"})
+            assert r.status_code == 200
+            assert r.json()["date"] == "2026-04-23"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_api_history_board(tmp_path, monkeypatch):
+    monkeypatch.setattr(sig_svc, "BASE_EXCEL_DIR", str(tmp_path))
+    fixture_src = os.path.join(os.path.dirname(__file__), "fixtures", "sector_signal_sample.xlsx")
+    import shutil
+    d = tmp_path / "2026-04-23" / "public"
+    d.mkdir(parents=True)
+    shutil.copy(fixture_src, d / "8涨幅排名-20260423.xlsx")
+
+    app = _make_app_with_fake_user()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.get(f"{_SS_PREFIX}/?date=2026-04-23")
+            r = await client.get(f"{_SS_PREFIX}/history?days=10&board=strong")
+            assert r.status_code == 200
+            data = r.json()
+            assert data["board"] == "strong"
+            assert isinstance(data["daily_top10"], list)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_api_history_invalid_days():
+    app = _make_app_with_fake_user()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.get(f"{_SS_PREFIX}/history?days=500")
+            assert r.status_code == 400
+            assert r.json()["detail"]["code"] == "INVALID_DAYS"
+    finally:
+        app.dependency_overrides.clear()
