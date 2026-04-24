@@ -344,24 +344,132 @@ def read_public_excel(path: str) -> pd.DataFrame:
 
 # ---------- 持久化（async） ----------
 
+async def _load_row(session: AsyncSession, date_str: str) -> Optional[SectorSignal]:
+    q = select(SectorSignal).where(SectorSignal.date_str == date_str)
+    res = await session.execute(q)
+    return res.scalar_one_or_none()
+
+
+def _row_to_response(row: SectorSignal, date_str: str, source_file: str) -> dict:
+    return {
+        "date": date_str,
+        "source_file": source_file,
+        "sector_count": row.sector_count,
+        "window_long_days": row.window_long_days,
+        "window_recent_days": row.window_recent_days,
+        "config_snapshot": row.config_snapshot,
+        "top_strong": row.top_strong,
+        "top_reversal": row.top_reversal,
+    }
+
+
+async def _compute_and_persist(date_str: str, session: AsyncSession, overwrite: bool) -> dict:
+    source_file = find_source_excel(date_str, base_dir=BASE_EXCEL_DIR)
+    if source_file is None:
+        raise SourceFileMissing(f"date={date_str} 的 public 文件不存在")
+    df = read_public_excel(source_file)
+    result = compute_all(df)
+
+    source_mtime = datetime.fromtimestamp(os.path.getmtime(source_file))
+    config_snap = snapshot()
+
+    existing = await _load_row(session, date_str)
+    if existing and not overwrite:
+        return _row_to_response(existing, date_str, existing.source_file)
+
+    if existing:
+        existing.source_file = source_file
+        existing.source_mtime = source_mtime
+        existing.sector_count = result["sector_count"]
+        existing.window_long_days = result["window_long_days"]
+        existing.window_recent_days = result["window_recent_days"]
+        existing.all_sectors = result["all_sectors"]
+        existing.top_strong = result["top_strong"]
+        existing.top_reversal = result["top_reversal"]
+        existing.config_snapshot = config_snap
+        row = existing
+    else:
+        row = SectorSignal(
+            date_str=date_str,
+            source_file=source_file,
+            source_mtime=source_mtime,
+            sector_count=result["sector_count"],
+            window_long_days=result["window_long_days"],
+            window_recent_days=result["window_recent_days"],
+            all_sectors=result["all_sectors"],
+            top_strong=result["top_strong"],
+            top_reversal=result["top_reversal"],
+            config_snapshot=config_snap,
+        )
+        session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return _row_to_response(row, date_str, source_file)
+
+
 async def get_or_compute(date_str: str, session: Optional[AsyncSession] = None) -> dict:
     """查 DB 命中即返回，否则读 Excel 算完写库再返回。"""
-    raise NotImplementedError
+    if session is None:
+        async with AsyncSessionLocal() as s:
+            return await get_or_compute(date_str, s)
+    existing = await _load_row(session, date_str)
+    if existing:
+        return _row_to_response(existing, date_str, existing.source_file)
+    return await _compute_and_persist(date_str, session, overwrite=False)
 
 
 async def recompute(date_str: str, session: Optional[AsyncSession] = None) -> dict:
     """绕过缓存，强制重算覆盖写入。"""
-    raise NotImplementedError
+    if session is None:
+        async with AsyncSessionLocal() as s:
+            return await recompute(date_str, s)
+    return await _compute_and_persist(date_str, session, overwrite=True)
 
 
 async def load_sector_history(sector: str, days: int) -> dict:
     """端点 3 模式 A：单板块 N 天时序点列。"""
-    raise NotImplementedError
+    async with AsyncSessionLocal() as s:
+        q = (select(SectorSignal)
+             .order_by(SectorSignal.date_str.desc())
+             .limit(days))
+        rows = (await s.execute(q)).scalars().all()
+
+    points = []
+    for row in rows:
+        hit = next((a for a in row.all_sectors if a["sector"] == sector), None)
+        if hit is None:
+            continue
+        top_strong_row = next((t for t in row.top_strong if t["sector"] == sector), None)
+        top_rev_row = next((t for t in row.top_reversal if t["sector"] == sector), None)
+        points.append({
+            "date": row.date_str,
+            "strong_score": hit.get("strong_score"),
+            "strong_rank": hit.get("strong_rank"),
+            "reversal_score": top_rev_row["reversal_score"] if top_rev_row else None,
+            "reversal_rank": hit.get("reversal_rank"),
+            "today_rank": hit.get("today_rank"),
+            "recent_avg_rank": hit.get("recent_avg_rank"),
+            "long_avg_rank": hit.get("long_avg_rank"),
+            "in_top_strong": top_strong_row is not None,
+            "in_top_reversal": top_rev_row is not None,
+        })
+    if not points:
+        raise SectorNotFound(f"板块 '{sector}' 在最近 {days} 天无记录")
+    return {"sector": sector, "days": days, "points": points}
 
 
 async def load_board_history(board: str, days: int, top_n: int = 10) -> dict:
     """端点 3 模式 B：每日榜单 Top N 板块名列表。board in {strong, reversal}"""
-    raise NotImplementedError
+    if board not in {"strong", "reversal"}:
+        raise ValueError(f"board 必须是 strong 或 reversal，实际 {board}")
+    async with AsyncSessionLocal() as s:
+        q = (select(SectorSignal)
+             .order_by(SectorSignal.date_str.desc())
+             .limit(days))
+        rows = (await s.execute(q)).scalars().all()
+    key = "top_strong" if board == "strong" else "top_reversal"
+    daily = [{"date": r.date_str, "sectors": [x["sector"] for x in getattr(r, key)[:top_n]]} for r in rows]
+    return {"days": days, "board": board, "daily_top10": daily}
 
 
 # ---------- 自定义异常 ----------

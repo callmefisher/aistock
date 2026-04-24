@@ -11,11 +11,28 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 import pytest
+import pytest_asyncio
 
+from models.sector_signal_model import SectorSignal  # noqa: F401 — ensure registered to Base.metadata
 from services import sector_signal_service as sig_svc
 from services.sector_signal_service import (
     SourceFileMissing, InsufficientHistory, SectorNotFound,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _patch_async_session(monkeypatch):
+    """确保 service 层用 test DB（SQLite in-memory），而不是生产 MySQL。
+    conftest 的 db_session fixture 会建表；但本文件的 async 测试不依赖 db_session fixture，
+    所以要单独建表 + 替换 AsyncSessionLocal。"""
+    from tests.conftest import test_engine, TestAsyncSessionLocal
+    from core.database import Base
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    monkeypatch.setattr(sig_svc, "AsyncSessionLocal", TestAsyncSessionLocal)
+    yield
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
 
 
 # ---------- 解析 / 过滤 ----------
@@ -300,11 +317,10 @@ async def test_recompute_overwrites(tmp_path, monkeypatch):
     await asyncio.sleep(1.1)  # 确保 updated_at 至少前进 1 秒
     r2 = await sig_svc.recompute("2026-04-23")
     assert r2["date"] == "2026-04-23"
-    # 读 DB 验证 updated_at > created_at
-    from core.database import AsyncSessionLocal
+    # 读 DB 验证 updated_at >= created_at（使用已被 monkeypatch 替换的 AsyncSessionLocal）
     from sqlalchemy import select
     from models.sector_signal_model import SectorSignal
-    async with AsyncSessionLocal() as s:
+    async with sig_svc.AsyncSessionLocal() as s:
         row = (await s.execute(select(SectorSignal).where(SectorSignal.date_str == "2026-04-23"))).scalar_one()
         assert row.updated_at >= row.created_at
 
