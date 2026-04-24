@@ -104,17 +104,32 @@ def compute_all(df: pd.DataFrame) -> dict:
 
 def find_source_excel(date_str: str, base_dir: str = BASE_EXCEL_DIR) -> Optional[str]:
     """按 date_str 查 public 目录下最新的 8涨幅排名*.xlsx；不存在返回 None。"""
-    raise NotImplementedError
+    pattern = os.path.join(base_dir, date_str, "public", "8涨幅排名*.xlsx")
+    matches = sorted(glob.glob(pattern))
+    if not matches:
+        # 兼容无 "8" 前缀的旧文件名（如 板块涨跌幅排名0415.xlsx 的 public 版本）
+        pattern2 = os.path.join(base_dir, date_str, "public", "*涨幅排名*.xlsx")
+        matches = sorted(glob.glob(pattern2))
+    return matches[-1] if matches else None
 
 
 def find_latest_date_with_source(base_dir: str = BASE_EXCEL_DIR) -> Optional[str]:
     """扫所有子目录，返回最新有 public 文件的日期（YYYY-MM-DD）。"""
-    raise NotImplementedError
+    if not os.path.isdir(base_dir):
+        return None
+    candidates = []
+    for name in os.listdir(base_dir):
+        if len(name) != 10 or name[4] != "-" or name[7] != "-":
+            continue
+        pub_dir = os.path.join(base_dir, name, "public")
+        if os.path.isdir(pub_dir) and os.listdir(pub_dir):
+            candidates.append(name)
+    return sorted(candidates)[-1] if candidates else None
 
 
 def read_public_excel(path: str) -> pd.DataFrame:
     """读 public Excel 单 sheet，返回 DataFrame（保留原列头含 datetime 对象）。"""
-    raise NotImplementedError
+    return pd.read_excel(path, sheet_name=0)
 
 
 # ---------- 持久化（async） ----------
