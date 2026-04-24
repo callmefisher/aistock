@@ -135,6 +135,40 @@ def compute_reversal_score(row: dict, n: int, ytd_median_pct: float) -> Optional
     }
 
 
+def _numeric_series(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce")
+
+
+def _avg_rank_and_valid(df_ranks: pd.DataFrame) -> pd.DataFrame:
+    """给定每日排名矩阵（行=板块，列=日期），返回 DataFrame(avg_rank, valid_days)。"""
+    numeric = df_ranks.apply(_numeric_series)
+    return pd.DataFrame({
+        "avg_rank": numeric.mean(axis=1, skipna=True),
+        "valid_days": numeric.notna().sum(axis=1),
+    })
+
+
+def _count_in_top(df_ranks: pd.DataFrame, threshold: int) -> pd.Series:
+    numeric = df_ranks.apply(_numeric_series)
+    return (numeric <= threshold).sum(axis=1)
+
+
+def _first_enter_top(df_ranks: pd.DataFrame, threshold: int) -> pd.Series:
+    """从最老到最新，第一次 ≤ threshold 的日期列名（返回 pd.Series[str] or None）。"""
+    # df_ranks 列按降序排列，这里要从老到新扫 → 反转列顺序
+    cols = list(df_ranks.columns)[::-1]  # 从老到新
+    numeric = df_ranks[cols].apply(_numeric_series)
+
+    def _first(row):
+        for c in cols:
+            v = row[c]
+            if pd.notna(v) and v <= threshold:
+                return c.strftime("%Y-%m-%d") if isinstance(c, datetime) else str(c)
+        return None
+
+    return numeric.apply(_first, axis=1)
+
+
 def compute_all(df: pd.DataFrame) -> dict:
     """给定已读好的 public Excel DataFrame，返回两榜 + 全量分。
 
@@ -144,7 +178,136 @@ def compute_all(df: pd.DataFrame) -> dict:
       "all_sectors": [...], "top_strong": [...], "top_reversal": [...],
     }
     """
-    raise NotImplementedError
+    df = filter_invalid_rows(df)
+    date_cols = parse_date_columns(df)
+    if len(date_cols) < 5:
+        raise InsufficientHistory(f"历史日期列不足 5（实际 {len(date_cols)}）")
+
+    window_long_days = min(len(date_cols), WINDOW_LONG)
+    window_recent_days = min(len(date_cols), WINDOW_RECENT)
+    window_early_cols = date_cols[window_recent_days:window_long_days]  # 前半段
+
+    recent_cols = date_cols[:window_recent_days]
+    long_cols = date_cols[:window_long_days]
+
+    n = len(df)
+    ytd_pct = _numeric_series(df["年初涨跌幅"])
+    ytd_median = float(ytd_pct.median()) if not ytd_pct.dropna().empty else 0.0
+
+    recent_info = _avg_rank_and_valid(df[recent_cols])
+    long_info = _avg_rank_and_valid(df[long_cols])
+    early_info = _avg_rank_and_valid(df[window_early_cols]) if window_early_cols else pd.DataFrame({
+        "avg_rank": [float("nan")] * n, "valid_days": [0] * n
+    })
+    top_counts = _count_in_top(df[long_cols], TOP_THRESHOLD)
+    first_enter = _first_enter_top(df[long_cols], TOP_THRESHOLD)
+
+    # 当日：第一个（最新）日期列即今日排名
+    today_col = date_cols[0]
+    today_rank = _numeric_series(df[today_col])
+    today_date_str = today_col.strftime("%Y-%m-%d")
+    today_pct = _numeric_series(df["今日涨跌幅"])
+    mtd_asc = _numeric_series(df["D列升序"])
+    ytd_asc = _numeric_series(df["B列升序"])
+    mtd_pct = _numeric_series(df["月初涨跌幅"])
+
+    # 逐行算两榜
+    strong_list, reversal_raw_list, all_list = [], [], []
+    for idx in range(n):
+        sector = df["板块名称"].iloc[idx]
+        common = {
+            "sector": sector,
+            "today_pct": None if pd.isna(today_pct.iloc[idx]) else round(float(today_pct.iloc[idx]), 2),
+            "today_rank": None if pd.isna(today_rank.iloc[idx]) else int(today_rank.iloc[idx]),
+            "mtd_pct": None if pd.isna(mtd_pct.iloc[idx]) else round(float(mtd_pct.iloc[idx]), 2),
+            "mtd_rank": None if pd.isna(mtd_asc.iloc[idx]) else int(mtd_asc.iloc[idx]),
+            "ytd_pct": None if pd.isna(ytd_pct.iloc[idx]) else round(float(ytd_pct.iloc[idx]), 2),
+            "ytd_rank": None if pd.isna(ytd_asc.iloc[idx]) else int(ytd_asc.iloc[idx]),
+            "recent_avg_rank": None if pd.isna(recent_info["avg_rank"].iloc[idx]) else round(float(recent_info["avg_rank"].iloc[idx]), 1),
+            "long_avg_rank": None if pd.isna(long_info["avg_rank"].iloc[idx]) else round(float(long_info["avg_rank"].iloc[idx]), 1),
+            "early_avg_rank": None if pd.isna(early_info["avg_rank"].iloc[idx]) else round(float(early_info["avg_rank"].iloc[idx]), 1),
+            "top20_count": int(top_counts.iloc[idx]),
+            "first_enter_top20_date": first_enter.iloc[idx],
+        }
+
+        strong_row = None
+        if common["long_avg_rank"] is not None and common["recent_avg_rank"] is not None:
+            s = compute_strong_score({
+                "long_avg_rank": common["long_avg_rank"],
+                "recent_avg_rank": common["recent_avg_rank"],
+                "ytd_asc_rank": common["ytd_rank"] if common["ytd_rank"] is not None else n,
+                "mtd_asc_rank": common["mtd_rank"] if common["mtd_rank"] is not None else n,
+                "top20_count": common["top20_count"],
+                "long_valid_days": int(long_info["valid_days"].iloc[idx]),
+                "recent_valid_days": int(recent_info["valid_days"].iloc[idx]),
+            }, n)
+            if s is not None:
+                strong_row = {**common, **s}
+
+        reversal_row = None
+        if common["recent_avg_rank"] is not None and common["early_avg_rank"] is not None and common["ytd_pct"] is not None:
+            r = compute_reversal_score({
+                "recent_avg_rank": common["recent_avg_rank"],
+                "early_avg_rank": common["early_avg_rank"],
+                "ytd_pct": common["ytd_pct"],
+                "ytd_asc_rank": common["ytd_rank"] if common["ytd_rank"] is not None else n,
+                "mtd_asc_rank": common["mtd_rank"] if common["mtd_rank"] is not None else n,
+            }, n, ytd_median)
+            if r is not None:
+                reversal_row = {**common, **r}  # 暂存 raw
+
+        all_list.append({
+            **common,
+            "strong_score": strong_row["strong_score"] if strong_row else None,
+            "strong_sub_scores": strong_row["sub_scores"] if strong_row else None,
+        })
+        if strong_row:
+            strong_list.append({**common, "strong_score": strong_row["strong_score"], "sub_scores": strong_row["sub_scores"]})
+        if reversal_row:
+            reversal_raw_list.append(reversal_row)
+
+    # D 榜：批次内 min-max 归一化 reversal_gap → [0, 100]，再加权
+    if reversal_raw_list:
+        gaps = [r["reversal_gap_raw"] for r in reversal_raw_list]
+        g_min, g_max = min(gaps), max(gaps)
+        span = g_max - g_min if g_max > g_min else 1.0
+        reversal_list = []
+        for r in reversal_raw_list:
+            gap_score = 100.0 * (r["reversal_gap_raw"] - g_min) / span
+            sub = {"reversal": round(gap_score, 4), **r["sub_raw"]}
+            total = sum(WEIGHTS_REVERSAL[k] * sub[k] for k in WEIGHTS_REVERSAL)
+            reversal_list.append({
+                **{k: r[k] for k in ["sector", "today_pct", "today_rank", "ytd_pct", "recent_avg_rank", "early_avg_rank", "first_enter_top20_date"]},
+                "reversal_gap": round(r["reversal_gap_raw"], 2),
+                "reversal_score": round(total, 2),
+                "sub_scores": sub,
+            })
+        reversal_list.sort(key=lambda x: x["reversal_score"], reverse=True)
+    else:
+        reversal_list = []
+
+    strong_list.sort(key=lambda x: x["strong_score"], reverse=True)
+    # 加 rank 字段
+    for i, r in enumerate(strong_list[:TOP_N_STORE]):
+        r["rank"] = i + 1
+    for i, r in enumerate(reversal_list[:TOP_N_STORE]):
+        r["rank"] = i + 1
+
+    # all_sectors 里标注在两榜中的名次（便于 load_sector_history）
+    strong_rank_by_sector = {r["sector"]: r["rank"] for r in strong_list[:TOP_N_STORE]}
+    reversal_rank_by_sector = {r["sector"]: r["rank"] for r in reversal_list[:TOP_N_STORE]}
+    for a in all_list:
+        a["strong_rank"] = strong_rank_by_sector.get(a["sector"])
+        a["reversal_rank"] = reversal_rank_by_sector.get(a["sector"])
+
+    return {
+        "sector_count": n,
+        "window_long_days": window_long_days,
+        "window_recent_days": window_recent_days,
+        "all_sectors": all_list,
+        "top_strong": strong_list[:TOP_N_STORE],
+        "top_reversal": reversal_list[:TOP_N_STORE],
+    }
 
 
 # ---------- Excel 读取 ----------
