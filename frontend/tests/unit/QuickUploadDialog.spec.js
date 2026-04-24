@@ -85,6 +85,26 @@ describe('QuickUploadDialog · removeParsedRow', () => {
     expect(api.get).not.toHaveBeenCalled()
     expect(api.post).not.toHaveBeenCalled()
   })
+
+  it('removes row when input comes from groups computed (different object reference)', async () => {
+    // 回归：groups computed 展开 row 为 {...r, will_overwrite} 新对象，
+    // removeParsedRow 必须按 filename 匹配（不能按引用）。
+    const wrapper = mountDialog()
+    const vm = wrapper.vm
+    const f1 = makeFile('a.xlsx')
+    vm.acceptedFiles.push(f1)
+    vm.fileMap.set('a.xlsx', f1)
+    vm.parsedRows.push({ filename: 'a.xlsx', target_dir: 'data/excel/2026-04-24/', status: 'resolved' })
+
+    // 模拟 template 传来的 row：不是原始对象，而是 groups 里 push 的新 obj
+    const rowFromGroups = { filename: 'a.xlsx', target_dir: 'data/excel/2026-04-24/', status: 'resolved', will_overwrite: false }
+    vm.removeParsedRow(rowFromGroups)
+    await nextTick()
+
+    expect(vm.parsedRows).toHaveLength(0)
+    expect(vm.acceptedFiles).toHaveLength(0)
+    expect(vm.fileMap.has('a.xlsx')).toBe(false)
+  })
 })
 
 describe('QuickUploadDialog · refreshDirectoryListing', () => {

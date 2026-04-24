@@ -344,12 +344,16 @@ function removeFromSetRef(setRef, item) {
 }
 
 // 预览页 · 移除单个待上传文件（纯前端，不调 API）
+// row 可能来自 groups computed（里面是展开后的新对象），不能用引用匹配，
+// 改用 filename 在 parsedRows / acceptedFiles 里定位真身
 function removeParsedRow(row) {
-  const pi = parsedRows.value.indexOf(row)
+  if (!row || !row.filename) return
+  const name = row.filename
+  const pi = parsedRows.value.findIndex(r => r.filename === name)
   if (pi !== -1) parsedRows.value.splice(pi, 1)
-  const fi = acceptedFiles.value.findIndex(f => leafName(f) === row.filename)
+  const fi = acceptedFiles.value.findIndex(f => leafName(f) === name)
   if (fi !== -1) acceptedFiles.value.splice(fi, 1)
-  fileMap.delete(row.filename)
+  fileMap.delete(name)
 }
 
 // 重扫单个 target_dir 的已有文件（删除/清空成功后调用）
