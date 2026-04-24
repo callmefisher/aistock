@@ -117,7 +117,7 @@
 import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
-import { resolveTarget, isAcceptableFile, isSilentlyIgnored } from '@/utils/quickUploadRules'
+import { resolveTarget, isAcceptableFile, isSilentlyIgnored, isPublicTarget } from '@/utils/quickUploadRules'
 
 const props = defineProps({ modelValue: Boolean })
 const emit = defineEmits(['update:modelValue', 'finish'])
@@ -134,6 +134,10 @@ const parsedRows = ref([])
 const existingFilesMap = ref({})
 const previewLoading = ref(false)
 const openedGroups = ref([])
+// 预览页操作：删除/清空/刷新 相关状态
+const dirInputRef = ref(null)          // 隐藏 input[webkitdirectory] 的 ref
+const deletingFiles = ref(new Set())   // 正在删除的 file.path 集合
+const clearingDirs = ref(new Set())    // 正在清空的 target_dir 集合
 const uploading = ref(false)
 const uploadSuccess = ref(0)
 const uploadFailed = ref(0)

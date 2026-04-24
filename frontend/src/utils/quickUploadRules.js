@@ -141,3 +141,13 @@ export function resolveTarget(filename, date_str = '{date}') {
     reason: '未匹配任何规则',
   }
 }
+
+// 判定 target_dir 是公共目录（走 public-files 端点）还是日期目录（走 step-files 端点）
+// 路径含 /public/ 或以 /public 结尾，或含 /2025public/ 或以 /2025public 结尾 → public
+export function isPublicTarget(targetDir) {
+  if (!targetDir) return false
+  return targetDir.includes('/public/')
+      || targetDir.endsWith('/public')
+      || targetDir.includes('/2025public/')
+      || targetDir.endsWith('/2025public')
+}

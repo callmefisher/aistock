@@ -26,7 +26,7 @@ export default defineConfig({
         statements: 70
       }
     },
-    include: ['tests/**/*.test.{js,jsx,ts,tsx,vue}'],
+    include: ['tests/**/*.{test,spec}.{js,jsx,ts,tsx,vue}'],
     exclude: ['node_modules', 'dist'],
     testTimeout: 10000,
     hookTimeout: 10000
