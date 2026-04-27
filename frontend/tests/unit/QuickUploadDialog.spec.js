@@ -392,3 +392,181 @@ describe('QuickUploadDialog · template integration', () => {
     expect(vm.existingFilesMap['data/excel/2026-04-24/'][0].filename).toBe('old.xlsx')
   })
 })
+
+// ------- 新增：publicSubdirsWithExisting computed (T1–T4) -------
+describe('QuickUploadDialog · publicSubdirsWithExisting', () => {
+  function pushSubdirRow(vm, sub_dir, filename = `11${sub_dir}.xlsx`) {
+    const target_dir = `data/excel/2026-04-24/${sub_dir}/`
+    vm.parsedRows.push({
+      filename,
+      target_dir,
+      step_type: 'merge_high_price',
+      workflow_type: '并购重组',
+      sub_dir,
+      status: 'resolved',
+    })
+    return target_dir
+  }
+
+  it('T1: 公共子目录无旧文件 → 空数组', () => {
+    const vm = mountDialog().vm
+    const td = pushSubdirRow(vm, '百日新高')
+    vm.existingFilesMap[td] = []
+    expect(vm.publicSubdirsWithExisting).toEqual([])
+  })
+
+  it('T2: 公共子目录有旧文件 → 单条记录含 count/sub_dir/target_dir', () => {
+    const vm = mountDialog().vm
+    const td = pushSubdirRow(vm, '百日新高')
+    vm.existingFilesMap[td] = [
+      { filename: 'old1.xlsx' },
+      { filename: 'old2.xlsx' },
+    ]
+    expect(vm.publicSubdirsWithExisting).toEqual([
+      { sub_dir: '百日新高', target_dir: td, count: 2 },
+    ])
+  })
+
+  it('T3: 4 个子目录都有旧文件 → 4 条记录', () => {
+    const vm = mountDialog().vm
+    const subs = ['百日新高', '20日均线', '国企', '一级板块']
+    const tds = subs.map(s => pushSubdirRow(vm, s))
+    tds.forEach(td => { vm.existingFilesMap[td] = [{ filename: 'old.xlsx' }] })
+    const list = vm.publicSubdirsWithExisting
+    expect(list).toHaveLength(4)
+    expect(new Set(list.map(x => x.sub_dir))).toEqual(new Set(subs))
+  })
+
+  it('T4: 清空 existingFilesMap 该目录后该条消失', async () => {
+    const vm = mountDialog().vm
+    const td = pushSubdirRow(vm, '国企')
+    vm.existingFilesMap[td] = [{ filename: 'old.xlsx' }]
+    expect(vm.publicSubdirsWithExisting).toHaveLength(1)
+    // 模拟"清空本目录"后 refreshDirectoryListing 的效果
+    vm.existingFilesMap = { ...vm.existingFilesMap, [td]: [] }
+    await nextTick()
+    expect(vm.publicSubdirsWithExisting).toHaveLength(0)
+  })
+
+  it('同一 target_dir 即使有多个 resolvedRow 也只产生一条', () => {
+    const vm = mountDialog().vm
+    pushSubdirRow(vm, '百日新高', '11百日新高A.xlsx')
+    pushSubdirRow(vm, '百日新高', '11百日新高B.xlsx')
+    const td = 'data/excel/2026-04-24/百日新高/'
+    vm.existingFilesMap[td] = [{ filename: 'old.xlsx' }]
+    expect(vm.publicSubdirsWithExisting).toHaveLength(1)
+    expect(vm.publicSubdirsWithExisting[0].count).toBe(1)
+  })
+
+  it('非 REQUIRED 公共子目录 sub_dir 不进入列表', () => {
+    const vm = mountDialog().vm
+    vm.parsedRows.push({
+      filename: '11其他.xlsx',
+      target_dir: 'data/excel/2026-04-24/其他/',
+      step_type: 'merge_excel',
+      workflow_type: '并购重组',
+      sub_dir: '其他',  // 不在 REQUIRED_PUBLIC_SUBDIRS 里
+      status: 'resolved',
+    })
+    vm.existingFilesMap['data/excel/2026-04-24/其他/'] = [{ filename: 'old.xlsx' }]
+    expect(vm.publicSubdirsWithExisting).toEqual([])
+  })
+
+  it('只扫描 resolved 行（unresolved 不计）', () => {
+    const vm = mountDialog().vm
+    vm.parsedRows.push({
+      filename: 'xx百日新高.xlsx',
+      target_dir: 'data/excel/2026-04-24/百日新高/',
+      step_type: 'merge_excel',
+      workflow_type: '并购重组',
+      sub_dir: '百日新高',
+      status: 'unresolved',
+    })
+    vm.existingFilesMap['data/excel/2026-04-24/百日新高/'] = [{ filename: 'old.xlsx' }]
+    expect(vm.publicSubdirsWithExisting).toEqual([])
+  })
+})
+
+// ------- 新增：pledgeGroupIssue computed (T5–T9) -------
+describe('QuickUploadDialog · pledgeGroupIssue', () => {
+  function pushPledge(vm, filename) {
+    vm.parsedRows.push({
+      filename,
+      target_dir: 'data/excel/质押/2026-04-24/',
+      step_type: 'merge_excel',
+      workflow_type: '质押',
+      sub_dir: null,
+      status: 'resolved',
+    })
+  }
+
+  it('T5: 组 0 个 → null（不告警，交给缺失工作流提示）', () => {
+    const vm = mountDialog().vm
+    expect(vm.pledgeGroupIssue).toBeNull()
+  })
+
+  it('T6: 1 个中大盘 → total=1, missing=[小盘]', () => {
+    const vm = mountDialog().vm
+    pushPledge(vm, '5中大盘.xlsx')
+    expect(vm.pledgeGroupIssue).toEqual({
+      total: 1,
+      hasLarge: true,
+      hasSmall: false,
+      missing: ['小盘'],
+    })
+  })
+
+  it('T7: 2 个都是中大盘 → missing=[小盘] 即便 total=2', () => {
+    const vm = mountDialog().vm
+    pushPledge(vm, '5中大盘.xlsx')
+    pushPledge(vm, '5中大盘A.xlsx')
+    const issue = vm.pledgeGroupIssue
+    expect(issue).not.toBeNull()
+    expect(issue.total).toBe(2)
+    expect(issue.missing).toEqual(['小盘'])
+  })
+
+  it('T8: 3 个正常命名 → total=3, missing=[] 但仍告警', () => {
+    const vm = mountDialog().vm
+    pushPledge(vm, '5中大盘.xlsx')
+    pushPledge(vm, '5小盘.xlsx')
+    pushPledge(vm, '5质押旧文件.xlsx')
+    const issue = vm.pledgeGroupIssue
+    expect(issue).not.toBeNull()
+    expect(issue.total).toBe(3)
+    expect(issue.missing).toEqual([])
+  })
+
+  it('T9: 合规 2 个（中大盘 + 小盘）→ null', () => {
+    const vm = mountDialog().vm
+    pushPledge(vm, '5中大盘0424.xlsx')
+    pushPledge(vm, '5小盘0424.xlsx')
+    expect(vm.pledgeGroupIssue).toBeNull()
+  })
+
+  it('只 1 个"小盘"（缺中大盘）→ missing=[中大盘]', () => {
+    const vm = mountDialog().vm
+    pushPledge(vm, '5小盘.xlsx')
+    expect(vm.pledgeGroupIssue.missing).toEqual(['中大盘'])
+  })
+
+  it('"中大盘"不会误命中 includes("小盘")', () => {
+    const vm = mountDialog().vm
+    // 仅"中大盘"单文件，不应因 includes('小盘') 返回 false 而被跳过判定
+    pushPledge(vm, '5中大盘.xlsx')
+    expect(vm.pledgeGroupIssue.hasSmall).toBe(false)
+  })
+
+  it('质押 sub_dir !== null 的行不计入（例如子目录历史残留样本）', () => {
+    const vm = mountDialog().vm
+    vm.parsedRows.push({
+      filename: '5中大盘百日新高.xlsx',
+      target_dir: 'data/excel/2026-04-24/百日新高/',
+      step_type: 'merge_excel',
+      workflow_type: '并购重组',   // 百日新高 归并购重组
+      sub_dir: '百日新高',
+      status: 'resolved',
+    })
+    expect(vm.pledgeGroupIssue).toBeNull()
+  })
+})

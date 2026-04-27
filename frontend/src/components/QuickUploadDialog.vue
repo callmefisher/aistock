@@ -123,6 +123,38 @@
             </div>
           </el-alert>
         </div>
+        <el-divider v-if="publicSubdirsWithExisting.length" />
+        <div v-if="publicSubdirsWithExisting.length">
+          <el-alert type="warning" :closable="false" show-icon>
+            <template #title>公共子目录已存在旧文件（仅警告，可继续上传）</template>
+            <div style="font-size: 13px; margin-top: 6px">
+              <div v-for="item in publicSubdirsWithExisting" :key="item.target_dir">
+                <strong>{{ item.sub_dir }}</strong>
+                （{{ item.count }} 个旧文件）
+                <span style="color: #909399">→ {{ item.target_dir }}</span>
+              </div>
+              <div style="color: #909399; margin-top: 4px">
+                提示：同目录下多份历史文件可能导致匹配读到错误数据，建议点上方分组内的「清空本目录」按钮清理后再上传。
+              </div>
+            </div>
+          </el-alert>
+        </div>
+        <el-divider v-if="pledgeGroupIssue" />
+        <div v-if="pledgeGroupIssue">
+          <el-alert type="warning" :closable="false" show-icon>
+            <template #title>质押目录需上传 2 个文件（中大盘 + 小盘）</template>
+            <div style="font-size: 13px; margin-top: 6px">
+              <div>当前待上传：<strong>{{ pledgeGroupIssue.total }}</strong> 个</div>
+              <div v-if="pledgeGroupIssue.missing.length">
+                缺少文件名包含：
+                <strong>{{ pledgeGroupIssue.missing.join('、') }}</strong>
+              </div>
+              <div v-if="pledgeGroupIssue.total > 2" style="color: #909399">
+                提示：超过 2 个可能夹带了历史遗留文件或重名变体，请核对。
+              </div>
+            </div>
+          </el-alert>
+        </div>
         <el-divider v-if="unresolvedRows.length" />
         <div v-if="unresolvedRows.length">
           <el-alert title="以下文件未识别任何规则，将被跳过" type="warning" :closable="false" />
@@ -265,6 +297,35 @@ const missingPublicSubdirs = computed(() => {
 const totalMissing = computed(
   () => missingWorkflowTypes.value.length + missingPublicSubdirs.value.length
 )
+
+// 公共子目录若已有旧文件，在下方统一告警（同目录下多份历史文件会污染匹配）
+const publicSubdirsWithExisting = computed(() => {
+  const out = []
+  const seen = new Set()
+  for (const r of resolvedRows.value) {
+    if (!r.sub_dir) continue
+    if (!REQUIRED_PUBLIC_SUBDIRS.includes(r.sub_dir)) continue
+    if (seen.has(r.target_dir)) continue
+    seen.add(r.target_dir)
+    const count = (existingFilesMap.value[r.target_dir] || []).length
+    if (count > 0) out.push({ sub_dir: r.sub_dir, target_dir: r.target_dir, count })
+  }
+  return out
+})
+
+// 质押组：待上传须 2 个且包含"中大盘"+"小盘"；组为 0 时交给"缺失工作流"告警，不重复提示
+const pledgeGroupIssue = computed(() => {
+  const rows = resolvedRows.value.filter(r => r.workflow_type === '质押' && !r.sub_dir)
+  const total = rows.length
+  if (total === 0) return null
+  const hasLarge = rows.some(r => r.filename.includes('中大盘'))
+  const hasSmall = rows.some(r => r.filename.includes('小盘'))
+  const missing = []
+  if (!hasLarge) missing.push('中大盘')
+  if (!hasSmall) missing.push('小盘')
+  if (total === 2 && missing.length === 0) return null
+  return { total, hasLarge, hasSmall, missing }
+})
 
 const canGoPreview = computed(() => acceptedFiles.value.length > 0 && dateStr.value)
 
@@ -592,6 +653,8 @@ defineExpose({
   // state
   acceptedFiles, parsedRows, existingFilesMap, fileMap,
   deletingFiles, clearingDirs, uploading, currentStep,
+  // computeds
+  publicSubdirsWithExisting, pledgeGroupIssue,
   // methods
   removeParsedRow, refreshDirectoryListing, deleteExistingFile, clearDirectory,
   refreshFromDirectoryPicker,
