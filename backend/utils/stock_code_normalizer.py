@@ -81,13 +81,7 @@ def match_stock_code_flexible(
     numeric_code = extract_numeric_code(normalized)
     if numeric_code and numeric_code in stock_dict:
         return stock_dict[numeric_code] if return_value else numeric_code
-
-    # 反向匹配：字典键含后缀、查询不含（或格式差异）
-    if numeric_code:
-        for key in stock_dict:
-            if extract_numeric_code(key) == numeric_code:
-                return stock_dict[key] if return_value else key
-
+     
     return ''
 
 
