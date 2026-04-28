@@ -38,12 +38,14 @@ class TestFileUploadAPI:
     def test_get_target_directory_merge_excel(self, executor):
         """测试merge_excel步骤的目标目录"""
         from api.workflows import get_target_directory
+        import re
 
         target_dir = get_target_directory("merge_excel", "2026-04-12")
         assert target_dir.endswith("2026-04-12")
 
+        # 不传 date_str → 回落到今日（格式 YYYY-MM-DD）
         target_dir_no_date = get_target_directory("merge_excel")
-        assert os.path.basename(target_dir_no_date) == os.path.basename(target_dir)
+        assert re.match(r"^\d{4}-\d{2}-\d{2}$", os.path.basename(target_dir_no_date))
 
     def test_get_target_directory_match_high_price(self, executor):
         """测试match_high_price步骤的目标目录"""
@@ -264,7 +266,8 @@ class TestUploadWithWorkflowExecutor:
         """测试匹配使用上传的文件"""
         import asyncio
 
-        match_dir = os.path.join(temp_dir, "百日新高")
+        # match_high_price 的源目录是 {base}/{date}/百日新高
+        match_dir = os.path.join(temp_dir, "2026-04-12", "百日新高")
         os.makedirs(match_dir, exist_ok=True)
 
         match_df = pd.DataFrame({
@@ -283,7 +286,11 @@ class TestUploadWithWorkflowExecutor:
             "new_column_name": "百日新高",
             "output_filename": "output.xlsx"
         }
+        # _match_high_price 输出 daily 目录下，需先建好
+        os.makedirs(os.path.join(temp_dir, "2026-04-12"), exist_ok=True)
         result = asyncio.run(executor._match_high_price(config, source_df, date_str="2026-04-12"))
 
         assert result["success"] is True
-        assert "百日新高" in result["message"]
+        assert "匹配" in result["message"]
+        # 两行 source 各匹配 1 行
+        assert result.get("matched_count") == 2 or "2条" in result["message"]

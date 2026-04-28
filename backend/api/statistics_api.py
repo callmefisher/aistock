@@ -133,76 +133,15 @@ async def download_result(
 
         shutil.copy2(src_path, tmp_path)
 
-        # baseline：查 workflow_results 表中质押类型、date_str < 当前结果 date_str 的
-        # 所有 final 记录，解压 data_compressed，取所有行"最新公告日"的最大值。
-        # stock_pools 表不参与（它是条件交集的选股池，不含纯质押历史）。
-        import zlib
-        from sqlalchemy import text
-        max_ts = None
-        try:
-            from core.database import SyncSessionLocal
-            current_date_str = result.get('date_str')
-            db = SyncSessionLocal()
-            try:
-                if current_date_str:
-                    rows = db.execute(text("""
-                        SELECT data_compressed FROM workflow_results
-                        WHERE workflow_type = :wt
-                          AND step_type = 'final'
-                          AND date_str < :dt
-                        ORDER BY date_str DESC
-                    """), {"wt": "质押", "dt": current_date_str}).fetchall()
-                    for row in rows:
-                        raw = row[0]
-                        if not raw:
-                            continue
-                        try:
-                            records = json.loads(zlib.decompress(raw).decode("utf-8"))
-                        except Exception:
-                            continue
-                        if not isinstance(records, list):
-                            continue
-                        for rec in records:
-                            if not isinstance(rec, dict):
-                                continue
-                            dv = rec.get("最新公告日")
-                            if not dv:
-                                continue
-                            try:
-                                ts = pd.to_datetime(dv, errors="coerce")
-                                if pd.isna(ts):
-                                    continue
-                            except Exception:
-                                continue
-                            if max_ts is None or ts > max_ts:
-                                max_ts = ts
-            finally:
-                db.close()
-        except Exception:
-            max_ts = None
-
-        # 施加红标（stock_pools 空 → 不标）
+        # 复用 finalize 端相同的 baseline + 着色逻辑（workflow_results 表 DB baseline）
+        from services.workflow_executor import (
+            load_pledge_announcement_max_ts,
+            apply_announcement_date_coloring,
+        )
+        max_ts = load_pledge_announcement_max_ts(result.get('date_str'))
         if max_ts is not None:
             wb = load_workbook(tmp_path)
-            red_fill = PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid")
-            for sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                header = [c.value for c in ws[1]]
-                if "最新公告日" not in header:
-                    continue
-                date_col = header.index("最新公告日") + 1
-                for row in range(2, ws.max_row + 1):
-                    date_val = ws.cell(row, date_col).value
-                    if not date_val:
-                        continue
-                    try:
-                        ts = pd.to_datetime(date_val, errors="coerce")
-                        if pd.isna(ts):
-                            continue
-                    except Exception:
-                        continue
-                    if ts > max_ts:
-                        ws.cell(row, date_col).fill = red_fill
+            apply_announcement_date_coloring(wb, max_ts)
             wb.save(tmp_path)
 
         return FileResponse(

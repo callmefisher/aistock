@@ -66,9 +66,10 @@ def match_stock_code_flexible(
     """
     灵活匹配股票代码（支持多种格式）
 
-    匹配策略（全部 O(1) 查找）：
-    1. 精确匹配标准化后的代码 (如 601398.SH)
-    2. 匹配纯数字代码 (如 601398)
+    匹配策略：
+    1. 精确匹配标准化后的代码 (如 601398.SH) — O(1)
+    2. 匹配纯数字代码 (如 601398)                — O(1)
+    3. 反向匹配：查询的数字部分 == 字典键的数字部分（如 查 "601398" 命中键 "601398.SH"）— O(n)
     """
     normalized = normalize_stock_code(code)
     if not normalized:
@@ -80,6 +81,12 @@ def match_stock_code_flexible(
     numeric_code = extract_numeric_code(normalized)
     if numeric_code and numeric_code in stock_dict:
         return stock_dict[numeric_code] if return_value else numeric_code
+
+    # 反向匹配：字典键含后缀、查询不含（或格式差异）
+    if numeric_code:
+        for key in stock_dict:
+            if extract_numeric_code(key) == numeric_code:
+                return stock_dict[key] if return_value else key
 
     return ''
 

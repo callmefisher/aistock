@@ -17,11 +17,13 @@ def test_pledge_type_registered():
 
 
 def test_pledge_match_sources_inherit_standard():
-    """质押的 match_sources 与其他类型一致（百日新高/20日均线/国企/一级板块）。"""
+    """质押的 match_sources 与其他类型一致（百日新高/20日均线/国企/一级板块）。
+    百日新高/20日均线 升级为 dict 形态以支持 auto_copy=False（禁用历史回溯复制）。
+    """
     cfg = WORKFLOW_TYPE_CONFIG["质押"]
     assert cfg["match_sources"] == {
-        "match_high_price": "百日新高",
-        "match_ma20": "20日均线",
+        "match_high_price": {"dir": "百日新高", "auto_copy": False},
+        "match_ma20": {"dir": "20日均线", "auto_copy": False},
         "match_soe": "国企",
         "match_sector": "一级板块",
     }

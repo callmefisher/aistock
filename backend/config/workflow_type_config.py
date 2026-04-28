@@ -16,8 +16,8 @@ WORKFLOW_TYPE_CONFIG = {
             "match_soe_output": "output_5.xlsx",
         },
         "match_sources": {
-            "match_high_price": "百日新高",
-            "match_ma20": "20日均线",
+            "match_high_price": {"dir": "百日新高", "auto_copy": False},
+            "match_ma20": {"dir": "20日均线", "auto_copy": False},
             "match_soe": "国企",
             "match_sector": "一级板块",
         }
@@ -40,8 +40,8 @@ WORKFLOW_TYPE_CONFIG = {
             "match_soe_output": "output_5.xlsx",
         },
         "match_sources": {
-            "match_high_price": "百日新高",
-            "match_ma20": "20日均线",
+            "match_high_price": {"dir": "百日新高", "auto_copy": False},
+            "match_ma20": {"dir": "20日均线", "auto_copy": False},
             "match_soe": "国企",
             "match_sector": "一级板块",
         }
@@ -64,8 +64,8 @@ WORKFLOW_TYPE_CONFIG = {
             "match_soe_output": "output_5.xlsx",
         },
         "match_sources": {
-            "match_high_price": "百日新高",
-            "match_ma20": "20日均线",
+            "match_high_price": {"dir": "百日新高", "auto_copy": False},
+            "match_ma20": {"dir": "20日均线", "auto_copy": False},
             "match_soe": "国企",
             "match_sector": "一级板块",
         }
@@ -88,8 +88,8 @@ WORKFLOW_TYPE_CONFIG = {
             "match_soe_output": "output_5.xlsx",
         },
         "match_sources": {
-            "match_high_price": "百日新高",
-            "match_ma20": "20日均线",
+            "match_high_price": {"dir": "百日新高", "auto_copy": False},
+            "match_ma20": {"dir": "20日均线", "auto_copy": False},
             "match_soe": "国企",
             "match_sector": "一级板块",
         }
@@ -112,8 +112,8 @@ WORKFLOW_TYPE_CONFIG = {
             "match_soe_output": "output_5.xlsx",
         },
         "match_sources": {
-            "match_high_price": "百日新高",
-            "match_ma20": "20日均线",
+            "match_high_price": {"dir": "百日新高", "auto_copy": False},
+            "match_ma20": {"dir": "20日均线", "auto_copy": False},
             "match_soe": "国企",
             "match_sector": "一级板块",
         }
@@ -137,8 +137,8 @@ WORKFLOW_TYPE_CONFIG = {
             "match_soe_output": "output_5.xlsx",
         },
         "match_sources": {
-            "match_high_price": "百日新高",
-            "match_ma20": "20日均线",
+            "match_high_price": {"dir": "百日新高", "auto_copy": False},
+            "match_ma20": {"dir": "20日均线", "auto_copy": False},
             "match_soe": "国企",
             "match_sector": "一级板块",
         },
@@ -166,8 +166,8 @@ WORKFLOW_TYPE_CONFIG = {
             "match_soe_output": "output_5.xlsx",
         },
         "match_sources": {
-            "match_high_price": "百日新高",
-            "match_ma20": "20日均线",
+            "match_high_price": {"dir": "百日新高", "auto_copy": False},
+            "match_ma20": {"dir": "20日均线", "auto_copy": False},
             "match_soe": "国企",
             "match_sector": "一级板块",
         }
@@ -191,8 +191,8 @@ WORKFLOW_TYPE_CONFIG = {
             "match_soe_output": "output_5.xlsx",
         },
         "match_sources": {
-            "match_high_price": "百日新高",
-            "match_ma20": "20日均线",
+            "match_high_price": {"dir": "百日新高", "auto_copy": False},
+            "match_ma20": {"dir": "20日均线", "auto_copy": False},
             "match_soe": "国企",
             "match_sector": "一级板块",
         }

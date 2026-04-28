@@ -123,6 +123,90 @@ def apply_pledge_ratio_coloring(wb):
                     right.fill = green_fill
 
 
+def load_pledge_announcement_max_ts(current_date_str: Optional[str]):
+    """质押「最新公告日」baseline：查 workflow_results 表中 workflow_type='质押' 且
+    date_str < current_date_str 的所有 step_type='final' 记录，解压 data_compressed，
+    取所有行「最新公告日」的全局最大值。无数据或异常时返回 None。
+
+    finalize 端和 statistics 下载端共用，保证"中大盘/小盘两 sheet「最新公告日」首次出现红标"
+    行为在两处完全一致。
+    """
+    if not current_date_str:
+        return None
+    import zlib
+    max_ts = None
+    try:
+        from sqlalchemy import text
+        from core.database import SyncSessionLocal
+        db = SyncSessionLocal()
+        try:
+            rows = db.execute(text("""
+                SELECT data_compressed FROM workflow_results
+                WHERE workflow_type = :wt
+                  AND step_type = 'final'
+                  AND date_str < :dt
+                ORDER BY date_str DESC
+            """), {"wt": "质押", "dt": current_date_str}).fetchall()
+            for row in rows:
+                raw = row[0]
+                if not raw:
+                    continue
+                try:
+                    records = json.loads(zlib.decompress(raw).decode("utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(records, list):
+                    continue
+                for rec in records:
+                    if not isinstance(rec, dict):
+                        continue
+                    dv = rec.get("最新公告日")
+                    if not dv:
+                        continue
+                    try:
+                        ts = pd.to_datetime(dv, errors="coerce")
+                        if pd.isna(ts):
+                            continue
+                    except Exception:
+                        continue
+                    if max_ts is None or ts > max_ts:
+                        max_ts = ts
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"[质押 baseline-db] 查询失败，跳过标红: {e}")
+        return None
+    return max_ts
+
+
+def apply_announcement_date_coloring(wb, max_ts) -> None:
+    """给 workbook 所有 sheet 的「最新公告日」列施加浅红标（ts > max_ts 才标）。
+    max_ts 为 None 时不标。直接在 wb 上修改，不 save。
+    """
+    if max_ts is None:
+        return
+    from openpyxl.styles import PatternFill
+    red_fill = PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid")
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        header = [c.value for c in ws[1]]
+        if "最新公告日" not in header:
+            continue
+        date_col = header.index("最新公告日") + 1
+        for row in range(2, ws.max_row + 1):
+            date_val = ws.cell(row, date_col).value
+            if not date_val:
+                continue
+            try:
+                ts = pd.to_datetime(date_val, errors="coerce")
+                if pd.isna(ts):
+                    continue
+            except Exception:
+                continue
+            if ts > max_ts:
+                ws.cell(row, date_col).fill = red_fill
+
+
 def clean_df_for_json(df: pd.DataFrame) -> List[Dict]:
     df_clean = df.fillna('')
     records = df_clean.head(100).to_dict('records')
@@ -438,86 +522,6 @@ class WorkflowExecutor:
         rest = [c for c in df.columns if c not in prefix and c not in drop_cols]
         return df[prefix + rest]
 
-    def _load_pledge_baseline(self, public_dir: str) -> Dict[str, Any]:
-        """读 public 目录所有 xlsx，返回**按来源分的**最大日期基准（运行时 finalize 使用）。
-
-        返回结构：{"中大盘": Timestamp or None, "小盘": Timestamp or None}
-        规则：public xlsx 中 sheet 名含"中大盘" → 贡献"中大盘"基准；含"小盘" → 贡献"小盘"基准。
-        新文件某行 `最新公告日 > 对应来源的 baseline` → 红标；baseline 为空 → 不标。
-        失败时对应 key 返回 None。
-
-        注意：stock_pools 表**不**在此读取；它只用于下载导出时的独立红标（见 statistics_api）。
-        """
-        baseline: Dict[str, Any] = {"中大盘": None, "小盘": None}
-
-        def _update(source_key: str, ts) -> None:
-            if source_key not in baseline:
-                return
-            cur = baseline[source_key]
-            if cur is None or ts > cur:
-                baseline[source_key] = ts
-
-        # 读 public 目录下所有 xlsx
-        try:
-            if public_dir and os.path.isdir(public_dir):
-                from openpyxl import load_workbook as _lwb
-                for fname in os.listdir(public_dir):
-                    if not fname.lower().endswith(".xlsx"):
-                        continue
-                    fpath = os.path.join(public_dir, fname)
-                    try:
-                        wb = _lwb(fpath, read_only=True, data_only=True)
-                        try:
-                            for sheet_name in wb.sheetnames:
-                                # sheet 名含关键字决定来源（"中大盘" 必须先判，避免被 "小盘" 子串误归）
-                                sn = str(sheet_name or "").strip()
-                                if "中大盘" in sn:
-                                    src_key = "中大盘"
-                                elif "小盘" in sn:
-                                    src_key = "小盘"
-                                else:
-                                    # 未知 sheet 名 → 两边都不记入，跳过
-                                    continue
-                                ws = wb[sheet_name]
-                                rows = ws.iter_rows(values_only=True)
-                                try:
-                                    header = next(rows)
-                                except StopIteration:
-                                    continue
-                                header = [str(h) if h is not None else "" for h in header]
-                                date_idxs = [
-                                    i for i, h in enumerate(header)
-                                    if h == "最新公告日" or "股权质押公告日期" in h
-                                ]
-                                if not date_idxs:
-                                    continue
-                                for row in rows:
-                                    if not row:
-                                        continue
-                                    for di in date_idxs:
-                                        if di >= len(row):
-                                            continue
-                                        dv = row[di]
-                                        if dv is None or dv == "":
-                                            continue
-                                        try:
-                                            ts = pd.to_datetime(dv, errors="coerce")
-                                            if pd.isna(ts):
-                                                continue
-                                        except Exception:
-                                            continue
-                                        _update(src_key, ts)
-                        finally:
-                            wb.close()
-                    except Exception as e:
-                        logger.warning(f"[质押 baseline] 读取 public 文件失败 {fname}: {e}")
-                        continue
-        except Exception as e:
-            logger.warning(f"[质押 baseline] 扫描 public 目录失败: {e}")
-
-        logger.info(f"[质押 baseline] 中大盘={baseline['中大盘']}, 小盘={baseline['小盘']}")
-        return baseline
-
     def finalize_pledge_if_needed(
         self,
         last_output_path: Optional[str],
@@ -562,17 +566,14 @@ class WorkflowExecutor:
         output_path: str,
         public_dir: str,
     ) -> None:
-        """质押最终输出：列重排 + 分 sheet + 质押比例红绿对比 + 最新公告日首次出现绿标。
+        """质押最终输出：列重排 + 分 sheet + 质押比例红绿对比 + 最新公告日首次出现红标。
 
         Sheet1 = 中大盘{date_str}, Sheet2 = 小盘{date_str}；两者固定存在（空则仅表头）。
-        Baseline（从 public_dir xlsx）用于判定最新公告日是否首次出现；stock_pools 表
-        仅在下载端（statistics_api）参与。所有样式（质押比例红绿 / 最新公告日红）在此
-        一次性施加，避免被 openpyxl 中间步骤写入清除。
+        最新公告日 baseline 走 DB（workflow_results 表 date_str < 当前的 final 记录全局 max），
+        与统计分析导出（statistics_api）完全复用同一套 `load_pledge_announcement_max_ts` +
+        `apply_announcement_date_coloring`。public_dir 参数保留以兼容历史调用（不再使用）。
         """
         from openpyxl import Workbook
-        from openpyxl.styles import PatternFill
-
-        baseline = self._load_pledge_baseline(public_dir)
 
         if df is None:
             df = pd.DataFrame()
@@ -599,35 +600,9 @@ class WorkflowExecutor:
         # 质押比例相邻红绿条件格式（抽成模块级，下载端也复用）
         apply_pledge_ratio_coloring(wb)
 
-        # 最新公告日首次出现红标（按 sheet 分基准：中大盘 sheet 用中大盘 baseline；小盘亦然）
-        # 颜色：浅红（与质押比例变大的深红区分），同"新行增"语义
-        new_row_red_fill = PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid")
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            header = [c.value for c in ws[1]]
-            if "最新公告日" not in header:
-                continue
-            # 按 sheet 名前缀选对应 baseline
-            sn = str(sheet_name or "").strip()
-            if sn.startswith("中大盘"):
-                sheet_baseline = baseline.get("中大盘") if isinstance(baseline, dict) else None
-            elif sn.startswith("小盘"):
-                sheet_baseline = baseline.get("小盘") if isinstance(baseline, dict) else None
-            else:
-                sheet_baseline = None
-            date_col = header.index("最新公告日") + 1
-            for row in range(2, ws.max_row + 1):
-                date_val = ws.cell(row, date_col).value
-                if not date_val:
-                    continue
-                try:
-                    ts = pd.to_datetime(date_val, errors="coerce")
-                    if pd.isna(ts):
-                        continue
-                except Exception:
-                    continue
-                if sheet_baseline is not None and ts > sheet_baseline:
-                    ws.cell(row, date_col).fill = new_row_red_fill
+        # 最新公告日首次出现红标：与下载端共用 DB baseline + 着色逻辑
+        max_ts = load_pledge_announcement_max_ts(date_str)
+        apply_announcement_date_coloring(wb, max_ts)
 
         dirname = os.path.dirname(output_path)
         if dirname:

@@ -80,17 +80,33 @@ class WorkflowPathResolver:
 
     def get_match_source_directory(self, step_type: str, date_str: str = None) -> str:
         match_sources = self.config.get("match_sources", {})
-        source_dir = match_sources.get(step_type, step_type)
+        entry = match_sources.get(step_type, step_type)
+        source_dir = entry["dir"] if isinstance(entry, dict) else entry
         if date_str:
             return os.path.join(self.base_dir, date_str, source_dir)
         return os.path.join(self.base_dir, source_dir)
+
+    def _resolve_source_entry(self, step_type: str):
+        """match_sources 条目向后兼容：
+        - 字符串 → (dir=str, auto_copy=True)（默认开启历史回溯复制）
+        - dict   → (dir=dict["dir"], auto_copy=dict.get("auto_copy", True))
+        """
+        entry = self.config.get("match_sources", {}).get(step_type, step_type)
+        if isinstance(entry, dict):
+            return entry.get("dir", step_type), bool(entry.get("auto_copy", True))
+        return entry, True
 
     def get_daily_dir(self, date_str: str = None) -> str:
         return self.get_upload_directory(date_str)
 
     def ensure_match_source_files(self, step_type: str, date_str: str) -> str:
-        """确保匹配源目录存在且有文件。目录不存在时自动创建并从历史复制；已存在则不动。"""
+        """确保匹配源目录存在且有文件。目录不存在时自动创建并从历史复制；已存在则不动。
+
+        match_sources 条目可标 auto_copy=False（如百日新高/20日均线）→ 仅创建空目录 + warning，
+        不做 30 天回溯复制；其他 step（国企/一级板块）保持原行为。
+        """
         target_dir = self.get_match_source_directory(step_type, date_str)
+        source_name, auto_copy = self._resolve_source_entry(step_type)
 
         # 目录已存在 → 不论是否有文件，都不自动复制（用户可能主动清空过）
         if os.path.isdir(target_dir):
@@ -99,12 +115,15 @@ class WorkflowPathResolver:
                 logger.info(f"匹配源目录已有文件: {target_dir} ({len(existing)}个)")
             return target_dir
 
-        # 目录不存在 → 创建并从历史日期递减查找复制
+        # 目录不存在 → 创建
         os.makedirs(target_dir, exist_ok=True)
 
+        # auto_copy=False（百日新高/20日均线）→ 不做历史回溯复制，仅 warning
+        if not auto_copy:
+            logger.warning(f"匹配源目录为空且 auto_copy=False，不复制历史文件: {target_dir} (step={step_type})")
+            return target_dir
+
         # 从历史日期递减查找
-        match_sources = self.config.get("match_sources", {})
-        source_name = match_sources.get(step_type, step_type)
         try:
             base_date = datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:

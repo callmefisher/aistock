@@ -5,11 +5,38 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy import LargeBinary
 from httpx import AsyncClient, ASGITransport
 from typing import AsyncGenerator
+import sys
+import importlib
 
 from main import app
 from core.database import Base, get_async_db
 from api.auth import get_password_hash, create_access_token
-from models.models import User, DataSource, Rule, Task
+from models.models import User, DataSource, Rule, Task, Workflow
+
+
+# ---- 收集期跳过：依赖 Py3.8+ AsyncMock / 第三方 fakeredis / PEP585 类型语法 的测试文件
+_PY38_PLUS = sys.version_info >= (3, 8)
+_HAS_FAKEREDIS = importlib.util.find_spec("fakeredis") is not None
+
+# (文件名, 跳过条件 lambda) — 条件返回 True 时跳过
+_COLLECT_SKIP_FILES = {
+    "test_condition_intersection_pledge.py": not _PY38_PLUS,   # AsyncMock 需 3.8+
+    "test_db_writer.py":                      not _PY38_PLUS,
+    "test_export_high_price_trend_step.py":   not _PY38_PLUS,
+    "test_retention_service.py":              not _PY38_PLUS,
+    "test_pledge_cache_cleanup.py":           not _HAS_FAKEREDIS,
+    "test_pledge_data_source.py":             not _HAS_FAKEREDIS,
+    "test_pledge_side_by_side_upload.py":     not _PY38_PLUS,  # PEP585 list[X]
+}
+
+
+def collect_ignore_glob():
+    """供 pytest 自动调用：返回需要忽略的 glob 模式列表。"""
+    return [name for name, skip in _COLLECT_SKIP_FILES.items() if skip]
+
+
+# pytest 支持 module-level variable 形式（collect_ignore_glob 是 list）
+collect_ignore_glob = collect_ignore_glob()
 
 # SQLite does not support MySQL-specific LONGBLOB type.
 # Patch the WorkflowResult.data_compressed column to use LargeBinary before creating tables.
@@ -164,3 +191,29 @@ async def test_task(db_session: AsyncSession, test_data_source: DataSource, test
     await db_session.commit()
     await db_session.refresh(task)
     return task
+
+
+@pytest_asyncio.fixture(scope="function")
+async def test_workflow(db_session: AsyncSession, tmp_path_factory) -> Workflow:
+    """测试工作流 fixture（用于 test_workflows API 集成测试）。
+    步骤 0 的 import_excel 指向一个真实存在的空白 xlsx，避免执行步骤测试 400。"""
+    import pandas as pd
+    tmp_dir = tmp_path_factory.mktemp("workflow_fixture")
+    sample = tmp_dir / "sample.xlsx"
+    pd.DataFrame({"证券代码": ["000001.SZ"], "证券简称": ["平安银行"]}).to_excel(sample, index=False)
+
+    wf = Workflow(
+        name="测试工作流",
+        description="测试描述",
+        workflow_type="",
+        date_str="",
+        steps=[
+            {"type": "import_excel", "config": {"file_path": str(sample)}, "status": "pending"},
+            {"type": "dedup", "config": {}, "status": "pending"},
+        ],
+        status="active",
+    )
+    db_session.add(wf)
+    await db_session.commit()
+    await db_session.refresh(wf)
+    return wf

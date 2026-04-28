@@ -407,20 +407,23 @@ class TestPledgeRatioColoring:
 
 
 class TestPledgeFirstAppearance:
-    def _write_public_baseline(self, public_dir, code, date_val, date_str):
-        """写一份历史 public 文件，含某代码的某公告日。"""
-        from openpyxl import Workbook
-        wb = Workbook()
-        wb.remove(wb.active)
-        ws = wb.create_sheet(f"中大盘{date_str}")
-        ws.append(["序号", "证券代码", "证券简称", "最新公告日"])
-        ws.append([1, code, "A", date_val])
-        ws2 = wb.create_sheet(f"小盘{date_str}")
-        ws2.append(["序号", "证券代码", "证券简称", "最新公告日"])
-        wb.save(str(public_dir / f"5质押{date_str}.xlsx"))
+    """「最新公告日」红标行为：复用 statistics_api 的 DB baseline + 着色逻辑。
 
-    def test_new_code_green(self, executor, tmp_path):
-        """public 为空（baseline=None）→ 不标红（保守行为，避免首次运行全红）。"""
+    finalize 端调用 services.workflow_executor.load_pledge_announcement_max_ts 取 baseline，
+    测试通过 monkeypatch 注入 max_ts。public_dir 参数保留兼容签名但 finalize 内部不再使用。
+    """
+
+    def _patch_max_ts(self, monkeypatch, max_ts):
+        from services import workflow_executor as we
+
+        def fake(_date_str):
+            return max_ts
+
+        monkeypatch.setattr(we, "load_pledge_announcement_max_ts", fake)
+
+    def test_new_code_no_baseline_not_marked(self, executor, tmp_path, monkeypatch):
+        """baseline=None → 不标红（保守行为，避免首次运行全红）。"""
+        self._patch_max_ts(monkeypatch, None)
         public_dir = tmp_path / "public"
         public_dir.mkdir()
         df = pd.DataFrame({
@@ -433,14 +436,13 @@ class TestPledgeFirstAppearance:
         ws = wb["中大盘20260420"]
         header = [c.value for c in ws[1]]
         col_date = header.index("最新公告日") + 1
-        # 无 baseline → 不标
         assert NEW_ROW_RED not in _get_fill(ws, 2, col_date)
 
-    def test_existing_code_newer_date_green(self, executor, tmp_path):
-        """public 有基准，新公告日 > baseline → 标红。"""
+    def test_newer_than_baseline_marked(self, executor, tmp_path, monkeypatch):
+        """公告日 > baseline → 标红。"""
+        self._patch_max_ts(monkeypatch, pd.Timestamp("2026-03-01"))
         public_dir = tmp_path / "public"
         public_dir.mkdir()
-        self._write_public_baseline(public_dir, "000001.SZ", "2026-03-01", "20260301")
         df = pd.DataFrame({
             "证券代码": ["000001.SZ"], "证券简称": ["A"],
             "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
@@ -453,11 +455,11 @@ class TestPledgeFirstAppearance:
         col_date = header.index("最新公告日") + 1
         assert NEW_ROW_RED in _get_fill(ws, 2, col_date)
 
-    def test_existing_code_same_or_older_not_green(self, executor, tmp_path):
+    def test_equal_or_older_not_marked(self, executor, tmp_path, monkeypatch):
         """公告日 == baseline → 不标红（只看 >，不看 >=）。"""
+        self._patch_max_ts(monkeypatch, pd.Timestamp("2026-04-20"))
         public_dir = tmp_path / "public"
         public_dir.mkdir()
-        self._write_public_baseline(public_dir, "000001.SZ", "2026-04-20", "20260420")
         df = pd.DataFrame({
             "证券代码": ["000001.SZ"], "证券简称": ["A"],
             "最新公告日": ["2026-04-20"], "来源": ["中大盘"],
@@ -471,53 +473,17 @@ class TestPledgeFirstAppearance:
         fill = _get_fill(ws, 2, col_date)
         assert NEW_ROW_RED not in fill
 
-    def test_baseline_merges_both_sheets(self, executor, tmp_path):
-        """按 sheet 分基准：public 小盘 sheet 为空 → 小盘 baseline=None → 不标红。
-        中大盘 sheet 的数据不影响小盘的判定。"""
+    def test_unified_baseline_across_sheets(self, executor, tmp_path, monkeypatch):
+        """统一全局 baseline：中大盘和小盘 sheet 都使用同一 max_ts，
+        与下载端 statistics_api 行为完全一致。"""
+        self._patch_max_ts(monkeypatch, pd.Timestamp("2026-04-10"))
         public_dir = tmp_path / "public"
         public_dir.mkdir()
-        from openpyxl import Workbook
-        wb_pub = Workbook()
-        wb_pub.remove(wb_pub.active)
-        ws_big = wb_pub.create_sheet("中大盘20260301")
-        ws_big.append(["序号", "证券代码", "证券简称", "最新公告日"])
-        ws_big.append([1, "000002.SZ", "B", "2026-04-20"])  # 中大盘 baseline=2026-04-20
-        ws_small = wb_pub.create_sheet("小盘20260301")
-        ws_small.append(["序号", "证券代码", "证券简称", "最新公告日"])  # 小盘 baseline=None
-        wb_pub.save(str(public_dir / "5质押20260301.xlsx"))
         df = pd.DataFrame({
-            "证券代码": ["000002.SZ"], "证券简称": ["B"],
-            "最新公告日": ["2026-04-20"], "来源": ["小盘"],
-        })
-        output_path = tmp_path / "out.xlsx"
-        executor._finalize_pledge_output(df, "20260421", str(output_path), str(public_dir))
-        wb = load_workbook(str(output_path))
-        ws = wb["小盘20260421"]
-        header = [c.value for c in ws[1]]
-        col_date = header.index("最新公告日") + 1
-        # 小盘 baseline=None → 不标（新行为）
-        assert NEW_ROW_RED not in _get_fill(ws, 2, col_date)
-
-    def test_global_baseline_only_newer_dates_green(self, executor, tmp_path):
-        """中大盘 baseline 仅对中大盘行生效：公告日 > baseline 才标红，= 不标，< 不标。"""
-        public_dir = tmp_path / "public"
-        public_dir.mkdir()
-        from openpyxl import Workbook
-        wb_pub = Workbook()
-        wb_pub.remove(wb_pub.active)
-        ws = wb_pub.create_sheet("中大盘20260410")
-        ws.append(["序号", "证券代码", "证券简称", "最新公告日"])
-        ws.append([1, "000001.SZ", "A", "2026-04-10"])
-        ws.append([2, "000002.SZ", "B", "2026-04-05"])
-        ws2 = wb_pub.create_sheet("小盘20260410")
-        ws2.append(["序号", "证券代码", "证券简称", "最新公告日"])
-        wb_pub.save(str(public_dir / "5质押20260410.xlsx"))
-
-        df = pd.DataFrame({
-            "证券代码": ["000003.SZ", "000001.SZ", "000004.SZ"],
-            "证券简称": ["C", "A", "D"],
-            "最新公告日": ["2026-04-21", "2026-04-09", "2026-04-10"],
-            "来源": ["中大盘", "中大盘", "中大盘"],
+            "证券代码": ["000003.SZ", "000001.SZ", "000004.SZ", "000020.SZ"],
+            "证券简称": ["C", "A", "D", "S"],
+            "最新公告日": ["2026-04-21", "2026-04-09", "2026-04-10", "2026-04-21"],
+            "来源": ["中大盘", "中大盘", "中大盘", "小盘"],
         })
         output_path = tmp_path / "out.xlsx"
         executor._finalize_pledge_output(df, "20260421", str(output_path), str(public_dir))
@@ -532,40 +498,12 @@ class TestPledgeFirstAppearance:
         # 2026-04-10 == baseline → 不标
         assert NEW_ROW_RED not in _get_fill(ws_big, 4, col_date)
 
-    def test_per_sheet_baseline_isolation(self, executor, tmp_path):
-        """中大盘和小盘基准独立：小盘行用小盘 baseline，不受中大盘 baseline 影响。"""
-        public_dir = tmp_path / "public"
-        public_dir.mkdir()
-        from openpyxl import Workbook
-        wb_pub = Workbook()
-        wb_pub.remove(wb_pub.active)
-        ws_big = wb_pub.create_sheet("中大盘20260420")
-        ws_big.append(["序号", "证券代码", "证券简称", "最新公告日"])
-        ws_big.append([1, "000001.SZ", "A", "2026-04-20"])
-        ws_small = wb_pub.create_sheet("小盘20260420")
-        ws_small.append(["序号", "证券代码", "证券简称", "最新公告日"])
-        ws_small.append([1, "000099.SZ", "X", "2026-04-05"])
-        wb_pub.save(str(public_dir / "5质押20260420.xlsx"))
-
-        df = pd.DataFrame({
-            "证券代码": ["000010.SZ", "000020.SZ"],
-            "证券简称": ["M", "S"],
-            "最新公告日": ["2026-04-10", "2026-04-10"],
-            "来源": ["中大盘", "小盘"],
-        })
-        output_path = tmp_path / "out.xlsx"
-        executor._finalize_pledge_output(df, "20260421", str(output_path), str(public_dir))
-        wb = load_workbook(str(output_path))
-        # 中大盘：2026-04-10 < 中大盘 baseline 2026-04-20 → 不标
-        ws_big_new = wb["中大盘20260421"]
-        h_big = [c.value for c in ws_big_new[1]]
-        dc_big = h_big.index("最新公告日") + 1
-        assert NEW_ROW_RED not in _get_fill(ws_big_new, 2, dc_big), "中大盘行不该标红（< 中大盘基准）"
-        # 小盘：2026-04-10 > 小盘 baseline 2026-04-05 → 标红
-        ws_small_new = wb["小盘20260421"]
-        h_small = [c.value for c in ws_small_new[1]]
+        # 小盘也使用同一 baseline
+        ws_small = wb["小盘20260421"]
+        h_small = [c.value for c in ws_small[1]]
         dc_small = h_small.index("最新公告日") + 1
-        assert NEW_ROW_RED in _get_fill(ws_small_new, 2, dc_small), "小盘行该标红（> 小盘基准）"
+        # 2026-04-21 > baseline 2026-04-10 → 标红
+        assert NEW_ROW_RED in _get_fill(ws_small, 2, dc_small)
 
 
 class TestFinalizePledgeIfNeeded:

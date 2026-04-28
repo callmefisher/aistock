@@ -94,7 +94,7 @@ class TestPathResolverDefaultType:
 
     def test_get_output_filename_match_sector_final(self, resolver):
         filename = resolver.get_output_filename("match_sector", "2026-04-09")
-        assert filename == "并购重组20260409.xlsx"
+        assert filename == "1并购重组20260409.xlsx"
 
 
 class TestPathResolverFinanceType:
@@ -116,7 +116,7 @@ class TestPathResolverFinanceType:
 
     def test_get_output_filename_match_sector_final(self, resolver):
         filename = resolver.get_output_filename("match_sector", "2026-04-09")
-        assert filename == "股权转让20260409.xlsx"
+        assert filename == "2股权转让20260409.xlsx"
 
     def test_get_daily_dir_compatibility(self, resolver):
         daily_dir = resolver.get_daily_dir("2026-04-10")
@@ -138,14 +138,14 @@ class TestOutputFilenamePriority:
         assert filename == user_filename
 
     def test_user_specified_ignored_for_final_step(self, resolver):
+        """match_sector 的 user_specified 现也生效（与中间步骤一致）。"""
         user_filename = "custom_final.xlsx"
         filename = resolver.get_output_filename(
             step_type="match_sector",
             date_str="2026-04-09",
             user_specified=user_filename
         )
-        assert filename == "股权转让20260409.xlsx"
-        assert filename != user_filename
+        assert filename == user_filename
 
     def test_empty_user_specified_uses_default(self, resolver):
         filename = resolver.get_output_filename(
@@ -188,7 +188,7 @@ class TestIntegrationScenarios:
         assert public_dir == "/data/excel/2025public"
 
         final_output = resolver.get_output_filename("match_sector", date)
-        assert final_output == "并购重组20260409.xlsx"
+        assert final_output == "1并购重组20260409.xlsx"
 
     def test_full_workflow_path_generation_finance_type(self):
         resolver = WorkflowPathResolver("/data/excel", "股权转让")
@@ -201,7 +201,7 @@ class TestIntegrationScenarios:
         assert public_dir == "/data/excel/股权转让/public"
 
         final_output = resolver.get_output_filename("match_sector", date)
-        assert final_output == "股权转让20260409.xlsx"
+        assert final_output == "2股权转让20260409.xlsx"
 
     def test_match_sources_shared_between_types(self):
         default_resolver = WorkflowPathResolver("/data/excel", "")

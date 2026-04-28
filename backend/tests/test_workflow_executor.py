@@ -5,21 +5,31 @@ import pandas as pd
 from datetime import datetime
 
 from services.workflow_executor import WorkflowExecutor
+from utils.beijing_time import beijing_today_str
 
 
 class TestWorkflowExecutor:
     """工作流执行器单元测试"""
 
     @pytest.fixture
-    def temp_excel_dir(self):
-        """创建临时Excel目录"""
+    def _tmp_base(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             yield tmpdir
 
     @pytest.fixture
+    def temp_excel_dir(self, _tmp_base):
+        """当日 daily_dir：等同于 executor 调用 _get_daily_dir() 返回的目录。
+        测试文件放这里，无需显式传 date_str。"""
+        daily = os.path.join(_tmp_base, beijing_today_str())
+        os.makedirs(daily, exist_ok=True)
+        return daily
+
+    @pytest.fixture
     def executor(self, temp_excel_dir):
-        """创建工作流执行器实例"""
-        return WorkflowExecutor(base_dir=temp_excel_dir)
+        """创建工作流执行器实例（base_dir = tmp 根，daily_dir 在其下且已创建）。"""
+        # temp_excel_dir 已确保 {base}/{today} 存在
+        base = os.path.dirname(temp_excel_dir)
+        return WorkflowExecutor(base_dir=base)
 
     @pytest.fixture
     def sample_excel_file(self, temp_excel_dir):
@@ -202,8 +212,10 @@ class TestWorkflowExecutor:
         assert result["original_rows"] == 3
         assert result["deduped_rows"] == 1
 
-        final_df = result["data"]
-        assert final_df.iloc[0]["最新公告日"] == "2026-05-01"
+        records = result["data"]
+        # data 是列表（已序列化），取首行
+        assert isinstance(records, list) and len(records) == 1
+        assert records[0]["最新公告日"] == "2026-05-01"
 
     def test_smart_dedup_auto_detect_columns(self, executor):
         """测试智能去重自动检测列名"""
@@ -241,8 +253,9 @@ class TestWorkflowExecutor:
         result = asyncio.run(executor._extract_columns(config, df))
 
         assert result["success"] is True
-        extracted_df = result["data"]
-        assert len(extracted_df.columns) == 4
+        records = result["data"]
+        assert isinstance(records, list) and len(records) > 0
+        assert len(records[0]) == 4
 
     def test_extract_columns_no_data(self, executor):
         """测试提取列无数据"""

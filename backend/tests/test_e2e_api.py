@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 import httpx
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 import time
@@ -8,6 +9,13 @@ import time
 
 BASE_URL = "http://localhost:3000/api/v1"
 TIMEOUT = 30.0
+
+# e2e 测试依赖本地真实运行的后端（localhost:3000）。默认跳过，
+# 设 RUN_E2E=1 主动启用（CI / staging 环境）。
+pytestmark = pytest.mark.skipif(
+    os.environ.get("RUN_E2E") != "1",
+    reason="e2e 测试需真实后端运行于 localhost:3000；设 RUN_E2E=1 启用",
+)
 
 
 class TestDataFetchE2E:
