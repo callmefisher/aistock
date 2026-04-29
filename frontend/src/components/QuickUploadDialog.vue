@@ -23,11 +23,15 @@
         <el-form-item label="选择文件">
           <input ref="dirInput" type="file" webkitdirectory multiple @change="onFilesPicked" style="display:none" />
           <input ref="fileInput" type="file" multiple accept=".xlsx,.xls" @change="onFilesPicked" style="display:none" />
+          <el-button type="primary" @click="$refs.fileInput.click()">选择多个文件</el-button>
           <el-button @click="$refs.dirInput.click()">选择整个目录</el-button>
-          <el-button @click="$refs.fileInput.click()">选择多个文件</el-button>
           <span style="margin-left: 12px" v-if="acceptedFiles.length">
             已选 {{ acceptedFiles.length }} 个 Excel 文件（过滤掉 {{ skippedCount }} 个非 Excel）
           </span>
+          <div style="font-size:12px;color:#909399;margin-top:6px;">
+            提示：选择整个目录时浏览器会弹"上传此目录下所有文件"的确认提示（安全机制，无法消除）；
+            用"选择多个文件"（Cmd/Ctrl+A 全选）可绕过该弹窗。
+          </div>
         </el-form-item>
       </el-form>
     </div>
@@ -62,28 +66,28 @@
                 </el-button>
               </div>
             </template>
-            <el-table :data="g.rows" size="small">
+            <el-table :data="g.rows" size="default">
               <el-table-column prop="filename" label="文件" />
               <el-table-column prop="target_dir" label="目标目录" />
               <el-table-column label="状态" width="120">
                 <template #default="scope">
-                  <el-tag v-if="scope?.row?.will_overwrite" type="danger" size="small">将覆盖</el-tag>
-                  <el-tag v-else type="success" size="small">新增</el-tag>
+                  <el-tag v-if="scope?.row?.will_overwrite" type="danger">将覆盖</el-tag>
+                  <el-tag v-else type="success">新增</el-tag>
                 </template>
               </el-table-column>
               <el-table-column label="操作" width="80" align="center">
                 <template #default="scope">
-                  <el-button size="small" type="danger" link :disabled="uploading"
+                  <el-button type="danger" link :disabled="uploading"
                     @click="removeParsedRow(scope?.row)">移除</el-button>
                 </template>
               </el-table-column>
             </el-table>
             <!-- 目录已有文件（可删除） -->
             <div v-if="(existingFilesMap[g.key] || []).length > 0" style="margin-top:12px;">
-              <div style="font-size:13px;color:#909399;margin-bottom:6px;">
+              <div style="font-size:14px;color:#909399;margin-bottom:6px;">
                 目录已有（{{ (existingFilesMap[g.key] || []).length }} 个）：
               </div>
-              <el-table :data="existingFilesMap[g.key] || []" size="small">
+              <el-table :data="existingFilesMap[g.key] || []" size="default">
                 <el-table-column prop="filename" label="文件名" />
                 <el-table-column prop="modified_time" label="修改时间" width="170" />
                 <el-table-column label="操作" width="80" align="center">
@@ -95,7 +99,7 @@
                       @confirm="deleteExistingFile(g.key, scope?.row?.path)"
                     >
                       <template #reference>
-                        <el-button size="small" type="danger" link
+                        <el-button type="danger" link
                           :loading="deletingFiles.has(scope?.row?.path)"
                           :disabled="uploading">删除</el-button>
                       </template>
@@ -243,6 +247,40 @@ const fileMap = new Map()  // filename → File
 const resolvedRows = computed(() => parsedRows.value.filter(r => r.status === 'resolved'))
 const unresolvedRows = computed(() => parsedRows.value.filter(r => r.status === 'unresolved'))
 
+// 预览阶段无条件触发这两个 step_type 的 /step-files/ 查询，
+// 让后端 ensure_match_source_files 跑一次，从最近历史日期复制老文件到当日目录
+// （国企/一级板块 auto_copy=True，用户没选这两类文件时也要复制）。
+const ALWAYS_PREVIEW_STEPS = [
+  { workflow_type: '并购重组', step_type: 'match_soe', sub_dir: '国企' },
+  { workflow_type: '并购重组', step_type: 'match_sector', sub_dir: '一级板块' },
+]
+const FORCED_SUBDIR_GROUPS = ALWAYS_PREVIEW_STEPS
+// groups computed 补显时用：sub_dir → 后端返回的真实 target_dir
+const forcedSubdirTargetMap = ref({})
+
+// 分组展示顺序：主工作流按数字前缀 1→9，之后是 4 个公共子目录
+const GROUP_ORDER = [
+  '并购重组',        // 1
+  '股权转让',        // 2
+  '增发实现',        // 3
+  '申报并购重组',    // 4
+  '质押',            // 5
+  '减持叠加质押和大宗交易', // 6
+  '涨幅排名',        // 8
+  '招投标',          // 9
+]
+const SUBDIR_ORDER = ['百日新高', '20日均线', '国企', '一级板块']
+
+function groupSortKey(g) {
+  // 公共子目录：SUBDIR_ORDER 里的索引 + 偏移到主工作流之后
+  if (g.sub_dir) {
+    const idx = SUBDIR_ORDER.indexOf(g.sub_dir)
+    return (idx === -1 ? 99 : idx) + 1000
+  }
+  const idx = GROUP_ORDER.indexOf(g.workflow_type)
+  return idx === -1 ? 500 : idx
+}
+
 const groups = computed(() => {
   const map = {}
   for (const r of resolvedRows.value) {
@@ -253,6 +291,8 @@ const groups = computed(() => {
         title: `${r.workflow_type}${r.sub_dir ? ' / ' + r.sub_dir : ''} → ${r.target_dir}`,
         rows: [],
         existingFiles: existingFilesMap.value[key] || [],
+        workflow_type: r.workflow_type,
+        sub_dir: r.sub_dir || null,
       }
     }
     map[key].rows.push({
@@ -260,7 +300,21 @@ const groups = computed(() => {
       will_overwrite: (existingFilesMap.value[key] || []).some(f => f.filename === r.filename),
     })
   }
-  return Object.values(map)
+  // 强制补显：国企/一级板块即便用户没选文件，也要把"目录已有"（含历史复制）渲染成分组
+  for (const { sub_dir } of FORCED_SUBDIR_GROUPS) {
+    const dir = forcedSubdirTargetMap.value[sub_dir]
+    if (!dir || map[dir]) continue
+    if ((existingFilesMap.value[dir] || []).length === 0) continue
+    map[dir] = {
+      key: dir,
+      title: `并购重组 / ${sub_dir} → ${dir}（仅历史复制，无新上传）`,
+      rows: [],
+      existingFiles: existingFilesMap.value[dir],
+      workflow_type: '并购重组',
+      sub_dir,
+    }
+  }
+  return Object.values(map).sort((a, b) => groupSortKey(a) - groupSortKey(b))
 })
 
 const overwriteCount = computed(() =>
@@ -376,22 +430,36 @@ async function loadExistingFiles() {
   for (const r of resolvedRows.value) {
     const key = `${r.workflow_type}|${r.step_type}|${dateStr.value}`
     if (!dedup[key]) {
-      dedup[key] = { workflow_type: r.workflow_type, step_type: r.step_type, target_dir: r.target_dir }
+      dedup[key] = { workflow_type: r.workflow_type, step_type: r.step_type, target_dir: r.target_dir, sub_dir: null }
+    }
+  }
+  // 强制补加：无论用户是否选了这些子目录文件，都查一次让后端触发 ensure_match_source_files
+  for (const { workflow_type, step_type, sub_dir } of ALWAYS_PREVIEW_STEPS) {
+    const key = `${workflow_type}|${step_type}|${dateStr.value}`
+    if (!dedup[key]) {
+      dedup[key] = { workflow_type, step_type, target_dir: null, sub_dir }
     }
   }
   const map = {}
-  for (const { workflow_type, step_type, target_dir } of Object.values(dedup)) {
+  const subdirMap = {}
+  for (const { workflow_type, step_type, target_dir, sub_dir } of Object.values(dedup)) {
     try {
       const resp = await api.get('/workflows/step-files/', {
         params: { step_type, workflow_type, date_str: dateStr.value }
       })
-      map[target_dir] = resp?.files || []
+      // 后端 /step-files/ 返回里含 directory 字段，forced 项没预设 target_dir 时用它回填
+      const actualDir = target_dir || resp?.directory
+      if (actualDir) {
+        map[actualDir] = resp?.files || []
+        if (sub_dir) subdirMap[sub_dir] = actualDir
+      }
     } catch (e) {
-      console.warn('获取已有文件失败', target_dir, e)
-      map[target_dir] = []
+      console.warn('获取已有文件失败', target_dir || step_type, e)
+      if (target_dir) map[target_dir] = []
     }
   }
   existingFilesMap.value = map
+  forcedSubdirTargetMap.value = subdirMap
 }
 
 // Set ref 响应式更新助手（Vue 3 对 Set.add/delete 的追踪不完美，新建 Set 更稳）
@@ -420,7 +488,17 @@ function removeParsedRow(row) {
 // 重扫单个 target_dir 的已有文件（删除/清空成功后调用）
 // 更新 existingFilesMap 后，groups computed 会自动重算 will_overwrite
 async function refreshDirectoryListing(targetDir) {
-  const sample = parsedRows.value.find(r => r.target_dir === targetDir)
+  // 样本查找：优先用 parsedRows（用户已选文件对应的 row）；
+  // 对强制补显的国企/一级板块目录（parsedRows 里没有）用 forcedSubdirTargetMap 反查。
+  let sample = parsedRows.value.find(r => r.target_dir === targetDir)
+  if (!sample) {
+    for (const { workflow_type, step_type, sub_dir } of FORCED_SUBDIR_GROUPS) {
+      if (forcedSubdirTargetMap.value[sub_dir] === targetDir) {
+        sample = { workflow_type, step_type }
+        break
+      }
+    }
+  }
   if (!sample) return
   const endpoint = isPublicTarget(targetDir)
     ? '/workflows/public-files/'
@@ -639,6 +717,7 @@ watch(() => props.modelValue, (v) => {
     skippedCount.value = 0
     parsedRows.value = []
     existingFilesMap.value = {}
+    forcedSubdirTargetMap.value = {}
     uploadSuccess.value = 0
     uploadFailed.value = 0
     failedUploads.value = []
