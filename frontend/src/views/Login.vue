@@ -3,7 +3,6 @@
     <el-card class="login-card">
       <template #header>
         <div class="card-header">
-          <h2>选股池自动化系统</h2>
           <p>登录您的账户</p>
         </div>
       </template>
