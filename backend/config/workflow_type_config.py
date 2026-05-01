@@ -212,13 +212,18 @@ WORKFLOW_TYPE_CONFIG = {
         "match_sources": {},
         "allowed_steps": ["condition_intersection"],
         "filter_columns": ["百日新高", "20日均线", "国企", "一级板块"],
-        "default_filters": [{"column": "百日新高", "enabled": True}],
+        "default_filters": [{"column": "百日新高并行20日均线", "enabled": True}],
         "default_type_order": [
             "并购重组", "股权转让", "增发实现",
             "申报并购重组", "减持叠加质押和大宗交易",
             "质押",
             "招投标"
         ],
+        "parallel_output_templates": {
+            "main": "7条件交集{date}.xlsx",
+            "high_price_codes": "7条件交集{date}百日新高证券代码.xlsx",
+            "ma20_codes": "7条件交集{date}站上20日线证券代码.xlsx",
+        },
     },
 
     "导出20日均线趋势": {

@@ -52,6 +52,7 @@
           <span>数据库备份</span>
         </el-menu-item>
       </el-menu>
+      <div class="version-info" v-if="appVersion">{{ appVersion }}</div>
     </el-aside>
     
     <el-container>
@@ -86,9 +87,10 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import axios from 'axios'
 
 const route = useRoute()
 const router = useRouter()
@@ -96,6 +98,16 @@ const authStore = useAuthStore()
 
 const activeMenu = computed(() => route.path)
 const pageTitle = computed(() => route.meta.title || '仪表盘')
+
+const appVersion = ref('')
+onMounted(async () => {
+  try {
+    const res = await axios.get('/api/v1/system/version')
+    appVersion.value = res.data?.version || ''
+  } catch {
+    appVersion.value = ''
+  }
+})
 
 const handleLogout = () => {
   authStore.logout()
@@ -111,6 +123,7 @@ const handleLogout = () => {
 .el-aside {
   background-color: #545c64;
   color: #fff;
+  position: relative;
 }
 
 .logo {
@@ -129,6 +142,17 @@ const handleLogout = () => {
 
 .el-menu {
   border-right: none;
+}
+
+.version-info {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 16px;
+  color: #8c939d;
+  letter-spacing: 0.5px;
 }
 
 .el-header {

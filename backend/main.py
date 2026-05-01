@@ -7,6 +7,7 @@ from core.config import settings
 from core.database import async_engine, Base
 from api import auth, data_sources, rules, tasks, stock_pools, workflows, statistics_api, trend_api, database_backup
 from api import sector_signal_api
+from api import system_api
 from services.task_scheduler import TaskScheduler
 
 logging.basicConfig(
@@ -161,6 +162,7 @@ app.include_router(statistics_api.router, prefix=f"{settings.API_PREFIX}/statist
 app.include_router(trend_api.router, prefix=f"{settings.API_PREFIX}/statistics/trend", tags=["趋势统计"])
 app.include_router(database_backup.router, prefix=f"{settings.API_PREFIX}/database", tags=["数据库备份"])
 app.include_router(sector_signal_api.router, prefix=f"{settings.API_PREFIX}/sector-signal", tags=["板块信号"])
+app.include_router(system_api.router, prefix=f"{settings.API_PREFIX}/system", tags=["系统"])
 
 
 @app.get("/")

@@ -710,6 +710,21 @@
                   <el-input v-model="step.config.output_filename" placeholder="7条件交集{date}.xlsx" />
                 </el-form-item>
 
+                <template v-if="step.config.filter_conditions?.some(f => f.column === '百日新高并行20日均线' && f.enabled)">
+                  <el-form-item label="百日新高证券代码文件名">
+                    <el-input v-model="step.config.output_filename_high" placeholder="7条件交集{date}百日新高证券代码.xlsx" />
+                  </el-form-item>
+                  <el-form-item label="站上20日线证券代码文件名">
+                    <el-input v-model="step.config.output_filename_ma20" placeholder="7条件交集{date}站上20日线证券代码.xlsx" />
+                  </el-form-item>
+                  <el-alert
+                    title="百日新高并行20日均线模式：输出3个文件（主文件含2个Sheet + 2个证券代码文件），增量合并前一日数据"
+                    type="success"
+                    :closable="false"
+                    style="margin-bottom: 12px"
+                  />
+                </template>
+
                 <el-form-item label="标注百日新高周期">
                   <div style="width: 100%">
                     <div style="font-size: 12px; color: #909399; margin-bottom: 6px;">
@@ -1421,19 +1436,22 @@ const getStepTypeName = (type) => {
 const AGGREGATION_TYPES = ['条件交集', '导出20日均线趋势', '百日新高总趋势']
 const isAggregationType = computed(() => AGGREGATION_TYPES.includes(form.value.workflow_type))
 
-const FILTER_COLUMNS = ['百日新高', '20日均线', '国企', '一级板块']
+const FILTER_COLUMNS = ['百日新高', '20日均线', '国企', '一级板块', '百日新高并行20日均线']
 const DEFAULT_TYPE_ORDER = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '质押', '招投标']
 
 const defaultIntersectionStep = () => {
   const today = todayBeijing()
+  const dateCompact = today.replace(/-/g, '')
   return {
     type: 'condition_intersection',
     config: {
       date_str: today,
-      filter_conditions: [{ column: '百日新高', enabled: true }],
+      filter_conditions: [{ column: '百日新高并行20日均线', enabled: true }],
       filter_logic: 'AND',
       type_order: [...DEFAULT_TYPE_ORDER],
-      output_filename: `7条件交集${today.replace(/-/g, '')}.xlsx`,
+      output_filename: `7条件交集${dateCompact}.xlsx`,
+      output_filename_high: `7条件交集${dateCompact}百日新高证券代码.xlsx`,
+      output_filename_ma20: `7条件交集${dateCompact}站上20日线证券代码.xlsx`,
       high_price_periods: [{ start: '2026-03-18', end: today }]
     },
     status: 'pending'
@@ -1577,7 +1595,13 @@ const getAvailableFilters = (step) => {
 const addFilter = (step) => {
   const available = getAvailableFilters(step)
   if (available.length > 0) {
-    step.config.filter_conditions.push({ column: available[0], enabled: true })
+    const newFilter = { column: available[0], enabled: true }
+    if (newFilter.column === '百日新高并行20日均线') {
+      step.config.filter_conditions = [newFilter]
+    } else {
+      step.config.filter_conditions = step.config.filter_conditions.filter(f => f.column !== '百日新高并行20日均线')
+      step.config.filter_conditions.push(newFilter)
+    }
   }
 }
 
@@ -1606,8 +1630,10 @@ const removeHighPricePeriod = (step, idx) => {
 
 const onIntersectionDateChange = (step) => {
   const date = step.config.date_str || todayBeijing()
-  step.config.output_filename = `7条件交集${date.replace(/-/g, '')}.xlsx`
-  // 只有 1 条周期时自动同步 end 到数据日期
+  const dateCompact = date.replace(/-/g, '')
+  step.config.output_filename = `7条件交集${dateCompact}.xlsx`
+  step.config.output_filename_high = `7条件交集${dateCompact}百日新高证券代码.xlsx`
+  step.config.output_filename_ma20 = `7条件交集${dateCompact}站上20日线证券代码.xlsx`
   const periods = step.config.high_price_periods || []
   if (periods.length === 1) {
     periods[0].end = date
@@ -2335,6 +2361,12 @@ const handleEdit = (row) => {
           order.push('质押')
         }
         step.config.type_order = order
+      }
+      // 兼容旧工作流：补齐并行模式输出文件名
+      if (!step.config.output_filename_high) {
+        const d = step.config.date_str.replace(/-/g, '')
+        step.config.output_filename_high = `7条件交集${d}百日新高证券代码.xlsx`
+        step.config.output_filename_ma20 = `7条件交集${d}站上20日线证券代码.xlsx`
       }
       const periods = step.config.high_price_periods || []
       if (periods.length === 1) {

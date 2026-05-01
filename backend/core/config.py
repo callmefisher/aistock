@@ -41,6 +41,21 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = True
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._load_version_from_file()
+
+    def _load_version_from_file(self):
+        version_path = os.path.join(self.DATA_DIR, "versions")
+        try:
+            if os.path.isfile(version_path):
+                with open(version_path, "r", encoding="utf-8") as f:
+                    ver = f.read().strip()
+                    if ver:
+                        self.VERSION = ver
+        except Exception:
+            pass
+
     @staticmethod
     def get_daily_dir(base_dir: str = None, date_str: str = None) -> str:
         if date_str is None:

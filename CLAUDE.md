@@ -2,7 +2,7 @@
 
 ## 流程
 
-设计 → 实施 → review → 测试 → `./deploy.sh build && ./deploy.sh restart`
+设计 → 实施 → review → 测试 → `./deploy.sh smart-build && ./deploy.sh restart`
 
 - 需求不明确先澄清，不猜测编码
 - \> 3 文件变更分解子任务

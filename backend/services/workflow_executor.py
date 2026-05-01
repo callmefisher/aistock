@@ -1867,6 +1867,13 @@ class WorkflowExecutor:
         date_str = config.get("date_str") or date_str or self.today
         filter_conditions = config.get("filter_conditions", [{"column": "百日新高", "enabled": True}])
         filter_logic = config.get("filter_logic", "AND")
+        is_parallel = any(f.get("column") == "百日新高并行20日均线" and f.get("enabled") for f in filter_conditions)
+        if is_parallel:
+            filter_conditions = [
+                {"column": "百日新高", "enabled": True},
+                {"column": "20日均线", "enabled": True},
+            ]
+            filter_logic = "OR"
         type_order = config.get("type_order", WORKFLOW_TYPE_CONFIG.get("条件交集", {}).get("default_type_order", []))
         # 兼容旧工作流：若 type_order 缺"质押"（2026-04 新增），自动追加到默认位置（6 号：减持后）
         if "质押" not in type_order:
@@ -1881,7 +1888,10 @@ class WorkflowExecutor:
         output_filename = config.get("output_filename") or f"7条件交集{date_str.replace('-', '')}.xlsx"
         workflow_id = config.get("_workflow_id")
 
-        logger.info(f"[条件交集] 开始执行: date={date_str}, filters={filter_conditions}, logic={filter_logic}")
+        logger.info(f"[条件交集] 开始执行: date={date_str}, filters={filter_conditions}, logic={filter_logic}, parallel={is_parallel}")
+
+        if is_parallel:
+            return await self._condition_intersection_parallel(config, date_str, type_order, workflow_id)
 
         # 1. 从 DB 获取各类型 final 数据
         type_dataframes = {}
@@ -2221,6 +2231,534 @@ class WorkflowExecutor:
             "pool_count": len(pool_df),
             "warnings": warnings_list,
         }
+
+    async def _condition_intersection_parallel(
+        self, config: Dict, date_str: str, type_order: list, workflow_id: int = None
+    ) -> Dict[str, Any]:
+        """百日新高并行20日均线模式：输出3个文件，增量合并"""
+        import zlib
+        import json as json_mod
+        from datetime import datetime as _dt, timedelta as _td
+        from config.workflow_type_config import (
+            WORKFLOW_TYPE_CONFIG, INTERSECTION_SOURCE_COLUMNS,
+            INTERSECTION_COLUMN_RENAME, INTERSECTION_DISPLAY_COLUMNS
+        )
+        from core.database import AsyncSessionLocal
+        from sqlalchemy import text
+
+        date_compact = date_str.replace("-", "")
+        output_main = config.get("output_filename") or f"7条件交集{date_compact}.xlsx"
+        output_high = config.get("output_filename_high") or f"7条件交集{date_compact}百日新高证券代码.xlsx"
+        output_ma20 = config.get("output_filename_ma20") or f"7条件交集{date_compact}站上20日线证券代码.xlsx"
+
+        high_price_periods = config.get("high_price_periods", []) or []
+        period_start = "2026-03-18"
+        period_end = date_str
+        if high_price_periods:
+            p = high_price_periods[0]
+            period_start = (p.get("start") or "2026-03-18").strip()
+            period_end = (p.get("end") or date_str).strip()
+
+        HIGH_COUNT_COL = f"{period_start}至{period_end}期间百日新高次数"
+        HIGH_DATE_COL = f"{period_start}至{period_end}期间百日新高的日期"
+        MA20_COUNT_COL = f"{period_start}至{period_end}站上20日线次数"
+        MA20_DATE_COL = f"{period_start}至{period_end}站上20日线日期"
+
+        logger.info(f"[并行交集] 开始: date={date_str}, period={period_start}~{period_end}")
+
+        # 1. 从 DB 获取各类型 final 数据
+        type_dataframes = {}
+        async with AsyncSessionLocal() as session:
+            for wtype in type_order:
+                if wtype == "并购重组":
+                    query = text("""
+                        SELECT data_compressed FROM workflow_results
+                        WHERE workflow_type IN (:wtype_empty, :wtype_cn)
+                          AND date_str = :date_str AND step_type = 'final'
+                        ORDER BY created_at DESC LIMIT 1
+                    """)
+                    params = {"date_str": date_str, "wtype_empty": "", "wtype_cn": "并购重组"}
+                else:
+                    query = text("""
+                        SELECT data_compressed FROM workflow_results
+                        WHERE workflow_type = :wtype
+                          AND date_str = :date_str AND step_type = 'final'
+                        ORDER BY created_at DESC LIMIT 1
+                    """)
+                    params = {"date_str": date_str, "wtype": wtype}
+                result = await session.execute(query, params)
+                row = result.fetchone()
+                if row and row[0]:
+                    try:
+                        decompressed = zlib.decompress(row[0])
+                        records = json_mod.loads(decompressed.decode("utf-8"))
+                        df = pd.DataFrame(records)
+                        type_dataframes[wtype] = df
+                        logger.info(f"[并行交集] 读取 {wtype}: {len(df)}行")
+                    except Exception as e:
+                        logger.warning(f"[并行交集] 解压 {wtype} 失败: {e}")
+
+        if not type_dataframes:
+            return {"success": False, "message": "所有工作流类型均无数据"}
+
+        # 2. 提取当日百日新高非空 和 站上20日线非空 的数据
+        SECTOR_ALIASES = ['所属板块', '一级板块', '所属一级板块', '板块', '二级板块', '所属二级板块']
+        REVERSE_RENAME_ALIASES = {"20日均线": ["20日均线", "站上20日线"], "国企": ["国企", "国央企"]}
+
+        def _extract_standard_cols(df, wtype):
+            extracted = pd.DataFrame()
+            for col in INTERSECTION_SOURCE_COLUMNS:
+                if col in df.columns:
+                    extracted[col] = df[col]
+                elif col in REVERSE_RENAME_ALIASES:
+                    alias_found = next((a for a in REVERSE_RENAME_ALIASES[col] if a in df.columns), None)
+                    extracted[col] = df[alias_found] if alias_found else ""
+                elif col in SECTOR_ALIASES:
+                    found = next((a for a in SECTOR_ALIASES if a in df.columns), None)
+                    extracted[col] = df[found] if found else ""
+                else:
+                    extracted[col] = ""
+            if wtype == "质押":
+                if "来源" in df.columns:
+                    source_series = df["来源"].fillna("").astype(str).str.strip()
+                    extracted["资本运作行为"] = source_series.apply(
+                        lambda s: "质押中大盘" if s == "中大盘" else "质押小盘"
+                    ).values
+                else:
+                    extracted["资本运作行为"] = "质押小盘"
+            else:
+                display_name = WORKFLOW_TYPE_CONFIG.get(wtype, {}).get("display_name", wtype)
+                extracted["资本运作行为"] = display_name
+            return extracted
+
+        high_rows_today = []
+        ma20_rows_today = []
+        for wtype in type_order:
+            if wtype not in type_dataframes:
+                continue
+            df = type_dataframes[wtype]
+            extracted = _extract_standard_cols(df, wtype)
+
+            bxg_col = "百日新高"
+            ma20_col = "20日均线"
+            if bxg_col in extracted.columns:
+                mask_bxg = extracted[bxg_col].fillna("").astype(str).str.strip() != ""
+                high_rows_today.append(extracted[mask_bxg].copy())
+            if ma20_col in extracted.columns:
+                mask_ma20 = extracted[ma20_col].fillna("").astype(str).str.strip() != ""
+                ma20_rows_today.append(extracted[mask_ma20].copy())
+
+        high_today_df = pd.concat(high_rows_today, ignore_index=True) if high_rows_today else pd.DataFrame()
+        ma20_today_df = pd.concat(ma20_rows_today, ignore_index=True) if ma20_rows_today else pd.DataFrame()
+
+        logger.info(f"[并行交集] 当日百日新高非空: {len(high_today_df)}行, 站上20日线非空: {len(ma20_today_df)}行")
+
+        # 3. 查找前一日的基准文件
+        base_dir = os.path.join(self.base_dir, "条件交集")
+        prev_high_base = pd.DataFrame()
+        prev_ma20_base = pd.DataFrame()
+        prev_high_count_col = None
+        prev_high_date_col = None
+        prev_ma20_count_col = None
+        prev_ma20_date_col = None
+
+        try:
+            anchor = _dt.strptime(date_str, "%Y-%m-%d").date()
+        except Exception:
+            anchor = _dt.today().date()
+
+        for delta in range(1, 60):
+            prev_date = anchor - _td(days=delta)
+            prev_dir = os.path.join(base_dir, prev_date.strftime("%Y-%m-%d"))
+            if not os.path.isdir(prev_dir):
+                continue
+            xlsx_files = [f for f in os.listdir(prev_dir) if f.endswith(".xlsx") and not f.startswith("~") and not f.startswith(".")]
+            if not xlsx_files:
+                continue
+            prev_file = os.path.join(prev_dir, xlsx_files[0])
+            logger.info(f"[并行交集] 找到前一日基准: {prev_file}")
+            try:
+                xls = pd.ExcelFile(prev_file)
+                sheet_names = xls.sheet_names
+                if "条件交集百日新高" in sheet_names:
+                    prev_high_base = pd.read_excel(xls, sheet_name="条件交集百日新高")
+                    for col in prev_high_base.columns:
+                        if "期间百日新高次数" in str(col):
+                            prev_high_count_col = col
+                        if "期间百日新高的日期" in str(col):
+                            prev_high_date_col = col
+                if "条件交集站上20日线" in sheet_names:
+                    prev_ma20_base = pd.read_excel(xls, sheet_name="条件交集站上20日线")
+                    for col in prev_ma20_base.columns:
+                        if "站上20日线次数" in str(col):
+                            prev_ma20_count_col = col
+                        if "站上20日线日期" in str(col):
+                            prev_ma20_date_col = col
+                logger.info(f"[并行交集] 基准加载: 百日新高{len(prev_high_base)}行, 站上20日线{len(prev_ma20_base)}行")
+            except Exception as e:
+                logger.warning(f"[并行交集] 读取基准文件失败: {e}")
+            break
+
+        # 4. 合并百日新高数据
+        high_merged = self._merge_parallel_sheet(
+            prev_base=prev_high_base,
+            today_df=high_today_df,
+            prev_count_col=prev_high_count_col,
+            prev_date_col=prev_high_date_col,
+            new_count_col=HIGH_COUNT_COL,
+            new_date_col=HIGH_DATE_COL,
+            date_str=date_str,
+            filter_col="百日新高",
+        )
+
+        # 5. 合并站上20日线数据
+        ma20_merged = self._merge_parallel_sheet(
+            prev_base=prev_ma20_base,
+            today_df=ma20_today_df,
+            prev_count_col=prev_ma20_count_col,
+            prev_date_col=prev_ma20_date_col,
+            new_count_col=MA20_COUNT_COL,
+            new_date_col=MA20_DATE_COL,
+            date_str=date_str,
+            filter_col="20日均线",
+        )
+
+        # 重命名列（先检查冲突：如果目标列名已存在则跳过重命名）
+        safe_rename_h = {k: v for k, v in INTERSECTION_COLUMN_RENAME.items() if k in high_merged.columns and v not in high_merged.columns}
+        safe_rename_m = {k: v for k, v in INTERSECTION_COLUMN_RENAME.items() if k in ma20_merged.columns and v not in ma20_merged.columns}
+        high_display = high_merged.rename(columns=safe_rename_h)
+        ma20_display = ma20_merged.rename(columns=safe_rename_m)
+
+        # 清理重复列（.1 后缀）
+        high_display = high_display.loc[:, ~high_display.columns.str.contains(r"\.\d+$", regex=True)]
+        ma20_display = ma20_display.loc[:, ~ma20_display.columns.str.contains(r"\.\d+$", regex=True)]
+
+        base_display_cols = [c for c in INTERSECTION_DISPLAY_COLUMNS if c in high_display.columns and c != "序号"]
+        for extra_col in [HIGH_COUNT_COL, HIGH_DATE_COL]:
+            if extra_col in high_display.columns and extra_col not in base_display_cols:
+                base_display_cols.append(extra_col)
+        high_display = high_display[[c for c in base_display_cols if c in high_display.columns]]
+
+        ma20_display_cols = [c for c in INTERSECTION_DISPLAY_COLUMNS if c in ma20_display.columns and c != "序号"]
+        for extra_col in [MA20_COUNT_COL, MA20_DATE_COL]:
+            if extra_col in ma20_display.columns and extra_col not in ma20_display_cols:
+                ma20_display_cols.append(extra_col)
+        ma20_display = ma20_display[[c for c in ma20_display_cols if c in ma20_display.columns]]
+
+        # 排除ST
+        before_st_h = len(high_display)
+        high_display = high_display[~high_display["证券简称"].fillna("").astype(str).str.upper().str.contains("ST")]
+        before_st_m = len(ma20_display)
+        ma20_display = ma20_display[~ma20_display["证券简称"].fillna("").astype(str).str.upper().str.contains("ST")]
+        logger.info(f"[并行交集] 排除ST: 百日新高{before_st_h-len(high_display)}行, 站上20日线{before_st_m-len(ma20_display)}行")
+
+        # 6. 输出3个文件
+        daily_dir = os.path.join(base_dir, date_str)
+        os.makedirs(daily_dir, exist_ok=True)
+        main_path = os.path.join(daily_dir, output_main)
+        high_path = os.path.join(daily_dir, output_high)
+        ma20_path = os.path.join(daily_dir, output_ma20)
+
+        with pd.ExcelWriter(main_path, engine="openpyxl") as writer:
+            high_display.to_excel(writer, sheet_name="条件交集百日新高", index=False)
+            ma20_display.to_excel(writer, sheet_name="条件交集站上20日线", index=False)
+
+        high_display[["证券代码"]].to_excel(high_path, index=False, engine="openpyxl")
+        ma20_display[["证券代码"]].to_excel(ma20_path, index=False, engine="openpyxl")
+
+        # 7. 格式化
+        self._format_parallel_excel(main_path, HIGH_COUNT_COL, HIGH_DATE_COL, MA20_COUNT_COL, MA20_DATE_COL)
+        self._format_codes_excel(high_path)
+        self._format_codes_excel(ma20_path)
+
+        logger.info(f"[并行交集] 输出: {main_path}, {high_path}, {ma20_path}")
+
+        # 8. 保存选股池到 DB（新格式：两个sheet分别保存）
+        try:
+            pool_name_high = f"条件交集百日新高_{date_str}"
+            pool_name_ma20 = f"条件交集站上20日线_{date_str}"
+            high_records = high_display.fillna("").to_dict("records")
+            ma20_records = ma20_display.fillna("").to_dict("records")
+            await self._save_stock_pool(
+                name=pool_name_high, date_str=date_str, file_path=main_path,
+                data=high_records, total_stocks=len(high_display),
+                filter_conditions=[{"column": "百日新高", "enabled": True}],
+                source_types=list(type_dataframes.keys()), workflow_id=workflow_id,
+            )
+            await self._save_stock_pool(
+                name=pool_name_ma20, date_str=date_str, file_path=main_path,
+                data=ma20_records, total_stocks=len(ma20_display),
+                filter_conditions=[{"column": "20日均线", "enabled": True}],
+                source_types=list(type_dataframes.keys()), workflow_id=workflow_id,
+            )
+            logger.info(f"[并行交集] 选股池已保存: 百日新高{len(high_display)}条, 站上20日线{len(ma20_display)}条")
+        except Exception as e:
+            logger.error(f"[并行交集] 保存选股池失败: {e}")
+
+        return {
+            "success": True,
+            "message": f"并行交集完成: 百日新高{len(high_display)}行, 站上20日线{len(ma20_display)}行",
+            "data": clean_df_for_json(high_display),
+            "columns": high_display.columns.tolist(),
+            "rows": len(high_display),
+            "file_path": main_path,
+            "_df": high_display,
+            "pool_count": len(high_display),
+            "warnings": [],
+        }
+
+    def _merge_parallel_sheet(
+        self,
+        prev_base: pd.DataFrame,
+        today_df: pd.DataFrame,
+        prev_count_col: Optional[str],
+        prev_date_col: Optional[str],
+        new_count_col: str,
+        new_date_col: str,
+        date_str: str,
+        filter_col: str,
+    ) -> pd.DataFrame:
+        """增量合并并行交集的某个sheet"""
+        REVERSE_RENAME_ALIASES = {"20日均线": ["20日均线", "站上20日线"], "国企": ["国企", "国央企"]}
+
+        # 反向重命名：把基准文件中被 INTERSECTION_COLUMN_RENAME 改过的列名改回来
+        from config.workflow_type_config import INTERSECTION_COLUMN_RENAME
+        if not prev_base.empty:
+            reverse_rename = {v: k for k, v in INTERSECTION_COLUMN_RENAME.items() if v in prev_base.columns and k not in prev_base.columns}
+            if reverse_rename:
+                prev_base = prev_base.rename(columns=reverse_rename)
+
+        if prev_base.empty:
+            merged = today_df.copy() if not today_df.empty else pd.DataFrame()
+            if not merged.empty and "证券代码" in merged.columns:
+                code_count = merged.groupby("证券代码").cumcount() == 0
+                merged = merged[code_count].copy()
+                self._dedup_parallel_rows(merged, filter_col)
+            if new_count_col not in merged.columns:
+                merged[new_count_col] = 1
+            if new_date_col not in merged.columns:
+                merged[new_date_col] = date_str
+            return merged
+
+        # 重命名前一日的次数/日期列
+        rename_map = {}
+        if prev_count_col and prev_count_col != new_count_col:
+            rename_map[prev_count_col] = new_count_col
+        if prev_date_col and prev_date_col != new_date_col:
+            rename_map[prev_date_col] = new_date_col
+        if rename_map:
+            prev_base = prev_base.rename(columns=rename_map)
+
+        # 确保列存在
+        if new_count_col not in prev_base.columns:
+            prev_base[new_count_col] = 0
+        if new_date_col not in prev_base.columns:
+            prev_base[new_date_col] = ""
+
+        if today_df.empty:
+            return prev_base
+
+        # 当日数据去重合并
+        today_deduped = today_df.copy()
+        if "证券代码" in today_deduped.columns and len(today_deduped) > 0:
+            self._dedup_parallel_rows(today_deduped, filter_col)
+
+        # 合并
+        base_codes = set()
+        if "证券代码" in prev_base.columns:
+            base_codes = set(prev_base["证券代码"].astype(str).str.strip())
+
+        new_rows = []
+        if "证券代码" in today_deduped.columns:
+            for _, row in today_deduped.iterrows():
+                code = str(row.get("证券代码", "")).strip()
+                if code in base_codes:
+                    idx = prev_base[prev_base["证券代码"].astype(str).str.strip() == code].index[0]
+                    filter_val = str(row.get(filter_col, "")).strip()
+                    if REVERSE_RENAME_ALIASES.get(filter_col):
+                        for alias in REVERSE_RENAME_ALIASES[filter_col]:
+                            if alias in prev_base.columns:
+                                actual_col = alias
+                                break
+                        else:
+                            actual_col = filter_col
+                    else:
+                        actual_col = filter_col
+                    if actual_col not in prev_base.columns:
+                        actual_col = filter_col
+
+                    if filter_val:
+                        prev_base.at[idx, actual_col] = filter_val
+                        count_val = prev_base.at[idx, new_count_col]
+                        try:
+                            prev_base.at[idx, new_count_col] = int(count_val) + 1
+                        except (ValueError, TypeError):
+                            prev_base.at[idx, new_count_col] = 1
+                        date_val = str(prev_base.at[idx, new_date_col]).strip()
+                        if date_val and date_val != "nan":
+                            dates_list = [d.strip() for d in date_val.split(",") if d.strip()]
+                            if date_str not in dates_list:
+                                dates_list.append(date_str)
+                            dates_list.sort(reverse=True)
+                            prev_base.at[idx, new_date_col] = ",".join(dates_list)
+                        else:
+                            prev_base.at[idx, new_date_col] = date_str
+
+                    new_announce = str(row.get("最新公告日", "")).strip()
+                    if new_announce:
+                        try:
+                            old_announce = str(prev_base.at[idx, "最新公告日"]).strip()
+                            if not old_announce or old_announce == "nan" or new_announce > old_announce:
+                                prev_base.at[idx, "最新公告日"] = new_announce
+                        except Exception:
+                            pass
+
+                    old_beh = str(prev_base.at[idx, "资本运作行为"]).strip()
+                    new_beh = str(row.get("资本运作行为", "")).strip()
+                    if new_beh and new_beh != old_beh:
+                        seen = set()
+                        merged_beh = []
+                        for part in (old_beh + "、" + new_beh).split("、"):
+                            p = part.strip()
+                            if p and p not in seen:
+                                seen.add(p)
+                                merged_beh.append(p)
+                        prev_base.at[idx, "资本运作行为"] = "、".join(merged_beh)
+                else:
+                    row_dict = row.to_dict()
+                    row_dict[new_count_col] = 1
+                    row_dict[new_date_col] = date_str
+                    new_rows.append(row_dict)
+
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            prev_base = pd.concat([prev_base, new_df], ignore_index=True)
+
+        # 过滤掉 filter_col 为空的行（确保每个sheet只保留对应条件非空的行）
+        actual_filter_col = filter_col
+        if filter_col not in prev_base.columns:
+            for alias in REVERSE_RENAME_ALIASES.get(filter_col, []):
+                if alias in prev_base.columns:
+                    actual_filter_col = alias
+                    break
+        if actual_filter_col in prev_base.columns:
+            mask = prev_base[actual_filter_col].fillna("").astype(str).str.strip() != ""
+            prev_base = prev_base[mask].reset_index(drop=True)
+
+        return prev_base
+
+    def _dedup_parallel_rows(self, df: pd.DataFrame, filter_col: str):
+        """对当日数据按证券代码去重合并（in-place 修改）"""
+        if "证券代码" not in df.columns or len(df) <= 1:
+            return
+        before = len(df)
+        date_parsed = pd.to_datetime(df.get("最新公告日"), errors="coerce")
+        df["_date_sort_key"] = date_parsed
+
+        def _merge_behaviors(series):
+            seen = []
+            for v in series:
+                s = str(v).strip() if v is not None and str(v).strip() != "" else ""
+                if not s:
+                    continue
+                for part in s.split("、"):
+                    part = part.strip()
+                    if part and part not in seen:
+                        seen.append(part)
+            return "、".join(seen)
+
+        behavior_map = df.groupby("证券代码", sort=False)["资本运作行为"].apply(_merge_behaviors)
+        df["_date_for_rank"] = df["_date_sort_key"].fillna(pd.Timestamp.min)
+        keep_idx = (
+            df.sort_values(by=["证券代码", "_date_for_rank"], ascending=[True, False])
+            .drop_duplicates(subset="证券代码", keep="first")
+            .index
+        )
+        df.drop(index=df.index.difference(keep_idx), inplace=True)
+        df["资本运作行为"] = df["证券代码"].map(behavior_map)
+        df.drop(columns=["_date_sort_key", "_date_for_rank"], inplace=True, errors="ignore")
+        df.reset_index(drop=True, inplace=True)
+
+    def _format_parallel_excel(self, path, high_count_col, high_date_col, ma20_count_col, ma20_date_col):
+        """格式化并行交集主Excel"""
+        try:
+            from openpyxl import load_workbook as _lw
+            from openpyxl.styles import Alignment, PatternFill
+            from openpyxl.utils import get_column_letter
+
+            wb = _lw(path)
+            center_align = Alignment(horizontal="center", vertical="center", wrap_text=False)
+            green_fill = PatternFill(fill_type="solid", start_color="CAEED3", end_color="CAEED3")
+
+            sheet_count_col_map = {
+                "条件交集百日新高": high_count_col,
+                "条件交集站上20日线": ma20_count_col,
+            }
+
+            for ws in wb.worksheets:
+                header_row = [c.value for c in ws[1]]
+                highlight_cols = {"证券代码", "证券简称", "最新公告日"}
+                highlight_col_indices = [i + 1 for i, h in enumerate(header_row) if h in highlight_cols]
+
+                target_count_col = sheet_count_col_map.get(ws.title)
+                count_col_idx = None
+                if target_count_col:
+                    for i, h in enumerate(header_row):
+                        if h == target_count_col:
+                            count_col_idx = i + 1
+                            break
+
+                for idx, h in enumerate(header_row, start=1):
+                    if not isinstance(h, str):
+                        ws.column_dimensions[get_column_letter(idx)].width = 16
+                        continue
+                    if h == "资本运作行为":
+                        ws.column_dimensions[get_column_letter(idx)].width = 70
+                    elif "日期" in h and ("百日新高" in h or "20日线" in h):
+                        ws.column_dimensions[get_column_letter(idx)].width = 65
+                    elif "次数" in h and ("百日新高" in h or "20日线" in h):
+                        ws.column_dimensions[get_column_letter(idx)].width = 22
+                    elif h in ("证券代码", "证券简称"):
+                        ws.column_dimensions[get_column_letter(idx)].width = 16
+                    elif h == "最新公告日":
+                        ws.column_dimensions[get_column_letter(idx)].width = 16
+                    else:
+                        ws.column_dimensions[get_column_letter(idx)].width = 16
+
+                for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+                    for cell in row:
+                        cell.alignment = center_align
+
+                if count_col_idx is not None:
+                    for r_idx in range(2, ws.max_row + 1):
+                        count_val = ws.cell(row=r_idx, column=count_col_idx).value
+                        if count_val is not None and int(count_val) == 1:
+                            for c_idx in highlight_col_indices:
+                                ws.cell(row=r_idx, column=c_idx).fill = green_fill
+
+                ws.auto_filter.ref = ws.dimensions
+
+            wb.save(path)
+        except Exception as e:
+            logger.warning(f"[并行交集] 格式化失败: {e}")
+
+    def _format_codes_excel(self, path):
+        """格式化证券代码导出Excel"""
+        try:
+            from openpyxl import load_workbook as _lw
+            from openpyxl.styles import Alignment
+            from openpyxl.utils import get_column_letter
+
+            wb = _lw(path)
+            ws = wb.active
+            center_align = Alignment(horizontal="center", vertical="center")
+            ws.column_dimensions["A"].width = 18
+            for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
+                for cell in row:
+                    cell.alignment = center_align
+            wb.save(path)
+        except Exception as e:
+            logger.warning(f"[并行交集] 格式化证券代码文件失败: {e}")
 
     async def _export_ma20_trend(self, config: Dict, date_str: Optional[str] = None) -> Dict[str, Any]:
         """导出20日均线趋势步骤：复用统计分析的趋势导出逻辑（含 Excel 折线图）"""
