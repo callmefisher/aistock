@@ -1110,7 +1110,7 @@
         <el-button type="primary" @click="startExecution" v-if="!executing && !executionComplete">开始执行</el-button>
         <el-button type="success" @click="downloadResult" v-if="executionComplete && executionResult?.file_path">
           <el-icon><Download /></el-icon>
-          下载结果
+          {{ isParallelIntersection ? '下载全部文件' : '下载结果' }}
         </el-button>
       </template>
     </el-dialog>
@@ -1172,7 +1172,7 @@
                 type="primary"
                 size="small"
                 text
-                @click="downloadBatchResult(result.workflow_id)"
+                @click="downloadBatchResult(result.workflow_id, result.workflow_type)"
                 style="margin-left: auto"
               >
                 <el-icon><Download /></el-icon> 下载
@@ -1435,6 +1435,7 @@ const getStepTypeName = (type) => {
 // 条件交集 & 导出20日均线趋势 & 百日新高总趋势 相关
 const AGGREGATION_TYPES = ['条件交集', '导出20日均线趋势', '百日新高总趋势']
 const isAggregationType = computed(() => AGGREGATION_TYPES.includes(form.value.workflow_type))
+const isParallelIntersection = computed(() => currentWorkflow.value?.workflow_type === '条件交集')
 
 const FILTER_COLUMNS = ['百日新高', '20日均线', '国企', '一级板块', '百日新高并行20日均线']
 const DEFAULT_TYPE_ORDER = ['并购重组', '股权转让', '增发实现', '申报并购重组', '减持叠加质押和大宗交易', '质押', '招投标']
@@ -2006,9 +2007,21 @@ const downloadResult = async () => {
     return
   }
   try {
-    await api.download(`/workflows/download-result/${currentWorkflow.value.id}`)
+    if (currentWorkflow.value.workflow_type === '条件交集') {
+      const config = currentWorkflow.value.steps?.[0]?.config || {}
+      const files = [config.output_filename].filter(Boolean)
+      if (config.output_filename_high) files.push(config.output_filename_high)
+      if (config.output_filename_ma20) files.push(config.output_filename_ma20)
+      for (let i = 0; i < files.length; i++) {
+        if (i > 0) await new Promise(r => setTimeout(r, 300))
+        await api.download(`/workflows/download-result/${currentWorkflow.value.id}?file_name=${encodeURIComponent(files[i])}`)
+      }
+      ElMessage.success(`下载完成 (${files.length} 个文件)`)
+    } else {
+      await api.download(`/workflows/download-result/${currentWorkflow.value.id}`)
+      ElMessage.success('下载成功')
+    }
     hasDownloaded.value = true
-    ElMessage.success('下载成功')
   } catch (error) {
     console.error('下载失败', error)
     ElMessage.error('下载失败')
@@ -2033,10 +2046,23 @@ const onEditDialogClose = () => {
   }
 }
 
-const downloadBatchResult = async (workflowId) => {
+const downloadBatchResult = async (workflowId, workflowType) => {
   try {
-    await api.download(`/workflows/download-result/${workflowId}`)
-    ElMessage.success('下载成功')
+    if (workflowType === '条件交集') {
+      const wf = workflows.value.find(w => w.id === workflowId)
+      const config = wf?.steps?.[0]?.config || {}
+      const files = [config.output_filename].filter(Boolean)
+      if (config.output_filename_high) files.push(config.output_filename_high)
+      if (config.output_filename_ma20) files.push(config.output_filename_ma20)
+      for (let i = 0; i < files.length; i++) {
+        if (i > 0) await new Promise(r => setTimeout(r, 300))
+        await api.download(`/workflows/download-result/${workflowId}?file_name=${encodeURIComponent(files[i])}`)
+      }
+      ElMessage.success(`下载完成 (${files.length} 个文件)`)
+    } else {
+      await api.download(`/workflows/download-result/${workflowId}`)
+      ElMessage.success('下载成功')
+    }
   } catch (error) {
     console.error('下载失败', error)
     ElMessage.error('下载失败')
@@ -2051,7 +2077,7 @@ const onBatchDrawerClose = () => {
   if (completedResults.length) {
     ElMessage.info(`正在下载 ${completedResults.length} 个结果...`)
     completedResults.forEach((r, i) => {
-      setTimeout(() => downloadBatchResult(r.workflow_id), i * 300)
+      setTimeout(() => downloadBatchResult(r.workflow_id, r.workflow_type), i * 300)
     })
   }
 }

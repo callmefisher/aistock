@@ -111,6 +111,8 @@ smart_build() {
         echo "$current_fp" > "$fp_file"
         log_success "构建指纹已更新"
         auto_cleanup
+        log_info "构建成功，自动重启服务..."
+        up
     fi
     return $rc
 }

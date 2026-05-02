@@ -898,7 +898,7 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
         from core.database import AsyncSessionLocal
         import pandas as pd
         loop = asyncio.get_running_loop()
-        result_entry = {"workflow_id": wf_id, "status": "pending", "error": None, "output_file": None, "steps": []}
+        result_entry = {"workflow_id": wf_id, "workflow_type": "", "status": "pending", "error": None, "output_file": None, "steps": []}
 
         try:
             async with AsyncSessionLocal() as db:
@@ -919,6 +919,7 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                 input_data = None
 
                 workflow_type = workflow.workflow_type or ""
+                result_entry["workflow_type"] = workflow_type
 
                 from services.workflow_executor import WorkflowExecutor
                 executor_with_type = WorkflowExecutor(base_dir=BASE_DIR, workflow_type=workflow_type)
@@ -1157,11 +1158,81 @@ async def batch_download_results(
     )
 
 
+@router.get("/download-result-dir/{workflow_id}")
+async def download_result_dir(
+    workflow_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user)
+):
+    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+    workflow = result.scalar_one_or_none()
+    if not workflow:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+
+    steps = workflow.steps or []
+    workflow_type = workflow.workflow_type or ""
+
+    from services.workflow_executor import WorkflowExecutor
+    executor_with_type = WorkflowExecutor(base_dir=BASE_DIR, workflow_type=workflow_type)
+
+    output_date_str = None
+    for i in range(len(steps)):
+        sd = steps[i].get("config", {}).get("date_str")
+        if sd:
+            output_date_str = sd
+            break
+    if not output_date_str:
+        output_date_str = beijing_today_str()
+
+    daily_dir = executor_with_type._get_daily_dir(output_date_str)
+    if not os.path.isdir(daily_dir):
+        raise HTTPException(status_code=404, detail=f"目录不存在: {daily_dir}")
+
+    xlsx_files = [
+        f for f in os.listdir(daily_dir)
+        if f.endswith(".xlsx") and not f.startswith("~") and not f.startswith(".")
+    ]
+    if not xlsx_files:
+        raise HTTPException(status_code=404, detail="目录下无xlsx文件")
+
+    import tempfile
+    import zipfile
+    tmp_dir = tempfile.mkdtemp()
+    date_compact = output_date_str.replace("-", "")
+    zip_name = f"7条件交集{date_compact}.zip"
+    zip_path = os.path.join(tmp_dir, zip_name)
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fname in sorted(xlsx_files):
+            fpath = os.path.join(daily_dir, fname)
+            zf.write(fpath, fname)
+
+    def cleanup():
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    background_tasks.add_task(cleanup)
+
+    return FileResponse(
+        path=zip_path,
+        filename=zip_name,
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        }
+    )
+
+
 @router.get("/download-result/{workflow_id}")
 async def download_workflow_result(
     workflow_id: int,
     background_tasks: BackgroundTasks,
     step_index: int = Query(None),
+    file_name: str = Query(None),
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -1185,6 +1256,36 @@ async def download_workflow_result(
             break
     if not output_date_str:
         output_date_str = beijing_today_str()
+
+    daily_dir = executor_with_type._get_daily_dir(output_date_str)
+
+    if file_name:
+        file_path = os.path.join(daily_dir, file_name)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail=f"文件不存在: {file_name}")
+
+        import tempfile
+        tmp_dir = tempfile.mkdtemp()
+        tmp_path = os.path.join(tmp_dir, file_name)
+        shutil.copy2(file_path, tmp_path)
+
+        def cleanup_tmp():
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+        background_tasks.add_task(cleanup_tmp)
+
+        return FileResponse(
+            path=tmp_path,
+            filename=file_name,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+            }
+        )
 
     if step_index is not None and step_index < len(steps):
         step = steps[step_index]

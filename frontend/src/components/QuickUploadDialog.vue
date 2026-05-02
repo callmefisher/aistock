@@ -17,14 +17,17 @@
     <!-- Step 1: 选文件 -->
     <div v-if="currentStep === 0">
       <el-form label-width="100px">
-        <el-form-item label="数据日期">
-          <el-date-picker v-model="dateStr" type="date" value-format="YYYY-MM-DD" />
+        <el-form-item label="数据日期" class="date-form-item">
+          <div class="date-picker-wrapper">
+            <el-date-picker v-model="dateStr" type="date" value-format="YYYY-MM-DD" class="highlight-date-picker" />
+            <span class="date-warning-tag">⚠ 请确认日期</span>
+          </div>
         </el-form-item>
         <el-form-item label="选择文件">
           <input ref="dirInput" type="file" webkitdirectory multiple @change="onFilesPicked" style="display:none" />
           <input ref="fileInput" type="file" multiple accept=".xlsx,.xls" @change="onFilesPicked" style="display:none" />
           <el-button type="primary" @click="$refs.fileInput.click()">选择多个文件</el-button>
-          <el-button @click="$refs.dirInput.click()">选择整个目录</el-button>
+          <el-button class="dir-select-btn" @click="$refs.dirInput.click()">选择整个目录</el-button>
           <span style="margin-left: 12px" v-if="acceptedFiles.length">
             已选 {{ acceptedFiles.length }} 个 Excel 文件（过滤掉 {{ skippedCount }} 个非 Excel）
           </span>
@@ -42,7 +45,7 @@
       <div v-else>
         <div class="preview-toolbar" style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
           <span>第 2 步：预览与确认</span>
-          <el-button size="small" :icon="RefreshRight" @click="refreshFromDirectoryPicker" :disabled="uploading">
+          <el-button class="refresh-dir-btn" :icon="RefreshRight" @click="refreshFromDirectoryPicker" :disabled="uploading">
             重新读取目录
           </el-button>
         </div>
@@ -159,6 +162,43 @@
             </div>
           </el-alert>
         </div>
+        <el-divider v-if="filenameDateMismatches.length" />
+        <div v-if="filenameDateMismatches.length">
+          <el-alert type="warning" :closable="false" show-icon>
+            <template #title>文件名日期与上传日期不一致（{{ filenameDateMismatches.length }} 个）</template>
+            <div style="font-size: 13px; margin-top: 6px">
+              <div v-for="item in filenameDateMismatches.slice(0, 10)" :key="item.filename" style="margin-bottom: 2px">
+                <strong>{{ item.filename }}</strong>
+                文件日期 <span style="color:#E6A23C">{{ item.fileDate }}</span>
+                ≠ 上传日期 <span style="color:#409EFF">{{ item.uploadDate }}</span>
+              </div>
+              <div v-if="filenameDateMismatches.length > 10" style="color: #909399">
+                ...还有 {{ filenameDateMismatches.length - 10 }} 个
+              </div>
+            </div>
+          </el-alert>
+        </div>
+        <el-divider v-if="duplicateWorkflowFiles.length" />
+        <div v-if="duplicateWorkflowFiles.length">
+          <el-alert type="warning" :closable="false" show-icon>
+            <template #title>同一工作流上传了多个文件（质押除外，每个工作流只应有1个）</template>
+            <div style="font-size: 13px; margin-top: 6px">
+              <div v-for="item in duplicateWorkflowFiles" :key="item.workflow_type" style="margin-bottom: 4px">
+                <strong>{{ item.workflow_type }}</strong>：{{ item.count }} 个文件 —
+                {{ item.files.join('、') }}
+              </div>
+            </div>
+          </el-alert>
+        </div>
+        <el-divider v-if="totalFilesExceeded" />
+        <div v-if="totalFilesExceeded">
+          <el-alert type="warning" :closable="false" show-icon>
+            <template #title>上传文件数超出预期（最多 13 个，当前 {{ totalFilesExceeded }} 个）</template>
+            <div style="font-size: 13px; margin-top: 6px">
+              正常应上传 13 个文件：8 个工作流（质押 2 个）+ 4 个公共子目录 + 1 个涨幅排名。请检查是否夹带了历史遗留文件。
+            </div>
+          </el-alert>
+        </div>
         <el-divider v-if="unresolvedRows.length" />
         <div v-if="unresolvedRows.length">
           <el-alert title="以下文件未识别任何规则，将被跳过" type="warning" :closable="false" />
@@ -166,6 +206,11 @@
             <el-table-column prop="filename" label="文件" />
             <el-table-column prop="reason" label="原因" />
           </el-table>
+        </div>
+        <div style="margin-top: 16px; text-align: center;">
+          <el-button class="refresh-dir-btn" :icon="RefreshRight" @click="refreshFromDirectoryPicker" :disabled="uploading">
+            重新读取目录
+          </el-button>
         </div>
       </div>
     </div>
@@ -379,6 +424,45 @@ const pledgeGroupIssue = computed(() => {
   if (!hasSmall) missing.push('小盘')
   if (total === 2 && missing.length === 0) return null
   return { total, hasLarge, hasSmall, missing }
+})
+
+const filenameDateMismatches = computed(() => {
+  if (!dateStr.value) return []
+  const uploadMMDD = dateStr.value.slice(5).replace('-', '')
+  const results = []
+  for (const r of resolvedRows.value) {
+    const base = r.filename.replace(/\.[^.]+$/, '')
+    const match = base.match(/(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])/)
+    if (match && match[0] !== uploadMMDD) {
+      const fileMM = match[0].slice(0, 2)
+      const fileDD = match[0].slice(2, 4)
+      const uploadMM = uploadMMDD.slice(0, 2)
+      const uploadDD = uploadMMDD.slice(2, 4)
+      results.push({
+        filename: r.filename,
+        fileDate: `${fileMM}-${fileDD}`,
+        uploadDate: `${uploadMM}-${uploadDD}`,
+      })
+    }
+  }
+  return results
+})
+
+const duplicateWorkflowFiles = computed(() => {
+  const groups = {}
+  for (const r of resolvedRows.value) {
+    if (r.workflow_type === '质押' || !r.workflow_type || r.sub_dir) continue
+    const key = r.workflow_type
+    if (!groups[key]) groups[key] = []
+    groups[key].push(r.filename)
+  }
+  return Object.entries(groups)
+    .filter(([, files]) => files.length > 1)
+    .map(([type, files]) => ({ workflow_type: type, count: files.length, files }))
+})
+
+const totalFilesExceeded = computed(() => {
+  return resolvedRows.value.length > 13 ? resolvedRows.value.length : 0
 })
 
 const canGoPreview = computed(() => acceptedFiles.value.length > 0 && dateStr.value)
@@ -739,3 +823,77 @@ defineExpose({
   refreshFromDirectoryPicker,
 })
 </script>
+
+<style scoped>
+@keyframes date-pulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(245, 108, 108, 0.4); }
+  50% { box-shadow: 0 0 18px rgba(245, 108, 108, 0.85); }
+}
+
+.date-form-item :deep(.el-form-item__label) {
+  font-size: 18px;
+  font-weight: 700;
+  color: #f56c6c;
+}
+
+.date-picker-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.highlight-date-picker {
+  animation: date-pulse 2s ease-in-out infinite;
+}
+
+.highlight-date-picker :deep(.el-input__wrapper) {
+  font-size: 18px;
+  font-weight: 700;
+  padding: 6px 12px;
+}
+
+.highlight-date-picker :deep(.el-input__inner) {
+  font-size: 18px;
+  font-weight: 700;
+  color: #f56c6c;
+}
+
+.date-warning-tag {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f56c6c;
+  animation: date-pulse 2s ease-in-out infinite;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: linear-gradient(135deg, rgba(245, 108, 108, 0.1), rgba(245, 108, 108, 0.25));
+  white-space: nowrap;
+}
+
+.dir-select-btn {
+  background-color: #e1f3d8 !important;
+  border-color: #95d475 !important;
+  color: #529b2e !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  padding: 10px 20px !important;
+  height: auto !important;
+}
+.dir-select-btn:hover {
+  background-color: #d1edc4 !important;
+  border-color: #7ec050 !important;
+}
+
+.refresh-dir-btn {
+  background-color: #e1f3d8 !important;
+  border-color: #95d475 !important;
+  color: #529b2e !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  padding: 10px 20px !important;
+  height: auto !important;
+}
+.refresh-dir-btn:hover {
+  background-color: #d1edc4 !important;
+  border-color: #7ec050 !important;
+}
+</style>

@@ -150,7 +150,7 @@ const handleLogout = () => {
   left: 0;
   right: 0;
   text-align: center;
-  font-size: 16px;
+  font-size: 18px;
   color: #8c939d;
   letter-spacing: 0.5px;
 }
