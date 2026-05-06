@@ -1865,6 +1865,18 @@ class WorkflowExecutor:
         from sqlalchemy import text
 
         date_str = config.get("date_str") or date_str or self.today
+
+        target_dir = os.path.join(self.base_dir, "条件交集", date_str)
+        if os.path.isdir(target_dir):
+            for f in os.listdir(target_dir):
+                fp = os.path.join(target_dir, f)
+                if os.path.isfile(fp):
+                    try:
+                        os.remove(fp)
+                        logger.info(f"[条件交集] 清空旧文件: {fp}")
+                    except Exception as _e:
+                        logger.warning(f"[条件交集] 删除旧文件失败: {fp}, {_e}")
+
         filter_conditions = config.get("filter_conditions", [{"column": "百日新高", "enabled": True}])
         filter_logic = config.get("filter_logic", "AND")
         is_parallel = any(f.get("column") == "百日新高并行20日均线" and f.get("enabled") for f in filter_conditions)
@@ -2248,8 +2260,8 @@ class WorkflowExecutor:
 
         date_compact = date_str.replace("-", "")
         output_main = config.get("output_filename") or f"7条件交集{date_compact}.xlsx"
-        output_high = config.get("output_filename_high") or f"7条件交集{date_compact}百日新高证券代码.xlsx"
-        output_ma20 = config.get("output_filename_ma20") or f"7条件交集{date_compact}站上20日线证券代码.xlsx"
+        output_high = f"7条件交集{date_compact}百日新高证券代码.xlsx"
+        output_ma20 = f"7条件交集{date_compact}站上20日线证券代码.xlsx"
 
         high_price_periods = config.get("high_price_periods", []) or []
         period_start = "2026-03-18"
@@ -2372,9 +2384,10 @@ class WorkflowExecutor:
             prev_dir = os.path.join(base_dir, prev_date.strftime("%Y-%m-%d"))
             if not os.path.isdir(prev_dir):
                 continue
-            xlsx_files = [f for f in os.listdir(prev_dir) if f.endswith(".xlsx") and not f.startswith("~") and not f.startswith(".")]
+            xlsx_files = [f for f in os.listdir(prev_dir) if f.endswith(".xlsx") and not f.startswith("~") and not f.startswith(".") and "证券代码" not in f]
             if not xlsx_files:
                 continue
+            xlsx_files.sort()
             prev_file = os.path.join(prev_dir, xlsx_files[0])
             logger.info(f"[并行交集] 找到前一日基准: {prev_file}")
             try:
@@ -2505,6 +2518,11 @@ class WorkflowExecutor:
             "_df": high_display,
             "pool_count": len(high_display),
             "warnings": [],
+            "_extra_outputs": {
+                "output_filename": os.path.basename(main_path),
+                "output_filename_high": os.path.basename(high_path),
+                "output_filename_ma20": os.path.basename(ma20_path),
+            },
         }
 
     def _merge_parallel_sheet(

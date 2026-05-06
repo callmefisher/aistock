@@ -296,7 +296,7 @@ async def bulk_set_date(
                         if m.group(0) != date_str:
                             return True
                     return False
-                for fname_key in ("output_filename", "_actual_output"):
+                for fname_key in ("output_filename", "output_filename_high", "output_filename_ma20", "_actual_output"):
                     cur = cfg.get(fname_key)
                     if cur and (date_str_changed_in_step or _has_stale_date(cur)):
                         cfg[fname_key] = ""
@@ -578,6 +578,11 @@ async def run_workflow(
                 last_output_file = output_file
                 # 保存实际输出文件名到步骤配置，供下载端点查找
                 step_config["_actual_output"] = os.path.basename(output_file)
+            extra_outputs = exec_result.get("_extra_outputs")
+            if extra_outputs:
+                for ek, ev in extra_outputs.items():
+                    if ev:
+                        step_config[ek] = ev
             last_exec_result = exec_result
             step_results.append({"step": i, "type": step_type, "status": "completed",
                                  "message": exec_result.get("message", "")})
@@ -983,6 +988,11 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                                 step_config["_actual_output"] = os.path.basename(output_file)
                                 if i == len(steps) - 1:
                                     result_entry["output_file"] = output_file
+                            extra_outputs = exec_result.get("_extra_outputs")
+                            if extra_outputs:
+                                for ek, ev in extra_outputs.items():
+                                    if ev:
+                                        step_config[ek] = ev
                         else:
                             step_result["status"] = "failed"
                             step_result["error"] = exec_result.get("message", "执行失败")
