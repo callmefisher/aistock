@@ -1867,7 +1867,10 @@ class WorkflowExecutor:
         date_str = config.get("date_str") or date_str or self.today
 
         target_dir = os.path.join(self.base_dir, "条件交集", date_str)
+        logger.info(f"[条件交集-DEBUG] base_dir={self.base_dir}, target_dir={target_dir}, isdir={os.path.isdir(target_dir)}")
         if os.path.isdir(target_dir):
+            existing_files = os.listdir(target_dir)
+            logger.info(f"[条件交集-DEBUG] 目录已有文件: {existing_files}")
             for f in os.listdir(target_dir):
                 fp = os.path.join(target_dir, f)
                 if os.path.isfile(fp):
@@ -2471,6 +2474,7 @@ class WorkflowExecutor:
         main_path = os.path.join(daily_dir, output_main)
         high_path = os.path.join(daily_dir, output_high)
         ma20_path = os.path.join(daily_dir, output_ma20)
+        logger.info(f"[并行交集-DEBUG] daily_dir={daily_dir}, output_main={output_main}, output_high={output_high}, output_ma20={output_ma20}")
 
         with pd.ExcelWriter(main_path, engine="openpyxl") as writer:
             high_display.to_excel(writer, sheet_name="条件交集百日新高", index=False)
@@ -2479,8 +2483,15 @@ class WorkflowExecutor:
         high_display[["证券代码"]].to_excel(high_path, index=False, engine="openpyxl")
         ma20_display[["证券代码"]].to_excel(ma20_path, index=False, engine="openpyxl")
 
+        logger.info(f"[并行交集-DEBUG] 文件写入完成, 验证: main={os.path.exists(main_path)}, high={os.path.exists(high_path)}, ma20={os.path.exists(ma20_path)}")
+        all_files = os.listdir(daily_dir)
+        logger.info(f"[并行交集-DEBUG] 目录内所有文件: {all_files}")
+
         # 7. 格式化
-        self._format_parallel_excel(main_path, HIGH_COUNT_COL, HIGH_DATE_COL, MA20_COUNT_COL, MA20_DATE_COL)
+        prev_high_codes = set(prev_high_base["证券代码"].astype(str).str.strip()) if not prev_high_base.empty and "证券代码" in prev_high_base.columns else set()
+        prev_ma20_codes = set(prev_ma20_base["证券代码"].astype(str).str.strip()) if not prev_ma20_base.empty and "证券代码" in prev_ma20_base.columns else set()
+        logger.info(f"[并行交集] 基准证券代码: 百日新高{len(prev_high_codes)}个, 站上20日线{len(prev_ma20_codes)}个")
+        self._format_parallel_excel(main_path, HIGH_COUNT_COL, HIGH_DATE_COL, MA20_COUNT_COL, MA20_DATE_COL, prev_high_codes, prev_ma20_codes)
         self._format_codes_excel(high_path)
         self._format_codes_excel(ma20_path)
 
@@ -2697,7 +2708,7 @@ class WorkflowExecutor:
         df.drop(columns=["_date_sort_key", "_date_for_rank"], inplace=True, errors="ignore")
         df.reset_index(drop=True, inplace=True)
 
-    def _format_parallel_excel(self, path, high_count_col, high_date_col, ma20_count_col, ma20_date_col):
+    def _format_parallel_excel(self, path, high_count_col, high_date_col, ma20_count_col, ma20_date_col, prev_high_codes=None, prev_ma20_codes=None):
         """格式化并行交集主Excel"""
         try:
             from openpyxl import load_workbook as _lw
@@ -2712,11 +2723,21 @@ class WorkflowExecutor:
                 "条件交集百日新高": high_count_col,
                 "条件交集站上20日线": ma20_count_col,
             }
+            sheet_base_codes_map = {
+                "条件交集百日新高": prev_high_codes or set(),
+                "条件交集站上20日线": prev_ma20_codes or set(),
+            }
 
             for ws in wb.worksheets:
                 header_row = [c.value for c in ws[1]]
                 highlight_cols = {"证券代码", "证券简称", "最新公告日"}
                 highlight_col_indices = [i + 1 for i, h in enumerate(header_row) if h in highlight_cols]
+
+                code_col_idx = None
+                for i, h in enumerate(header_row):
+                    if h == "证券代码":
+                        code_col_idx = i + 1
+                        break
 
                 target_count_col = sheet_count_col_map.get(ws.title)
                 count_col_idx = None
@@ -2725,6 +2746,8 @@ class WorkflowExecutor:
                         if h == target_count_col:
                             count_col_idx = i + 1
                             break
+
+                base_codes = sheet_base_codes_map.get(ws.title, set())
 
                 for idx, h in enumerate(header_row, start=1):
                     if not isinstance(h, str):
@@ -2748,11 +2771,16 @@ class WorkflowExecutor:
                         cell.alignment = center_align
 
                 if count_col_idx is not None:
+                    highlight_count = 0
                     for r_idx in range(2, ws.max_row + 1):
                         count_val = ws.cell(row=r_idx, column=count_col_idx).value
                         if count_val is not None and int(count_val) == 1:
-                            for c_idx in highlight_col_indices:
-                                ws.cell(row=r_idx, column=c_idx).fill = green_fill
+                            code_val = str(ws.cell(row=r_idx, column=code_col_idx).value or "").strip() if code_col_idx else ""
+                            if code_val not in base_codes:
+                                for c_idx in highlight_col_indices:
+                                    ws.cell(row=r_idx, column=c_idx).fill = green_fill
+                                highlight_count += 1
+                    logger.info(f"[并行交集] {ws.title} 高亮行数: {highlight_count} (次数=1且不在基准中)")
 
                 ws.auto_filter.ref = ws.dimensions
 

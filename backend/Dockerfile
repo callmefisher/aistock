@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制依赖文件
+# 复制依赖文件（仅 requirements.txt 变化时才重装 pip 依赖）
 COPY requirements.txt .
 
 # 安装Python依赖到独立目录
@@ -45,12 +45,11 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
         sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
     fi
 
-# 安装运行时依赖和Playwright系统依赖
+# 安装运行时依赖和Playwright系统依赖（这些包几乎不变，缓存命中率高）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     default-libmysqlclient-dev \
     default-mysql-client \
     curl \
-    # Playwright系统依赖
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
@@ -71,21 +70,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /tmp/* \
     && rm -rf /var/tmp/*
 
-# 从构建阶段复制Python包
+# 从构建阶段复制Python包（仅 requirements.txt 变化时才失效）
 COPY --from=builder /install /usr/local
 
-# 复制应用代码
+# 创建数据目录 + 非 root 用户（放在 COPY . . 之前，代码变化不影响这些层）
+RUN mkdir -p /app/data/excel /app/data/logs /app/data/cookies && \
+    useradd -m -u 1000 appuser
+
+# 复制应用代码（放最后：代码频繁变化，但不影响前面的 apt/pip 缓存层）
 COPY . .
 
-# 创建数据目录
-RUN mkdir -p /app/data/excel /app/data/logs /app/data/cookies
-
-# 安装Playwright浏览器（可选，按需安装）
-# RUN playwright install chromium --with-deps
-
-# 创建非root用户
-RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /app
 USER appuser
 
 # 健康检查

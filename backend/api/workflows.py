@@ -579,10 +579,12 @@ async def run_workflow(
                 # 保存实际输出文件名到步骤配置，供下载端点查找
                 step_config["_actual_output"] = os.path.basename(output_file)
             extra_outputs = exec_result.get("_extra_outputs")
+            logger.info(f"[执行-DEBUG] workflow_id={workflow_id}, step={i}, extra_outputs={extra_outputs}")
             if extra_outputs:
                 for ek, ev in extra_outputs.items():
                     if ev:
                         step_config[ek] = ev
+                logger.info(f"[执行-DEBUG] step_config after merge: output_filename={step_config.get('output_filename')}, output_filename_high={step_config.get('output_filename_high')}, output_filename_ma20={step_config.get('output_filename_ma20')}")
             last_exec_result = exec_result
             step_results.append({"step": i, "type": step_type, "status": "completed",
                                  "message": exec_result.get("message", "")})
@@ -1268,9 +1270,16 @@ async def download_workflow_result(
         output_date_str = beijing_today_str()
 
     daily_dir = executor_with_type._get_daily_dir(output_date_str)
+    logger.info(f"[下载-DEBUG] workflow_id={workflow_id}, workflow_type={workflow_type}, daily_dir={daily_dir}, file_name={file_name}, output_date_str={output_date_str}")
+    if os.path.isdir(daily_dir):
+        dir_files = [f for f in os.listdir(daily_dir) if f.endswith(".xlsx")]
+        logger.info(f"[下载-DEBUG] 目录内xlsx文件: {dir_files}")
+    else:
+        logger.warning(f"[下载-DEBUG] 目录不存在: {daily_dir}")
 
     if file_name:
         file_path = os.path.join(daily_dir, file_name)
+        logger.info(f"[下载-DEBUG] 尝试下载: file_path={file_path}, exists={os.path.exists(file_path)}")
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail=f"文件不存在: {file_name}")
 

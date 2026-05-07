@@ -69,12 +69,12 @@ _build_fingerprint() {
     echo "${head_sha}:${diff_hash}"
 }
 
-# 轻量清理: 保留在用镜像 + 最近5GB构建缓存，砍掉悬空镜像和旧缓存
+# 轻量清理: 保留在用镜像 + 最近10GB构建缓存，砍掉悬空镜像和旧缓存
 # 不使用 -a，避免删除正在使用的 tagged 镜像
 auto_cleanup() {
     log_info "自动清理 Docker 缓存..."
     docker image prune -f >/dev/null 2>&1
-    docker builder prune --keep-storage 5gb -f >/dev/null 2>&1
+    docker builder prune --keep-storage 10gb -f >/dev/null 2>&1
     local disk_info
     disk_info=$(docker system df --format "table {{.Type}}\t{{.Size}}\t{{.Reclaimable}}" 2>/dev/null | tail -n +2)
     log_success "清理完成，当前占用："
