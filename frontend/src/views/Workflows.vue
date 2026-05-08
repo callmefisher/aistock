@@ -1985,6 +1985,15 @@ const startExecution = async () => {
       }
     }
     ElMessage.success(response.message || '工作流执行完成')
+
+    try {
+      const updatedWf = await api.get(`/workflows/${currentWorkflow.value.id}`)
+      if (updatedWf?.steps) {
+        currentWorkflow.value.steps = updatedWf.steps
+      }
+    } catch (_) {}
+
+    await fetchWorkflows()
   } catch (error) {
     if (error?.code === 'ERR_CANCELED') return
     executionResult.value = {
@@ -2069,12 +2078,12 @@ const downloadBatchResult = async (workflowId, workflowType) => {
   }
 }
 
-const onBatchDrawerClose = () => {
+const onBatchDrawerClose = async () => {
   stopBatchPolling()
   stopBatchTimer()
-  // 自动下载所有已完成的工作流结果（错开300ms避免浏览器限流）
   const completedResults = (batchStatus.value?.results || []).filter(r => r.status === 'completed')
   if (completedResults.length) {
+    await fetchWorkflows()
     ElMessage.info(`正在下载 ${completedResults.length} 个结果...`)
     completedResults.forEach((r, i) => {
       setTimeout(() => downloadBatchResult(r.workflow_id, r.workflow_type), i * 300)

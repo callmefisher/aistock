@@ -600,7 +600,7 @@ const exportExcel = async () => {
   try {
     // 涨幅排名 / 质押：使用后端格式化下载（含双 sheet / 条件格式 / 列宽 / 筛选）
     const wt = previewData.value?.workflow_type
-    if (wt === '涨幅排名' || wt === '质押') {
+    if (wt === '涨幅排名' || wt === '质押' || wt === '条件交集') {
       await api.download(`/statistics/results/${currentResultId.value}/download`)
       ElMessage.success('已导出（含格式化）')
       return

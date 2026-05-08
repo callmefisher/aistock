@@ -570,13 +570,13 @@ async def run_workflow(
         )
 
         if exec_result.get("success"):
-            # 内存传递 DataFrame，避免磁盘读写
+            # 内存传递 DataFrame 避免磁盘读写
             if "_df" in exec_result and exec_result["_df"] is not None:
                 input_data = exec_result["_df"]
             output_file = exec_result.get("file_path")
             if output_file:
                 last_output_file = output_file
-                # 保存实际输出文件名到步骤配置，供下载端点查找
+                # 保存实际输出文件名到步骤配置,供下载端点查找
                 step_config["_actual_output"] = os.path.basename(output_file)
             extra_outputs = exec_result.get("_extra_outputs")
             logger.info(f"[执行-DEBUG] workflow_id={workflow_id}, step={i}, extra_outputs={extra_outputs}")

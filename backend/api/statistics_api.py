@@ -102,18 +102,45 @@ async def download_result(
     tmp_path = tmp.name
     tmp.close()
 
+    import shutil
+    from services.path_resolver import get_resolver
+    from core.config import settings
+    base_dir = os.path.join(settings.DATA_DIR, "excel") if hasattr(settings, "DATA_DIR") else None
+    for candidate in (base_dir, "/app/data/excel", "/Users/xiayanji/qbox/aistock/data/excel"):
+        if candidate and os.path.isdir(candidate):
+            base_dir = candidate
+            break
+
+    # 条件交集：直接复制工作流生成的格式化文件（含双Sheet/高亮/列宽/筛选）
+    if result.get('workflow_type') == '条件交集':
+        resolver = get_resolver(base_dir, "条件交集")
+        daily_dir = resolver.get_upload_directory(result.get('date_str'))
+        src_path = None
+        sf = result.get('source_filename')
+        if sf:
+            cand = os.path.join(daily_dir, sf)
+            if os.path.isfile(cand):
+                src_path = cand
+        if not src_path and os.path.isdir(daily_dir):
+            for f in sorted(os.listdir(daily_dir)):
+                if f.lower().endswith('.xlsx') and '证券代码' not in f and not f.startswith('~') and not f.startswith('.'):
+                    src_path = os.path.join(daily_dir, f)
+                    break
+        if not src_path:
+            raise HTTPException(status_code=404, detail=f"条件交集文件不存在: {daily_dir}")
+
+        shutil.copy2(src_path, tmp_path)
+
+        return FileResponse(
+            path=tmp_path,
+            filename=filename,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            background=BackgroundTask(os.unlink, tmp_path),
+        )
+
     # 质押类型：直接复制 public 目录下的 final 文件（含双 sheet / 条件格式 / 列宽 / 筛选），
     # 然后用 stock_pools 全局最大公告日重做"最新公告日"红标。
     if result.get('workflow_type') == '质押':
-        import shutil
-        from services.path_resolver import get_resolver
-        from core.config import settings
-        base_dir = os.path.join(settings.DATA_DIR, "excel") if hasattr(settings, "DATA_DIR") else None
-        # 兜底：尝试两种常见 base_dir
-        for candidate in (base_dir, "/app/data/excel", "/Users/xiayanji/qbox/aistock/data/excel"):
-            if candidate and os.path.isdir(candidate):
-                base_dir = candidate
-                break
         resolver = get_resolver(base_dir, "质押")
         public_dir = resolver.get_public_directory(result.get('date_str'))
         # 优先按 source_filename 命中；否则取 public 目录下第一个 xlsx
