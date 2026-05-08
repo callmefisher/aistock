@@ -151,8 +151,14 @@ const handleLogout = () => {
   right: 0;
   text-align: center;
   font-size: 18px;
-  color: #8c939d;
+  font-weight: 600;
+  color: #c9d1d9;
   letter-spacing: 0.5px;
+  transition: color 0.3s ease;
+}
+
+.version-info:hover {
+  color: #ffd04b;
 }
 
 .el-header {
