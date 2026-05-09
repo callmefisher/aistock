@@ -45,6 +45,7 @@ if [ "${1:-}" = "--no-update" ]; then
 fi
 
 RAW_URL="https://raw.githubusercontent.com/callmefisher/aistock/main/start.command"
+MIRROR_URL="https://gh-proxy.com/$RAW_URL"
 TARGET="$SCRIPT_DIR/start.command"
 TMP_NEW="$SCRIPT_DIR/start.command.new"
 
@@ -73,16 +74,17 @@ fi
 
 rm -f "$TMP_NEW" 2>/dev/null || true
 
-# curl flags:
-#   -f  : fail on HTTP >=400
-#   -s  : silent
-#   -S  : show errors even with -s
-#   -L  : follow redirects
-#   --max-time 30 : total wall-clock budget
-if curl -fsSL --max-time 30 -o "$TMP_NEW" "$RAW_URL"; then
+DL_RC=1
+if curl -fsSL --max-time 15 -o "$TMP_NEW" "$MIRROR_URL"; then
     DL_RC=0
-else
-    DL_RC=$?
+fi
+
+if [ "$DL_RC" -ne 0 ]; then
+    if curl -fsSL --max-time 30 -o "$TMP_NEW" "$RAW_URL"; then
+        DL_RC=0
+    else
+        DL_RC=$?
+    fi
 fi
 
 if [ "$DL_RC" -ne 0 ] || [ ! -s "$TMP_NEW" ]; then

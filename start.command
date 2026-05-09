@@ -62,10 +62,16 @@ if [ "$GOT_CODE" -eq 0 ] && [ -d "aistock/.git" ]; then
 fi
 
 if [ "$GOT_CODE" -eq 0 ]; then
-    echo "Cloning from GitHub..."
-    if ! git clone https://github.com/callmefisher/aistock.git aistock; then
-        echo "[ERROR] git clone failed. Check your network connection."
-        pause_exit 1
+    echo "Cloning from GitHub (mirror first)..."
+    if git clone https://gitclone.com/github.com/callmefisher/aistock.git aistock; then
+        echo "[OK] Cloned via gitclone.com mirror."
+    else
+        echo "[WARN] Mirror clone failed, trying GitHub directly..."
+        rm -rf aistock 2>/dev/null || true
+        if ! git clone https://github.com/callmefisher/aistock.git aistock; then
+            echo "[ERROR] git clone failed. Check your network connection."
+            pause_exit 1
+        fi
     fi
     cd aistock
     SCRIPT_DIR="$(pwd)"
