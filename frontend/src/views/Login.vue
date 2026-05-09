@@ -43,7 +43,7 @@
           </el-form>
         </el-tab-pane>
         
-        <el-tab-pane label="注册" name="register">
+        <el-tab-pane v-if="false" label="注册" name="register">
           <el-form :model="registerForm" :rules="registerRules" ref="registerFormRef">
             <el-form-item prop="username">
               <el-input
