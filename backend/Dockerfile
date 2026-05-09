@@ -50,6 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     default-libmysqlclient-dev \
     default-mysql-client \
     curl \
+    gosu \
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
@@ -77,11 +78,14 @@ COPY --from=builder /install /usr/local
 RUN mkdir -p /app/data/excel /app/data/logs /app/data/cookies && \
     useradd -m -u 1000 appuser
 
-# 复制应用代码（放最后：代码频繁变化，但不影响前面的 apt/pip 缓存层）
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 COPY . .
 
 RUN chown -R appuser:appuser /app
-USER appuser
+
+ENTRYPOINT ["bash", "/app/entrypoint.sh"]
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
