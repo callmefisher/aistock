@@ -34,7 +34,7 @@
               需要<strong>去年</strong>的历史 Excel
             </span>
             <span class="tip-row">
-              <el-tag type="success" size="small" effect="plain" round>工作流 5 / 8</el-tag>
+              <el-tag type="success" size="small" effect="plain" round>工作流 5 / 7 / 8</el-tag>
               需要<strong>上一个工作日</strong>的历史 Excel
             </span>
             <span class="tip-hint">请上传至各工作流对应的 <code>public/</code> 目录</span>

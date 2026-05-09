@@ -210,7 +210,7 @@ echo ""
 echo "=========================================="
 echo "   SUCCESS - AiStock is running"
 echo "   Frontend : http://localhost:7654"
-echo "   API Docs : http://localhost:8000/docs"
+echo "   API Docs : http://localhost:8001/docs"
 echo "=========================================="
 echo ""
 open "http://localhost:7654" >/dev/null 2>&1 || true

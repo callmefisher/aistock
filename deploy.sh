@@ -156,7 +156,7 @@ ps_status() {
     echo ""
     echo "访问地址："
     echo "  前端界面: http://localhost:7654"
-    echo "  API文档:  http://localhost:8000/docs"
+    echo "  API文档:  http://localhost:8001/docs"
     echo "  数据库:   localhost:3306"
 }
 
