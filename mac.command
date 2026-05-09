@@ -45,9 +45,15 @@ if [ "${1:-}" = "--no-update" ]; then
 fi
 
 RAW_URL="https://raw.githubusercontent.com/callmefisher/aistock/main/start.command"
-MIRROR_URL="https://gh-proxy.com/$RAW_URL"
 TARGET="$SCRIPT_DIR/start.command"
 TMP_NEW="$SCRIPT_DIR/start.command.new"
+
+MIRROR_URLS=(
+    "https://gh-proxy.com/$RAW_URL"
+    "https://ghproxy.net/$RAW_URL"
+    "https://ghfast.top/$RAW_URL"
+    "$RAW_URL"
+)
 
 run_start() {
     if [ ! -f "$TARGET" ]; then
@@ -75,17 +81,13 @@ fi
 rm -f "$TMP_NEW" 2>/dev/null || true
 
 DL_RC=1
-if curl -fsSL --max-time 15 -o "$TMP_NEW" "$MIRROR_URL"; then
-    DL_RC=0
-fi
-
-if [ "$DL_RC" -ne 0 ]; then
-    if curl -fsSL --max-time 30 -o "$TMP_NEW" "$RAW_URL"; then
+for url in "${MIRROR_URLS[@]}"; do
+    if curl -fsSL --max-time 15 -o "$TMP_NEW" "$url"; then
         DL_RC=0
-    else
-        DL_RC=$?
+        break
     fi
-fi
+    echo "[WARN] Download from ${url%%/*} failed, trying next..."
+done
 
 if [ "$DL_RC" -ne 0 ] || [ ! -s "$TMP_NEW" ]; then
     echo "[WARN] Download failed or empty (rc=$DL_RC). Using existing start.command."
