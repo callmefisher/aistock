@@ -3,8 +3,8 @@
     <el-card>
       <template #header>
         <div class="card-header">
-          <span>工作流列表</span>
-          <div class="header-actions">
+          <div class="header-left">
+            <span>工作流列表</span>
             <div class="batch-date-setter">
               <el-date-picker
                 v-model="batchDateStr"
@@ -20,6 +20,8 @@
                 一键设置日期
               </el-button>
             </div>
+          </div>
+          <div class="header-actions">
             <el-button type="success" @click="openQuickUpload">
               <el-icon><Upload /></el-icon>
               快捷批量上传
@@ -2737,6 +2739,12 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .init-tip {
