@@ -5,6 +5,21 @@
         <div class="card-header">
           <span>工作流列表</span>
           <div class="header-actions">
+            <div class="batch-date-setter">
+              <el-date-picker
+                v-model="batchDateStr"
+                type="date"
+                placeholder="统一数据日期"
+                format="YYYY-MM-DD"
+                value-format="YYYY-MM-DD"
+                size="default"
+                style="width: 160px"
+              />
+              <el-button type="info" @click="handleBatchSetDate" :disabled="!batchDateStr || batchDateSetting">
+                <el-icon><Calendar /></el-icon>
+                一键设置日期
+              </el-button>
+            </div>
             <el-button type="success" @click="openQuickUpload">
               <el-icon><Upload /></el-icon>
               快捷批量上传
@@ -1203,7 +1218,7 @@
 import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus, InfoFilled } from '@element-plus/icons-vue'
+import { Timer, FolderOpened, Upload, Delete, View, Download, Document, Promotion, Plus, InfoFilled, Calendar } from '@element-plus/icons-vue'
 import QuickUploadDialog from '@/components/QuickUploadDialog.vue'
 
 const todayBeijing = () => {
@@ -2517,9 +2532,34 @@ const stopBatchTimer = () => {
 }
 
 const quickUploadVisible = ref(false)
+const batchDateStr = ref('')
+const batchDateSetting = ref(false)
 
 const openQuickUpload = () => {
   quickUploadVisible.value = true
+}
+
+const handleBatchSetDate = async () => {
+  if (!batchDateStr.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确定将所有工作流的交易日设置为 ${batchDateStr.value}？`,
+      '一键设置交易日',
+      { type: 'info', confirmButtonText: '确定', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  batchDateSetting.value = true
+  try {
+    await api.put('/workflows/bulk-set-date', { date_str: batchDateStr.value })
+    ElMessage.success(`已将所有工作流日期改为 ${batchDateStr.value}`)
+    await fetchWorkflows()
+  } catch (e) {
+    ElMessage.error('批量设置日期失败：' + (e?.message || '未知错误'))
+  } finally {
+    batchDateSetting.value = false
+  }
 }
 
 // After quick-upload finishes: refresh workflows, auto-select executable ones,
@@ -2880,6 +2920,12 @@ watch(
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.batch-date-setter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .batch-progress-container {

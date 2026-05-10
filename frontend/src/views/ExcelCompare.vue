@@ -88,10 +88,11 @@
     </div>
 
     <div v-if="columnsA.length && columnsB.length" class="mapping-section">
-      <div class="section-title">
+      <div class="section-title" style="cursor: pointer" @click="mappingCollapsed = !mappingCollapsed">
         <el-icon><Connection /></el-icon>
         <span>列映射配置</span>
-        <div class="section-actions">
+        <el-icon style="margin-left: 4px; transition: transform 0.2s" :style="{ transform: mappingCollapsed ? 'rotate(-90deg)' : 'rotate(0)' }"><ArrowDown /></el-icon>
+        <div class="section-actions" @click.stop>
           <el-button size="small" @click="autoMatch">
             <el-icon><Refresh /></el-icon>
             自动匹配
@@ -102,7 +103,7 @@
           </el-button>
         </div>
       </div>
-      <div class="mapping-grid">
+      <div v-show="!mappingCollapsed" class="mapping-grid">
         <div class="mapping-header">
           <span>对比列名</span>
           <span>A文件列</span>
@@ -136,7 +137,7 @@
           </el-button>
         </div>
       </div>
-      <div class="key-hint">
+      <div v-show="!mappingCollapsed" class="key-hint">
         <el-icon><InfoFilled /></el-icon>
         <span>主键列用于匹配同一条数据；对比列决定哪些字段参与差异检测</span>
       </div>
@@ -272,7 +273,7 @@ import * as XLSX from 'xlsx'
 import { ElMessage } from 'element-plus'
 import {
   UploadFilled, Document, Switch, Connection, DataAnalysis,
-  Warning, CircleCheck, InfoFilled, Delete, Refresh, Plus
+  Warning, CircleCheck, InfoFilled, Delete, Refresh, Plus, ArrowDown
 } from '@element-plus/icons-vue'
 
 const fileA = ref(null)
@@ -291,6 +292,7 @@ const comparing = ref(false)
 const compareResult = shallowRef(null)
 const activeTab = ref('onlyA')
 const columnMappings = ref([])
+const mappingCollapsed = ref(false)
 
 const displayColumns = computed(() => {
   return columnMappings.value
