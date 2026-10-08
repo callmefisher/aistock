@@ -59,42 +59,6 @@ class TestDataFetchE2E:
             assert all(r["success"] for r in results), "All calls should return success"
 
 
-class TestStockListE2E:
-    """端到端测试：股票列表API"""
-
-    @pytest.mark.asyncio
-    async def test_get_stock_list_success(self):
-        """测试获取股票列表 - 成功"""
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT) as client:
-            response = await client.get("/data/stock/list")
-
-            assert response.status_code == 200, f"Expected 200, got {response.status_code}"
-            data = response.json()
-            assert data.get("success") is True, f"Expected success=True, got {data}"
-
-    @pytest.mark.asyncio
-    async def test_get_stock_list_returns_data(self):
-        """测试获取股票列表 - 返回数据验证"""
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT) as client:
-            response = await client.get("/data/stock/list")
-
-            data = response.json()
-            if data.get("success"):
-                assert "data" in data, "Success response should contain data"
-                assert "row_count" in data, "Success response should contain row_count"
-                assert data["row_count"] >= 0, "Row count should be non-negative"
-
-    @pytest.mark.asyncio
-    async def test_get_industry_list_success(self):
-        """测试获取行业列表 - 成功"""
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT) as client:
-            response = await client.get("/data/industry/list")
-
-            assert response.status_code == 200
-            data = response.json()
-            assert data.get("success") is True
-
-
 class TestSQLQueryE2E:
     """端到端测试：SQL查询API"""
 
@@ -406,34 +370,6 @@ class TestStocksFilterE2E:
             assert response.status_code == 200
 
 
-class TestManualUpdateE2E:
-    """端到端测试：手动更新API"""
-
-    @pytest.mark.asyncio
-    async def test_fetch_daily_bar_missing_params(self):
-        """测试获取日线数据 - 缺少参数"""
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT) as client:
-            response = await client.post(
-                "/data/fetch/daily-bar",
-                json={}
-            )
-
-            assert response.status_code in [400, 422], "Should return error for missing params"
-
-    @pytest.mark.asyncio
-    async def test_fetch_daily_bar_partial_params(self):
-        """测试获取日线数据 - 部分参数"""
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT) as client:
-            response = await client.post(
-                "/data/fetch/daily-bar",
-                json={
-                    "stock_code": "600000"
-                }
-            )
-
-            assert response.status_code in [400, 422], "Should return error for missing dates"
-
-
 class TestIntegrationE2E:
     """端到端测试：集成测试"""
 
@@ -442,9 +378,6 @@ class TestIntegrationE2E:
         """测试完整查询流程"""
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT) as client:
             response = await client.get("/data/fetch/status")
-            assert response.status_code == 200
-
-            response = await client.get("/data/stock/list")
             assert response.status_code == 200
 
             response = await client.post(
@@ -459,7 +392,6 @@ class TestIntegrationE2E:
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT) as client:
             tasks = [
                 client.get("/data/fetch/status"),
-                client.get("/data/stock/list"),
                 client.post("/data/query/sql", json={"sql": "SELECT 1"}),
             ]
 

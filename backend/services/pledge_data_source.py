@@ -1,4 +1,4 @@
-"""质押数据源：东方财富 datacenter-web 直连（主） + AkShare（降级） + Redis 缓存。
+"""质押数据源：东方财富 datacenter-web 直连 + Redis 缓存。
 
 标准化字段（内部统一）：
   证券代码 / 公告日期 / 股东名称 / 是否控股股东 /
@@ -38,13 +38,12 @@ MAX_CONSECUTIVE_FAILURES = 5
 
 
 class PledgeDataSource:
-    """东财直连 + AkShare 降级 + Redis 缓存。"""
+    """东财直连 + Redis 缓存。"""
 
-    def __init__(self, redis_client=None, akshare_fallback: bool = True,
+    def __init__(self, redis_client=None,
                  sleep_fn=time.sleep, time_fn=time.time,
                  http_session=None):
         self.redis = redis_client
-        self.akshare_fallback = akshare_fallback
         self._sleep = sleep_fn
         self._time = time_fn
         self.session = http_session or requests.Session()
@@ -159,44 +158,6 @@ class PledgeDataSource:
                 continue
         return norm
 
-    # ---------- AkShare 降级 ----------
-
-    def _fetch_akshare(self, symbol: str) -> list[dict]:
-        """降级源：akshare.stock_gpzy_pledge_ratio_detail_em()。
-
-        注意：这个接口是全市场快照，速度慢（3+ 分钟）。作为兜底，实际工程中
-        应通过个股级 akshare 接口或自行 filter 后缓存。
-        """
-        import akshare as ak
-        df = ak.stock_gpzy_pledge_ratio_detail_em()
-        # 过滤本股
-        mask = df["股票代码"].astype(str).str.zfill(6) == symbol.zfill(6)
-        sub = df[mask]
-        norm = []
-        for _, row in sub.iterrows():
-            try:
-                # AkShare 封装没有 累计质押比例/前次累计质押比例 两列，置 None
-                # 此时异动判定会返回空 —— 可接受的降级行为
-                notice_date = str(row.get("公告日期", ""))[:10]
-                norm.append({
-                    "证券代码": str(row.get("股票代码", "")).zfill(6),
-                    "公告日期": notice_date,
-                    "股东名称": row.get("股东名称", ""),
-                    "是否控股股东": False,
-                    "质押股数": row.get("质押股份数量"),
-                    "占总股本比例": row.get("占总股本比例"),
-                    "累计质押比例": None,
-                    "前次累计质押比例": None,
-                    "累计变化": None,
-                    "质押开始日期": str(row.get("质押开始日期", ""))[:10] if row.get("质押开始日期") else None,
-                    "解押日期": str(row.get("质押结束日期", ""))[:10] if row.get("质押结束日期") else None,
-                    "状态": row.get("状态", ""),
-                })
-            except Exception as e:
-                logger.warning(f"[PledgeDataSource] AkShare 字段解析失败（跳过 1 条）: {e}")
-                continue
-        return norm
-
     # ---------- 窗口过滤 ----------
 
     @staticmethod
@@ -222,23 +183,15 @@ class PledgeDataSource:
 
     def get_history(self, symbol: str, anchor_date: str,
                     window_days: int = 365) -> tuple[list[dict], str]:
-        """返回 (records 升序, source_name ∈ {eastmoney, cache, akshare, empty})。"""
+        """返回 (records 升序, source_name ∈ {eastmoney, cache, empty})。"""
         # 1. 缓存
         cached = self._get_from_cache(symbol, anchor_date)
         if cached is not None:
             filtered = self._filter_window(cached, anchor_date, window_days)
             return filtered, "cache"
 
-        # 2. source_down 时直接走降级
+        # 2. source_down 时直接返回空
         if self._is_source_down():
-            if self.akshare_fallback:
-                try:
-                    records = self._fetch_akshare(symbol)
-                    filtered = self._filter_window(records, anchor_date, window_days)
-                    self._set_cache(symbol, anchor_date, records)
-                    return filtered, "akshare"
-                except Exception as e:
-                    logger.warning(f"[PledgeDataSource] AkShare 降级失败: {e}")
             return [], "empty"
 
         # 3. 东财主源
@@ -255,15 +208,5 @@ class PledgeDataSource:
                            f"{MAX_CONSECUTIVE_FAILURES}): {e}")
             if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 self._mark_source_down()
-
-        # 4. 降级 AkShare
-        if self.akshare_fallback:
-            try:
-                records = self._fetch_akshare(symbol)
-                self._set_cache(symbol, anchor_date, records)
-                filtered = self._filter_window(records, anchor_date, window_days)
-                return filtered, "akshare"
-            except Exception as e:
-                logger.warning(f"[PledgeDataSource] AkShare 降级失败: {e}")
 
         return [], "empty"

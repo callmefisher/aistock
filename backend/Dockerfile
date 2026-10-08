@@ -11,7 +11,8 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     if [ -f /etc/apt/sources.list ]; then \
         sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
     fi && \
-    pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+    pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
+    pip config set global.extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 安装构建依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -45,27 +46,12 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
         sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
     fi
 
-# 安装运行时依赖和Playwright系统依赖（这些包几乎不变，缓存命中率高）
+# 安装运行时系统依赖（这些包几乎不变，缓存命中率高）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     default-libmysqlclient-dev \
     default-mysql-client \
     curl \
     gosu \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libdbus-1-3 \
-    libxkbcommon0 \
-    libatspi2.0-0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /tmp/* \

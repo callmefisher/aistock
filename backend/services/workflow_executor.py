@@ -3498,7 +3498,7 @@ class WorkflowExecutor:
 
         # 3. 初始化数据源
         redis_cli = get_redis()
-        ds = PledgeDataSource(redis_client=redis_cli, akshare_fallback=True)
+        ds = PledgeDataSource(redis_client=redis_cli)
 
         # 4. 逐股处理：预判列不存在则新建；存在则保留原值
         for preset in ["持续递增（一年内）", "持续递减（一年内）", "质押异动"]:
@@ -3514,7 +3514,7 @@ class WorkflowExecutor:
             "total": 0, "input_total": len(df),
             "ok": 0, "empty": 0, "fail": 0,
             "skipped_preset": 0, "skipped_old": 0,
-            "by_source": {"eastmoney": 0, "cache": 0, "akshare": 0, "empty": 0},
+            "by_source": {"eastmoney": 0, "cache": 0, "empty": 0},
             "by_result": {
                 "持续递增": 0, "持续递减": 0, "无趋势": 0,
                 "小幅转增": 0, "小幅转减": 0, "大幅激增": 0, "大幅骤减": 0,
@@ -3627,7 +3627,6 @@ class WorkflowExecutor:
             f"跳过(超出{row_recency_days}天) {stats['skipped_old']}   ｜   "
             f"数据源: 东财 {stats['by_source']['eastmoney']} · "
             f"缓存 {stats['by_source']['cache']} · "
-            f"降级 AkShare {stats['by_source']['akshare']} · "
             f"空 {stats['by_source']['empty']}"
         )
         logger.info(f"[质押异动趋势] {summary}")
