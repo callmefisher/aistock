@@ -854,16 +854,29 @@ async def batch_run_workflows(
     workflow_ids = request.workflow_ids
 
     # 聚合类型（is_aggregation）排到最后执行，确保其他工作流数据最完整
+    # 其中"当月每日新增"依赖"条件交集"当日产出，须保证条件交集先执行
     normal_ids = []
     aggregation_ids = []
+    agg_type_map = {}
     for wid in workflow_ids:
         result = await db.execute(select(Workflow).where(Workflow.id == wid))
         wf = result.scalar_one_or_none()
         from config.workflow_type_config import get_type_config as _gtc
         if wf and _gtc(wf.workflow_type or "").get("is_aggregation"):
             aggregation_ids.append(wid)
+            agg_type_map[wid] = wf.workflow_type or ""
         else:
             normal_ids.append(wid)
+
+    def _agg_order(wid: int) -> int:
+        t = agg_type_map.get(wid, "")
+        if t == "条件交集":
+            return 0
+        if t == "当月每日新增":
+            return 1
+        return 2
+
+    aggregation_ids.sort(key=_agg_order)  # 稳定排序：其余聚合类型保持原相对顺序
     sorted_ids = normal_ids + aggregation_ids
 
     batch = BatchExecution(

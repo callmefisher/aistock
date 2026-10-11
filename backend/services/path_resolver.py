@@ -1,5 +1,6 @@
 import os
 import glob
+import re
 import shutil
 import logging
 from datetime import datetime, timedelta
@@ -28,7 +29,11 @@ class WorkflowPathResolver:
             date_str = beijing_today_str()
 
         dir_template = self.config["directories"]["upload_date"]
-        dir_path = dir_template.format(date=date_str)
+        # {month_dir}: 按月组织的数据目录（如 "2026年10月新增"），仅部分模板使用；
+        # 对不含该占位符的模板无影响（str.format 忽略多余 kwargs）
+        m = re.match(r"^(\d{4})-(\d{2})-\d{2}$", date_str or "")
+        month_dir = f"{m.group(1)}年{int(m.group(2))}月新增" if m else ""
+        dir_path = dir_template.format(date=date_str, month_dir=month_dir)
 
         return os.path.join(self.base_dir, dir_path)
 

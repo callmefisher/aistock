@@ -226,6 +226,26 @@ WORKFLOW_TYPE_CONFIG = {
         },
     },
 
+    "当月每日新增": {
+        "display_name": "当月每日新增",
+        "base_subdir": "当月每日新增",
+        "is_aggregation": True,
+        "is_export_only": True,
+        "directories": {
+            # 数据目录按月组织（非日期目录，由 monthly_daily_new 步骤内直接生成）：
+            # 当月每日新增/2026年10月新增/17 10月新增1010.xlsx
+            "upload_date": "当月每日新增/{month_dir}",
+            "public": "",
+        },
+        "naming": {
+            # 文档性配置：实际输出名由 monthly_daily_new 步骤生成
+            # 默认 "17 {月}月新增{MMDD}.xlsx"（如 17 10月新增1010.xlsx）
+            "output_template": "17 {month}月新增{mmdd}.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["monthly_daily_new"],
+    },
+
     "导出20日均线趋势": {
         "display_name": "导出20日均线趋势",
         "base_subdir": "导出20日均线趋势",

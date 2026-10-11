@@ -153,6 +153,13 @@
             style="margin-top: 8px"
           />
           <el-alert
+            v-if="form.workflow_type === '当月每日新增'"
+            title="当月每日新增：缓存本月1日至昨日的条件交集百日新高当月代码，与当日条件交集比较标记新增，输出17 xx月新增xxxx.xlsx（当日新增绿色背景），一键执行自动排在条件交集之后"
+            type="warning"
+            :closable="false"
+            style="margin-top: 8px"
+          />
+          <el-alert
             v-if="form.workflow_type === '导出20日均线趋势'"
             title="导出20日均线趋势：复用统计分析的趋势导出逻辑，生成含折线图的Excel，不写入数据库"
             type="warning"
@@ -194,6 +201,9 @@
                 <el-select v-model="step.type" style="width: 100%" @change="onStepTypeChange(step, index)" :disabled="isAggregationType || form.workflow_type === '涨幅排名'">
                   <template v-if="form.workflow_type === '条件交集'">
                     <el-option label="合并当日数据" value="condition_intersection" />
+                  </template>
+                  <template v-else-if="form.workflow_type === '当月每日新增'">
+                    <el-option label="当月每日新增导出" value="monthly_daily_new" />
                   </template>
                   <template v-else-if="form.workflow_type === '导出20日均线趋势'">
                     <el-option label="导出趋势Excel" value="export_ma20_trend" />
@@ -776,6 +786,15 @@
                       添加周期
                     </el-button>
                   </div>
+                </el-form-item>
+              </template>
+
+              <template v-if="step.type === 'monthly_daily_new'">
+                <el-form-item label="输出文件名">
+                  <el-input
+                    v-model="step.config.output_filename"
+                    placeholder="留空自动按数据日期生成，如 17 10月新增1010.xlsx"
+                  />
                 </el-form-item>
               </template>
 
@@ -1421,6 +1440,7 @@ const getStepType = (type) => {
     export_ma20_trend: 'warning',
     export_high_price_trend: 'warning',
     ranking_sort: 'success',
+    monthly_daily_new: 'warning',
     pledge_trend_analysis: 'warning',
     pending: 'danger'
   }
@@ -1443,6 +1463,7 @@ const getStepTypeName = (type) => {
     export_ma20_trend: '导出趋势Excel',
     export_high_price_trend: '导出百日新高趋势Excel',
     ranking_sort: '涨幅排名排序',
+    monthly_daily_new: '当月每日新增导出',
     pledge_trend_analysis: '质押异动和趋势',
     pending: '待定'
   }
@@ -1450,7 +1471,7 @@ const getStepTypeName = (type) => {
 }
 
 // 条件交集 & 导出20日均线趋势 & 百日新高总趋势 相关
-const AGGREGATION_TYPES = ['条件交集', '导出20日均线趋势', '百日新高总趋势']
+const AGGREGATION_TYPES = ['条件交集', '当月每日新增', '导出20日均线趋势', '百日新高总趋势']
 const isAggregationType = computed(() => AGGREGATION_TYPES.includes(form.value.workflow_type))
 const isParallelIntersection = computed(() => currentWorkflow.value?.workflow_type === '条件交集')
 
@@ -1471,6 +1492,25 @@ const defaultIntersectionStep = () => {
       output_filename_high: `7条件交集${dateCompact}百日新高证券代码.xlsx`,
       output_filename_ma20: `7条件交集${dateCompact}站上20日线证券代码.xlsx`,
       high_price_periods: [{ start: '2026-03-18', end: today }]
+    },
+    status: 'pending'
+  }
+}
+
+// 当月每日新增：默认输出 "17 {M}月新增{MMDD}.xlsx"（月份不补零、MMDD补零）
+const monthlyNewAutoFilename = (dateStr) => {
+  const compact = (dateStr || '').replace(/-/g, '')
+  const m = Number((dateStr || '').slice(5, 7))
+  return `17 ${m}月新增${compact.slice(4)}.xlsx`
+}
+
+const defaultMonthlyNewStep = () => {
+  const today = todayBeijing()
+  return {
+    type: 'monthly_daily_new',
+    config: {
+      date_str: today,
+      output_filename: monthlyNewAutoFilename(today)
     },
     status: 'pending'
   }
@@ -1683,6 +1723,8 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
   const isAgg = AGGREGATION_TYPES.includes(newType)
   if (newType === '条件交集') {
     form.value.steps = [defaultIntersectionStep()]
+  } else if (newType === '当月每日新增') {
+    form.value.steps = [defaultMonthlyNewStep()]
   } else if (newType === '导出20日均线趋势') {
     form.value.steps = [defaultMa20TrendStep()]
   } else if (newType === '百日新高总趋势') {
