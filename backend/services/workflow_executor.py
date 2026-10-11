@@ -2969,13 +2969,145 @@ class WorkflowExecutor:
             return rows
         return None
 
+    async def _load_intersection_rows_ma20(self, intersection_dir: str, date_str: str) -> Optional[List[Tuple[str, str]]]:
+        """读取数据日期当日的条件交集站上20日线行 [(证券代码, K列日期串), ...]：DB 优先，Excel 兜底。
+
+        - DB：stock_pools 中"条件交集站上20日线_{date_str}"选股池
+          （并行交集执行成功才入库；同日多条取最新 id）
+        - Excel：条件交集/{date_str}/ 主文件，sheet"条件交集站上20日线"（K列"…站上20日线日期"）
+        - 返回 None = DB 与 Excel 均无数据；返回 [] = 当日站上20日线为空表
+        """
+        import json as json_mod
+        from core.database import AsyncSessionLocal
+        from sqlalchemy import text
+
+        pool_name = f"条件交集站上20日线_{date_str}"
+        data_json = None
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(text("""
+                    SELECT data
+                    FROM stock_pools
+                    WHERE name = :n AND is_active = 1
+                    ORDER BY id DESC
+                    LIMIT 1
+                """), {"n": pool_name})
+                row = result.fetchone()
+                data_json = row[0] if row else None
+        except Exception as e:
+            logger.warning(f"[当月每日新增] DB查询站上20日线失败({date_str})，走Excel兜底: {e}")
+
+        if data_json:
+            records = None
+            try:
+                records = data_json if isinstance(data_json, list) else json_mod.loads(data_json)
+            except Exception as e:
+                logger.warning(f"[当月每日新增] DB站上20日线解析失败({date_str})，走Excel兜底: {e}")
+            if isinstance(records, list) and not records:
+                return []  # 当日站上20日线为空表 → 权威空
+            if isinstance(records, list) and records and isinstance(records[0], dict):
+                keys = list(records[0].keys())
+                k_key = next((k for k in keys if "站上20日线日期" in str(k)), None)
+                if k_key is not None and "证券代码" in keys:
+                    return [
+                        (str(r.get("证券代码")).strip() if r.get("证券代码") is not None else "",
+                         str(r.get(k_key)) if r.get(k_key) is not None else "")
+                        for r in records if isinstance(r, dict)
+                    ]
+            logger.info(f"[当月每日新增] DB站上20日线记录不可解析({date_str})，走Excel兜底")
+
+        # 2) Excel 兜底
+        return self._read_intersection_excel_rows_ma20(intersection_dir, date_str)
+
+    def _read_intersection_excel_rows_ma20(self, intersection_dir: str, date_str: str) -> Optional[List[Tuple[str, str]]]:
+        """Excel 兜底：读当日条件交集主文件"条件交集站上20日线"sheet的 (证券代码, K列日期串)。
+        无文件/无目标sheet返回 None。"""
+        day_dir = os.path.join(intersection_dir, date_str)
+        if not os.path.isdir(day_dir):
+            return None
+        xlsx_files = [
+            f for f in os.listdir(day_dir)
+            if f.endswith(".xlsx") and not f.startswith("~") and not f.startswith(".") and "证券代码" not in f
+        ]
+        if not xlsx_files:
+            return None
+        file_path = os.path.join(day_dir, sorted(xlsx_files)[0])
+        try:
+            xls = pd.ExcelFile(file_path)
+        except Exception as e:
+            logger.warning(f"[当月每日新增] 读取失败 {file_path}: {e}")
+            return None
+
+        sheet_name = "条件交集站上20日线"
+        if sheet_name not in xls.sheet_names:
+            return None
+        try:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+        except Exception as e:
+            logger.warning(f"[当月每日新增] 解析sheet'{sheet_name}'失败 {file_path}: {e}")
+            return None
+        if "证券代码" not in df.columns:
+            return None
+        # K列：优先按列名关键字"…站上20日线日期"，兜底第11列
+        k_col = next((c for c in df.columns if "站上20日线日期" in str(c)), None)
+        if k_col is None and len(df.columns) >= 11:
+            k_col = df.columns[10]
+        if k_col is None:
+            return None
+        rows: List[Tuple[str, str]] = []
+        for code_val, dates_val in zip(df["证券代码"], df[k_col]):
+            code = str(code_val).strip() if code_val is not None else ""
+            if not code or code.lower() == "nan":
+                continue
+            rows.append((code, "" if dates_val is None else str(dates_val).strip()))
+        return rows
+
+    def _write_monthly_daily_new_excel(self, output_path: str, output_codes: List[str], marked_codes: List[str],
+                                       ma20_codes: Optional[List[str]] = None,
+                                       ma20_marked: Optional[List[str]] = None) -> pd.DataFrame:
+        """写当月每日新增 Excel（单文件双 sheet，每个 sheet 单列"证券代码"）：
+        - sheet"当月每日新增"：百日新高当日新增（主输出）
+        - sheet"20日线"：站上20日线当日新增（ma20_codes 非 None 时写入）
+        居中 + 列宽 + 当日新增 #D8EAD8 背景（日期列严格只含数据日期才标绿）"""
+        df_out = pd.DataFrame({"证券代码": output_codes})
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            df_out.to_excel(writer, index=False, sheet_name="当月每日新增")
+            if ma20_codes is not None:
+                pd.DataFrame({"证券代码": ma20_codes}).to_excel(writer, index=False, sheet_name="20日线")
+
+        marked_map = {"当月每日新增": set(marked_codes)}
+        if ma20_codes is not None:
+            marked_map["20日线"] = set(ma20_marked or [])
+        try:
+            from openpyxl import load_workbook as _lw
+            from openpyxl.styles import Alignment, PatternFill
+            wb_w = _lw(output_path)
+            center_align = Alignment(horizontal="center", vertical="center")
+            green_fill = PatternFill(fill_type="solid", start_color="FFD8EAD8", end_color="FFD8EAD8")
+            for ws in wb_w.worksheets:
+                marked_set = marked_map.get(ws.title, set())
+                ws.column_dimensions["A"].width = 18
+                for r_idx in range(1, ws.max_row + 1):
+                    cell = ws.cell(row=r_idx, column=1)
+                    cell.alignment = center_align
+                    if r_idx >= 2 and str(cell.value).strip() in marked_set:
+                        cell.fill = green_fill
+            wb_w.save(output_path)
+        except Exception as e:
+            logger.warning(f"[当月每日新增] 格式化失败: {e}")
+        return df_out
+
     async def _monthly_daily_new(self, config: Dict, date_str: Optional[str] = None) -> Dict[str, Any]:
         """当月每日新增步骤（无缓存，只用数据日期当日的条件交集数据）：
-        1. 读取当日条件交集 (证券代码, J列日期串)：DB 优先，Excel 兜底
-        2. 过滤（见 filter_monthly_daily_new_codes）：
-           - 非首交易日：J 含数据日期 且 不含本月1日~前一日任何日期
-           - 首交易日（全表 J 列当月只出现数据日期）：J 含数据日期 且 不含上月任何日期
-        3. 输出单列"证券代码"Excel；J 列严格只含数据日期的行标 #D8EAD8 绿底
+        1. 读取当日条件交集 (证券代码, 日期串)：DB 优先，Excel 兜底
+           - 百日新高：sheet"条件交集百日新高" J列"…期间百日新高的日期"
+           - 站上20日线：sheet"条件交集站上20日线" K列"…站上20日线日期"
+        2. 过滤（见 filter_monthly_daily_new_codes，两路逻辑完全一致）：
+           - 非首交易日：日期列含数据日期 且 不含本月1日~前一日任何日期
+           - 首交易日（全表日期列当月只出现数据日期）：含数据日期 且 不含上月任何日期
+        3. 输出单个 Excel（sheet"当月每日新增"=百日新高新增 + sheet"20日线"=站上20日线新增，
+           站上20日线数据缺失时跳过该 sheet 不影响主输出）；
+           日期列严格只含数据日期的行标 #D8EAD8 绿底
         """
         date_str = config.get("date_str") or date_str or self.today
         try:
@@ -2995,57 +3127,65 @@ class WorkflowExecutor:
 
         # 2. 过滤 + 标记（纯函数，无缓存）
         output_codes, marked_codes, is_first_trading_day = filter_monthly_daily_new_codes(rows, date_str)
-        month_key = date_str[:7]
         logger.info(
-            f"[当月每日新增] {date_str}: 当日{len(rows)}行, 输出{len(output_codes)}个"
+            f"[当月每日新增] {date_str}: 百日新高当日{len(rows)}行, 输出{len(output_codes)}个"
             f"（标绿{len(marked_codes)}个, 首交易日={is_first_trading_day}）"
         )
 
-        # 3. 输出文件名：默认 17 {M}月新增{MMDD}.xlsx（月份不补零、MMDD补零），可自定义
+        # 3. 站上20日线（同一套过滤/标绿逻辑，数据源为 K 列日期；缺失时跳过）
+        ma20_codes = ma20_marked = None
+        try:
+            rows_ma20 = await self._load_intersection_rows_ma20(intersection_dir, date_str)
+        except Exception as e:
+            logger.warning(f"[当月每日新增] 读取站上20日线数据失败({date_str}): {e}")
+            rows_ma20 = None
+        if not rows_ma20:
+            logger.warning(
+                f"[当月每日新增] {date_str} 无站上20日线数据"
+                f"（{'空表' if rows_ma20 == [] else 'DB与Excel均无'}），跳过20日线 sheet"
+            )
+        else:
+            ma20_codes, ma20_marked, _ = filter_monthly_daily_new_codes(rows_ma20, date_str)
+            logger.info(
+                f"[当月每日新增] {date_str}: 站上20日线当日{len(rows_ma20)}行, 输出{len(ma20_codes)}个"
+                f"（标绿{len(ma20_marked)}个）"
+            )
+
+        # 4. 输出文件名：默认 17 {M}月新增{MMDD}.xlsx（月份不补零、MMDD补零），可自定义
         date_compact = date_str.replace("-", "")
         try:
             _d = datetime.strptime(date_str, "%Y-%m-%d")
             default_name = f"17 {_d.month}月新增{date_compact[4:]}.xlsx"
         except Exception:
-            default_name = f"17 {month_key}月新增{date_compact[4:]}.xlsx"
+            default_name = f"17 {date_str[:7]}月新增{date_compact[4:]}.xlsx"
         output_filename = (config.get("output_filename") or "").strip() or default_name
         output_filename = output_filename.replace("{date_compact}", date_compact).replace("{date}", date_str)
 
-        # 4. 输出单列 Excel（数据目录按月组织：当月每日新增/2026年10月新增/）
+        # 5. 输出单文件双 sheet（数据目录按月组织：当月每日新增/2026年10月新增/）
         year, month = date_str[:4], int(date_str[5:7])
         daily_dir = os.path.join(self.base_dir, "当月每日新增", f"{year}年{month}月新增")
         os.makedirs(daily_dir, exist_ok=True)
         output_path = os.path.join(daily_dir, output_filename)
-        df_out = pd.DataFrame({"证券代码": output_codes})
-        df_out.to_excel(output_path, index=False, sheet_name="当月每日新增", engine="openpyxl")
-
-        # 5. 格式化：居中 + 列宽 + 当日新增 #D8EAD8 背景（J列严格只含数据日期才标绿）
-        marked_set = set(marked_codes)
-        try:
-            from openpyxl import load_workbook as _lw
-            from openpyxl.styles import Alignment, PatternFill
-            wb_w = _lw(output_path)
-            ws = wb_w.active
-            center_align = Alignment(horizontal="center", vertical="center")
-            green_fill = PatternFill(fill_type="solid", start_color="FFD8EAD8", end_color="FFD8EAD8")
-            ws.column_dimensions["A"].width = 18
-            for r_idx in range(1, ws.max_row + 1):
-                cell = ws.cell(row=r_idx, column=1)
-                cell.alignment = center_align
-                if r_idx >= 2 and str(cell.value).strip() in marked_set:
-                    cell.fill = green_fill
-            wb_w.save(output_path)
-        except Exception as e:
-            logger.warning(f"[当月每日新增] 格式化失败: {e}")
-
+        df_out = self._write_monthly_daily_new_excel(output_path, output_codes, marked_codes,
+                                                     ma20_codes, ma20_marked)
         logger.info(f"[当月每日新增] 输出文件: {output_path}")
+
+        # 6. 汇总消息（百日新高 + 20日线两部分）
+        parts = []
         if output_codes:
-            message = (
-                f"当月每日新增完成: {date_str}新增{len(output_codes)}个代码（标绿{len(marked_codes)}个）"
-                + ("，当月第一个交易日" if is_first_trading_day else "")
-            )
+            parts.append(f"百日新高新增{len(output_codes)}个代码（标绿{len(marked_codes)}个）")
         else:
-            message = f"当月每日新增完成: {date_str}当日无新增代码（当月第一个交易日={is_first_trading_day}）"
+            parts.append("百日新高当日无新增代码")
+        if ma20_codes is None:
+            parts.append("20日线数据缺失，未生成20日线 sheet")
+        elif ma20_codes:
+            parts.append(f"20日线新增{len(ma20_codes)}个代码（标绿{len(ma20_marked)}个）")
+        else:
+            parts.append("20日线当日无新增代码")
+        message = f"当月每日新增完成: {date_str}" + "，".join(parts)
+        if is_first_trading_day:
+            message += "，当月第一个交易日"
+
         return {
             "success": True,
             "message": message,

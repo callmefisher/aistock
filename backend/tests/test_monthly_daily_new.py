@@ -9,11 +9,15 @@
   * 跨年首交易日（1 月 → 排除上一年 12 月）
   * 标绿：J 严格只含唯一日期且等于数据日期；含任何其他日期（含跨月）输出但不标绿
   * 行序去重（首行优先）、J 不含数据日期的行排除
-- 数据加载：DB 优先（空表为权威空）、DB 记录缺 J 列（旧格式）走 Excel 兜底、
+- 数据加载（百日新高 J 列）：DB 优先（空表为权威空）、DB 记录缺 J 列（旧格式）走 Excel 兜底、
   无 DB 记录走 Excel 兜底、主文件查找排除"证券代码"后缀文件
+- 数据加载（站上20日线 K 列）：stock_pools DB 优先、Excel sheet"条件交集站上20日线"兜底
 - 步骤端到端：输出单列 Excel + 严格新增绿底、幂等重复执行输出一致、
   当日文件被删但 DB 有记录时结果不变（回归一键并行/当日二次执行标记丢失 bug）、
   当日条件交集有数据但无新增 → 成功输出空表、无数据/空表失败、单数字月份目录
+- 20日线第二 sheet：单文件双 sheet（"当月每日新增"=百日新高 + "20日线"=站上20日线）、
+  同一过滤/标绿逻辑、DB（选股池）优先、主文件无站上20日线 sheet → 跳过该 sheet
+  且不影响百日新高主输出
 
 DB 通过 patch core.database.AsyncSessionLocal 注入 FakeSession 隔离，不依赖真实数据库。
 """
@@ -37,10 +41,12 @@ def _compress(records) -> bytes:
 
 
 class _FakeSession:
-    """Async with 协议 + execute 按 params['d'] 过滤，fetchone 返回 (compressed,) 单行。"""
+    """Async with 协议 + execute 按参数路由：'d'→workflow_results（按日期），
+    'n'→stock_pools（按选股池名称）。fetchone 返回单行元组。"""
 
-    def __init__(self, rows):
-        self._rows = rows  # [(date_str, compressed)]
+    def __init__(self, rows, pool_rows=None):
+        self._rows = rows            # [(date_str, compressed)] workflow_results
+        self._pool_rows = pool_rows or []  # [(name, data_json)] stock_pools
 
     async def __aenter__(self):
         return self
@@ -49,16 +55,21 @@ class _FakeSession:
         return False
 
     async def execute(self, stmt, params=None):
-        d = (params or {}).get("d", "")
-        matched = [r for r in self._rows if r[0] == d]
+        params = params or {}
         mock_result = MagicMock()
-        mock_result.fetchone = MagicMock(return_value=(matched[0][1],) if matched else None)
+        if "n" in params:  # stock_pools 查询（站上20日线选股池）
+            matched = [r for r in self._pool_rows if r[0] == params["n"]]
+            mock_result.fetchone = MagicMock(return_value=(matched[0][1],) if matched else None)
+        else:  # workflow_results 查询（按日期）
+            d = params.get("d", "")
+            matched = [r for r in self._rows if r[0] == d]
+            mock_result.fetchone = MagicMock(return_value=(matched[0][1],) if matched else None)
         return mock_result
 
 
-def _fake_session_factory(rows):
+def _fake_session_factory(rows, pool_rows=None):
     def factory(*a, **kw):
-        return _FakeSession(rows)
+        return _FakeSession(rows, pool_rows)
     return factory
 
 
@@ -73,6 +84,17 @@ def _db_row(date_str, rows_j):
     return (date_str, _compress(records))
 
 
+def _pool_row(date_str, rows_k):
+    """构造 stock_pools 记录（"条件交集站上20日线_{date_str}"选股池，data 为 JSON 字符串）。
+    rows_k: [(证券代码, K列日期串), ...]"""
+    k_col = f"2026-03-18至{date_str}站上20日线日期"
+    records = [
+        {"证券代码": c, "证券简称": c + "简称", k_col: j}
+        for c, j in rows_k
+    ]
+    return (f"条件交集站上20日线_{date_str}", json.dumps(records, ensure_ascii=False))
+
+
 @pytest.fixture(autouse=True)
 def _fake_db(monkeypatch):
     """默认 DB 无记录 → 文件类测试即 Excel 兜底路径，同时避免真实 DB 连接。"""
@@ -81,8 +103,9 @@ def _fake_db(monkeypatch):
 
 # ---------------------------------------------------------------- 公共
 
-def _make_intersection_file(base_dir, date_str, rows):
+def _make_intersection_file(base_dir, date_str, rows, ma20_rows=None):
     """生成条件交集主文件（sheet"条件交集百日新高"），rows: [(证券代码, J列日期串), ...]
+    ma20_rows 非 None 时追加 sheet"条件交集站上20日线"（K列日期），ma20_rows: [(证券代码, K列日期串), ...]
     同时放置"证券代码"后缀干扰文件，验证主文件查找的排除逻辑"""
     day_dir = os.path.join(base_dir, "条件交集", date_str)
     os.makedirs(day_dir, exist_ok=True)
@@ -94,7 +117,17 @@ def _make_intersection_file(base_dir, date_str, rows):
         j_col: [r[1] for r in rows],
     })
     main_file = os.path.join(day_dir, f"7条件交集{compact}.xlsx")
-    df.to_excel(main_file, index=False, sheet_name="条件交集百日新高", engine="openpyxl")
+    with pd.ExcelWriter(main_file, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="条件交集百日新高", index=False)
+        if ma20_rows is not None:
+            k_col = f"2026-03-18至{date_str}站上20日线日期"
+            df_m = pd.DataFrame({
+                "证券代码": [r[0] for r in ma20_rows],
+                "证券简称": [r[0] + "简称" for r in ma20_rows],
+                f"2026-03-18至{date_str}站上20日线次数": ["1"] * len(ma20_rows),
+                k_col: [r[1] for r in ma20_rows],
+            })
+            df_m.to_excel(writer, sheet_name="条件交集站上20日线", index=False)
     pd.DataFrame({"证券代码": []}).to_excel(
         os.path.join(day_dir, f"7条件交集{compact}百日新高证券代码.xlsx"),
         index=False, engine="openpyxl",
@@ -107,10 +140,11 @@ def _run_step(tmp_path, config):
     return asyncio.run(executor.execute_step("monthly_daily_new", config))
 
 
-def _read_output(path):
+def _read_output(path, sheet_name=None):
+    """读取输出Excel指定sheet（默认首个sheet）→ (表头, 值列表, 填充色列表)"""
     from openpyxl import load_workbook
     wb = load_workbook(path)
-    ws = wb.active
+    ws = wb[sheet_name] if sheet_name else wb.active
     values = [ws.cell(r, 1).value for r in range(2, ws.max_row + 1)]
     fills = []
     for r in range(2, ws.max_row + 1):
@@ -227,6 +261,41 @@ def test_load_rows_nothing(tmp_path):
     assert loaded is None
 
 
+# ---------------------------------------------------------------- 站上20日线数据加载（K列）
+
+def test_load_rows_ma20_db_priority(tmp_path):
+    """stock_pools 有选股池记录（无 Excel 文件）→ 直接用 DB"""
+    pools = [_pool_row("2026-10-09", [
+        ("000001.SZ", "2026-10-09"),
+        ("000002.SZ", "2026-10-01,2026-10-09"),
+    ])]
+    ex = WorkflowExecutor(base_dir=str(tmp_path), workflow_type="当月每日新增")
+    with patch("core.database.AsyncSessionLocal", _fake_session_factory([], pools)):
+        loaded = asyncio.run(ex._load_intersection_rows_ma20(
+            os.path.join(str(tmp_path), "条件交集"), "2026-10-09"))
+    assert loaded == [("000001.SZ", "2026-10-09"), ("000002.SZ", "2026-10-01,2026-10-09")]
+
+
+def test_load_rows_ma20_excel_fallback(tmp_path):
+    """DB 无选股池记录 → Excel 主文件 sheet"条件交集站上20日线"K列兜底"""
+    _make_intersection_file(str(tmp_path), "2026-10-09",
+                            [("000001.SZ", "2026-10-09")],
+                            ma20_rows=[("000005.SZ", "2026-10-09")])
+    ex = WorkflowExecutor(base_dir=str(tmp_path), workflow_type="当月每日新增")
+    loaded = asyncio.run(ex._load_intersection_rows_ma20(
+        os.path.join(str(tmp_path), "条件交集"), "2026-10-09"))
+    assert loaded == [("000005.SZ", "2026-10-09")]
+
+
+def test_load_rows_ma20_no_sheet(tmp_path):
+    """主文件无"条件交集站上20日线"sheet（旧格式）→ None"""
+    _make_intersection_file(str(tmp_path), "2026-10-09", [("000001.SZ", "2026-10-09")])
+    ex = WorkflowExecutor(base_dir=str(tmp_path), workflow_type="当月每日新增")
+    loaded = asyncio.run(ex._load_intersection_rows_ma20(
+        os.path.join(str(tmp_path), "条件交集"), "2026-10-09"))
+    assert loaded is None
+
+
 # ---------------------------------------------------------------- monthly_daily_new 步骤
 
 def test_monthly_daily_new_step(tmp_path):
@@ -338,6 +407,88 @@ def test_monthly_daily_new_single_digit_month(tmp_path):
     assert result["success"] is True
     rel = os.path.relpath(result["file_path"], str(tmp_path)).replace(os.sep, "/")
     assert rel == "当月每日新增/2026年3月新增/17 3月新增0305.xlsx"
+
+
+# ---------------------------------------------------------------- 20日线第二sheet
+
+def test_monthly_daily_new_ma20_output(tmp_path):
+    """主文件含两个 sheet → 单文件双 sheet："当月每日新增"=百日新高新增 +
+    "20日线"=站上20日线新增，两路过滤/标绿逻辑一致"""
+    base = str(tmp_path)
+    _make_intersection_file(base, "2026-10-09", [
+        ("000001.SZ", "2026-10-01,2026-10-09"),   # 当月更早 → 排除
+        ("000002.SZ", "2026-10-09"),               # 纯新 → 输出+标绿
+    ], ma20_rows=[
+        ("000001.SZ", "2026-10-09"),               # 纯新 → 输出+标绿
+        ("000003.SZ", "2026-10-09,2026-10-03"),    # 当月更早 → 排除
+        ("000004.SZ", "2026-10-09,2026-09-28"),    # 当月新增+跨月旧 → 输出不标绿
+    ])
+
+    result = _run_step(tmp_path, {"date_str": "2026-10-09"})
+    assert result["success"] is True
+    out_file = result["file_path"]
+    assert os.path.basename(out_file) == "17 10月新增1009.xlsx"   # 仍只有一个输出文件
+    assert result["new_codes"] == ["000002.SZ"]
+    assert "20日线新增2个代码（标绿1个）" in result["message"]
+
+    # sheet 结构：主sheet在前，20日线sheet在后
+    from openpyxl import load_workbook
+    wb = load_workbook(out_file)
+    assert wb.sheetnames == ["当月每日新增", "20日线"]
+
+    # 主 sheet（百日新高）
+    header, values, fills = _read_output(out_file)
+    assert header == "证券代码"
+    assert values == ["000002.SZ"]
+    assert fills == ["FFD8EAD8"]
+
+    # 20日线 sheet（同一套过滤/标绿逻辑）
+    header_m, values_m, fills_m = _read_output(out_file, "20日线")
+    assert header_m == "证券代码"
+    assert values_m == ["000001.SZ", "000004.SZ"]
+    assert fills_m == ["FFD8EAD8", None]
+
+    # 幂等：重复执行输出一致
+    result2 = _run_step(tmp_path, {"date_str": "2026-10-09"})
+    assert result2["new_codes"] == result["new_codes"]
+    wb2 = load_workbook(result2["file_path"])
+    assert wb2.sheetnames == ["当月每日新增", "20日线"]
+    _, values2, fills2 = _read_output(result2["file_path"], "20日线")
+    assert values2 == values_m and fills2 == fills_m
+
+
+def test_monthly_daily_new_ma20_from_db(tmp_path):
+    """20日线数据源 DB（stock_pools 选股池）优先：Excel 无站上20日线 sheet 时仍写入20日线 sheet"""
+    pools = [_pool_row("2026-10-09", [
+        ("000001.SZ", "2026-10-09"),
+        ("000002.SZ", "2026-10-01,2026-10-09"),   # 当月更早 → 排除
+    ])]
+    # 主文件只有百日新高 sheet（无站上20日线）
+    _make_intersection_file(str(tmp_path), "2026-10-09", [("000002.SZ", "2026-10-09")])
+    with patch("core.database.AsyncSessionLocal", _fake_session_factory([], pools)):
+        result = _run_step(tmp_path, {"date_str": "2026-10-09"})
+    assert result["success"] is True
+    from openpyxl import load_workbook
+    assert load_workbook(result["file_path"]).sheetnames == ["当月每日新增", "20日线"]
+    _, values, fills = _read_output(result["file_path"], "20日线")
+    assert values == ["000001.SZ"]
+    assert fills == ["FFD8EAD8"]
+
+
+def test_monthly_daily_new_ma20_missing_skipped(tmp_path):
+    """主文件无站上20日线 sheet 且 DB 无选股池 → 仅主 sheet，百日新高输出不受影响"""
+    base = str(tmp_path)
+    _make_intersection_file(base, "2026-10-09", [("000002.SZ", "2026-10-09")])
+    result = _run_step(tmp_path, {"date_str": "2026-10-09"})
+    assert result["success"] is True
+    assert result["new_codes"] == ["000002.SZ"]
+    assert "20日线数据缺失" in result["message"]
+
+    from openpyxl import load_workbook
+    assert load_workbook(result["file_path"]).sheetnames == ["当月每日新增"]
+    # 月度目录下只有这一个输出文件
+    out_dir = os.path.join(base, "当月每日新增", "2026年10月新增")
+    assert sorted(os.listdir(out_dir)) == ["17 10月新增1009.xlsx"]
 
 
 def test_resolver_month_dir(tmp_path):

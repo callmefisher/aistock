@@ -239,7 +239,8 @@ WORKFLOW_TYPE_CONFIG = {
         },
         "naming": {
             # 文档性配置：实际输出名由 monthly_daily_new 步骤生成
-            # 默认 "17 {月}月新增{MMDD}.xlsx"（如 17 10月新增1010.xlsx）
+            # 默认 "17 {month}月新增{mmdd}.xlsx"（如 17 10月新增1010.xlsx），
+            # 单文件双 sheet："当月每日新增"=百日新高新增（J列）、"20日线"=站上20日线新增（K列）
             "output_template": "17 {month}月新增{mmdd}.xlsx",
         },
         "match_sources": {},

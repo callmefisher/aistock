@@ -154,7 +154,7 @@
           />
           <el-alert
             v-if="form.workflow_type === '当月每日新增'"
-            title="当月每日新增：缓存本月1日至昨日的条件交集百日新高当月代码，与当日条件交集比较标记新增，输出17 xx月新增xxxx.xlsx（当日新增绿色背景），一键执行自动排在条件交集之后"
+            title="当月每日新增：读取数据日期当日的条件交集（百日新高J列 + 站上20日线K列），按同一套当月新增规则输出 17 xx月新增xxxx.xlsx（含「当月每日新增」与「20日线」两个sheet，当日新增绿色背景），一键执行自动排在条件交集之后"
             type="warning"
             :closable="false"
             style="margin-top: 8px"
