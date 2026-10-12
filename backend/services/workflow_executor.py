@@ -223,6 +223,10 @@ def clean_df_for_json(df: pd.DataFrame) -> List[Dict]:
 # 当月每日新增：J列日期串提取正则（YYYY-MM-DD）
 _MDN_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
+# 当月每日新增：站上20日线期间统计列固定起始日（列名前缀，固定不变，
+# 如"2026-03-18至2026-10-12站上20日线日期"），用于位置兜底时识别预期的日期列
+_MDN_MA20_PERIOD_START = "2026-03-18"
+
 
 def filter_monthly_daily_new_codes(rows: List[Tuple[str, str]], date_str: str) -> Tuple[List[str], List[str], bool]:
     """当月每日新增核心过滤（纯函数，无任何缓存/IO依赖）。
@@ -2970,11 +2974,12 @@ class WorkflowExecutor:
         return None
 
     async def _load_intersection_rows_ma20(self, intersection_dir: str, date_str: str) -> Optional[List[Tuple[str, str]]]:
-        """读取数据日期当日的条件交集站上20日线行 [(证券代码, K列日期串), ...]：DB 优先，Excel 兜底。
+        """读取数据日期当日的条件交集站上20日线行 [(证券代码, 日期串), ...]：DB 优先，Excel 兜底。
 
         - DB：stock_pools 中"条件交集站上20日线_{date_str}"选股池
           （并行交集执行成功才入库；同日多条取最新 id）
-        - Excel：条件交集/{date_str}/ 主文件，sheet"条件交集站上20日线"（K列"…站上20日线日期"）
+        - Excel：条件交集/{date_str}/ 主文件，sheet"条件交集站上20日线"
+          （日期列兼容"39日新高"列删除前后布局：J列优先，K列回退，见 _read_intersection_excel_rows_ma20）
         - 返回 None = DB 与 Excel 均无数据；返回 [] = 当日站上20日线为空表
         """
         import json as json_mod
@@ -3020,7 +3025,10 @@ class WorkflowExecutor:
         return self._read_intersection_excel_rows_ma20(intersection_dir, date_str)
 
     def _read_intersection_excel_rows_ma20(self, intersection_dir: str, date_str: str) -> Optional[List[Tuple[str, str]]]:
-        """Excel 兜底：读当日条件交集主文件"条件交集站上20日线"sheet的 (证券代码, K列日期串)。
+        """Excel 兜底：读当日条件交集主文件"条件交集站上20日线"sheet的 (证券代码, 日期列日期串)。
+        日期列兼容"39日新高"列删除前后两种布局（删除后日期列由K列前移至J列）：
+        优先按列名关键字"…站上20日线日期"匹配；列名异常时按位置兜底——J列(第10列)表头
+        含固定期间起始日"2026-03-18"且非次数列才认定（新格式），否则回退K列(第11列)（旧格式）。
         无文件/无目标sheet返回 None。"""
         day_dir = os.path.join(intersection_dir, date_str)
         if not os.path.isdir(day_dir):
@@ -3048,14 +3056,22 @@ class WorkflowExecutor:
             return None
         if "证券代码" not in df.columns:
             return None
-        # K列：优先按列名关键字"…站上20日线日期"，兜底第11列
-        k_col = next((c for c in df.columns if "站上20日线日期" in str(c)), None)
-        if k_col is None and len(df.columns) >= 11:
-            k_col = df.columns[10]
-        if k_col is None:
+        # 日期列：优先按列名关键字"…站上20日线日期"（两种布局列名不变，天然兼容）；
+        # 列名异常时按位置兜底：候选列表头须含固定期间起始日"2026-03-18"且非次数列
+        # 才认定为预期的日期列（新格式删除"39日新高"列后日期列由K列前移至J列），
+        # J列(第10列)优先、K列(第11列)回退
+        date_col = next((c for c in df.columns if "站上20日线日期" in str(c)), None)
+        if date_col is None:
+            for idx in (9, 10):  # J列、K列
+                if len(df.columns) > idx:
+                    name = str(df.columns[idx])
+                    if _MDN_MA20_PERIOD_START in name and "次数" not in name:
+                        date_col = df.columns[idx]
+                        break
+        if date_col is None:
             return None
         rows: List[Tuple[str, str]] = []
-        for code_val, dates_val in zip(df["证券代码"], df[k_col]):
+        for code_val, dates_val in zip(df["证券代码"], df[date_col]):
             code = str(code_val).strip() if code_val is not None else ""
             if not code or code.lower() == "nan":
                 continue
@@ -3101,7 +3117,8 @@ class WorkflowExecutor:
         """当月每日新增步骤（无缓存，只用数据日期当日的条件交集数据）：
         1. 读取当日条件交集 (证券代码, 日期串)：DB 优先，Excel 兜底
            - 百日新高：sheet"条件交集百日新高" J列"…期间百日新高的日期"
-           - 站上20日线：sheet"条件交集站上20日线" K列"…站上20日线日期"
+           - 站上20日线：sheet"条件交集站上20日线"日期列（兼容"39日新高"列删除前后
+             布局：列名匹配优先，J列优先、K列回退）
         2. 过滤（见 filter_monthly_daily_new_codes，两路逻辑完全一致）：
            - 非首交易日：日期列含数据日期 且 不含本月1日~前一日任何日期
            - 首交易日（全表日期列当月只出现数据日期）：含数据日期 且 不含上月任何日期
