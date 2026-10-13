@@ -235,3 +235,28 @@ describe('resolveTarget - 严格单数字前缀（多位数字不匹配）', () 
     expect(r.sub_dir).toBe('一级板块')
   })
 })
+
+describe('resolveTarget - 专用规则优先级（叠加质押 vs 全部A股）', () => {
+  it('6、全部A股减持中叠加质押和大宗交易1013.xlsx 含"叠加质押" → 减持叠加质押和大宗交易（不当作全部A股）', () => {
+    const r = resolveTarget('6、全部A股减持中叠加质押和大宗交易1013.xlsx', '2026-10-13')
+    expect(r.status).toBe('resolved')
+    expect(r.workflow_type).toBe('减持叠加质押和大宗交易')
+    expect(r.step_type).toBe('merge_excel')
+    expect(r.sub_dir).toBeNull()
+    expect(r.target_dir).toBe('data/excel/减持叠加质押和大宗交易/2026-10-13/')
+  })
+
+  it('6、全部A股 板块信息2026 0901.xlsx 不含"叠加质押" → 仍为全部A股', () => {
+    const r = resolveTarget('6、全部A股 板块信息2026 0901.xlsx')
+    expect(r.status).toBe('resolved')
+    expect(r.step_type).toBe('upload_all_a')
+    expect(r.target_dir).toBe('data/excel/全部A股/')
+  })
+
+  it('无前缀但含"叠加质押" → 减持叠加质押和大宗交易', () => {
+    const r = resolveTarget('减持中叠加质押和大宗交易1013.xlsx', '2026-10-13')
+    expect(r.status).toBe('resolved')
+    expect(r.workflow_type).toBe('减持叠加质押和大宗交易')
+    expect(r.target_dir).toBe('data/excel/减持叠加质押和大宗交易/2026-10-13/')
+  })
+})

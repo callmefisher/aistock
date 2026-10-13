@@ -105,6 +105,22 @@ export function resolveTarget(filename, date_str = '{date}') {
     }
   }
 
+  // 专用规则 0: 减持叠加质押和大宗交易（含"叠加质押"，优先级高于"全部A股"关键字）
+  // e.g. `6、全部A股减持中叠加质押和大宗交易1013.xlsx` 含"全部A股"字样但实为
+  // "减持叠加质押和大宗交易"数据文件 → data/excel/减持叠加质押和大宗交易/{date}/
+  if (base.includes('叠加质押')) {
+    const wt = '减持叠加质押和大宗交易'
+    return {
+      filename,
+      workflow_type: wt,
+      step_type: 'merge_excel',
+      sub_dir: null,
+      target_dir: buildTargetDir(wt, null, date_str),
+      status: 'resolved',
+      reason: '含"叠加质押" → 减持叠加质押和大宗交易（按数据日期）',
+    }
+  }
+
   // 专用规则 1: 全部A股（含"全部A股"关键字；即使含"板块"等关键字也优先当作全部A股）
   // e.g. `6、全部A股 板块信息2026 0901.xlsx` → data/excel/全部A股/（而非一级板块）
   if (base.includes('全部A股')) {
