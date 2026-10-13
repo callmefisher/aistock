@@ -303,8 +303,8 @@ async def test_summary_reuse_file_and_grow(tmp_path):
     assert ws1.cell(1, 3).value == "10月12日"
     stats = {ws1.cell(r, 1).value: (ws1.cell(r, 2).value, ws1.cell(r, 3).value)
              for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
-    assert stats["医药生物"] == (1, 1)
-    assert stats["机械设备"] == (1, 0)
+    assert stats["医药生物"] == (1, 2)   # 1008累计1 + 1012新增1 = 2
+    assert stats["机械设备"] == (1, 1)   # 1008累计1 + 1012新增0 = 1
 
     # 强制覆盖：1012 sheet 内容为最新（1行）
     ws1012 = wb["1012"]
@@ -375,7 +375,7 @@ async def test_summary_empty_sheet_aggregation(tmp_path):
     assert ws1.cell(1, 2).value == "10月8日" and ws1.cell(1, 3).value == "10月12日"
     stats = {ws1.cell(r, 1).value: (ws1.cell(r, 2).value, ws1.cell(r, 3).value)
              for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
-    assert stats["机械设备"] == (0, 1)
+    assert stats["机械设备"] == (None, 1)   # 1008新增0 → 累计0 → 留空；1012累计1
 
 
 # ---------------------------------------------------------------- 复制最新文件 & Sheet1 增量
@@ -427,13 +427,14 @@ async def test_summary_copy_latest_by_filename_date(tmp_path):
     assert [ws1.cell(1, c).value for c in range(1, 6)] == ["一级板块", "3月5日", "3月6日", "3月7日", "3月8日"]
     stats = {ws1.cell(r, 1).value: tuple(ws1.cell(r, c).value for c in range(2, 6))
              for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
-    assert stats["机械设备"] == (1, 1, 1, 1)
+    assert stats["机械设备"] == (1, 2, 3, 4)   # 每日新增1的累计：1, 1+1, 2+1, 3+1
 
 
 @pytest.mark.asyncio
 async def test_summary_sheet1_incremental(tmp_path):
-    """Sheet1 增量更新：已有日期列数值/行序保持原样（即使历史sheet被改动也不重算覆盖）；
-    当日新板块追加表尾（历史列填0）；新日期列追加；重复执行当日列刷新"""
+    """Sheet1 增量更新（数值=从首列起的累计和）：已有日期列数值/行序保持原样（即使历史sheet被改动
+    也不重算覆盖）；当日新板块追加表尾（历史列累计0留空）；新日期列追加（= 前列累计+当日新增）；
+    重复执行当日列刷新；累计0的单元格留空"""
     base = str(tmp_path)
     _write_all_a_file(base, [
         ("000001.SZ", "医药生物", "化学制药"),
@@ -476,9 +477,9 @@ async def test_summary_sheet1_incremental(tmp_path):
     assert names == ["医药生物", "机械设备", "银行"], names
     stats = {ws1.cell(r, 1).value: tuple(ws1.cell(r, c).value for c in range(2, 5))
              for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
-    assert stats["医药生物"] == (99, 2, 0)   # 10月8日篡改值保留，10月13日=当日0
-    assert stats["机械设备"] == (1, 0, 1)     # 沿用 + 当日1
-    assert stats["银行"] == (0, 0, 1)         # 新板块：历史列0 + 当日1
+    assert stats["医药生物"] == (99, 3, 3)    # 10月8日篡改值保留；10月13日 = 前列累计3 + 当日新增0 = 3
+    assert stats["机械设备"] == (1, 1, 2)     # 10月13日 = 前列累计1 + 当日新增1 = 2
+    assert stats["银行"] == (None, None, 1)   # 新板块：历史列累计0留空 + 当日1
 
     # 图表重建：表1三条系列（医药生物/机械设备/银行）
     assert len(ws1._charts) == 2
@@ -492,9 +493,9 @@ async def test_summary_sheet1_incremental(tmp_path):
     ws1 = wb["Sheet1"]
     stats = {ws1.cell(r, 1).value: tuple(ws1.cell(r, c).value for c in range(2, 5))
              for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
-    assert stats["医药生物"] == (99, 2, 1)   # 当日列刷新为1
-    assert stats["机械设备"] == (1, 0, 0)     # 当日列刷新为0
-    assert stats["银行"] == (0, 0, 0)         # 当日列刷新为0
+    assert stats["医药生物"] == (99, 3, 4)   # 当日列刷新 = 前列累计3 + 当日新增1 = 4
+    assert stats["机械设备"] == (1, 1, 1)     # 当日列刷新 = 前列累计1 + 当日新增0 = 1
+    assert stats["银行"] == (None, None, None)  # 当日列刷新 = 累计0 + 新增0 = 0 → 留空
     assert [ws1.cell(r, 1).value for r in range(2, 5)] == ["医药生物", "机械设备", "银行"]  # 行序不变
     # 目录仅三个日期文件（1013复用同名，未新增）
     files = sorted(os.listdir(os.path.join(base, "2026-10")))

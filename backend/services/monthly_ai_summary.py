@@ -7,8 +7,9 @@
 3. 输出到 data/excel/{YYYY-MM}/16 {M}月AI筛选汇总{MMDD}.xlsx：
    - 目录为空→新建；有同名→直接填充；非空无同名→复制最新日期文件为新名（按文件名日期选最新）；
    - Sheet1：一级板块/二级板块 × 日期 两张统计表 + 两张彩色折线图（表头宋体14桔黄底，数据宋体11，黑边框），
-     增量更新——已有日期列内容/板块行序保持原样不动，当日新板块追加表尾（历史列填0），
-     当日日期列已存在则仅刷新该列，否则新增一列；图表按新表尺寸重建；
+     数值 = 从首列起的「当日新增」累计和（10月8日新增3、10月9日新增0、10月10日新增1 → 各列 3、3、4），
+     累计为0时单元格留空；增量更新——已有日期列内容/板块行序保持原样不动，当日新板块追加表尾，
+     当日日期列已存在则仅刷新该列（= 前列累计 + 当日新增），否则新增一列；图表按新表尺寸重建；
    - 日期sheet（MMDD命名，如 1012）：证券代码 + 一级板块 + 二级板块，按数据日期强制覆盖，
      最新日期sheet排在Sheet1之后（降序：Sheet1, 1012, 1009, ...）。
 
@@ -453,9 +454,19 @@ def _collect_date_sheet_stats(wb) -> Tuple[List[str], List[Tuple[str, list]], Li
         for k, v in l2.items():
             l2_per.setdefault(k, {})[ws.title] = v
 
-    l1_rows = [(s, [int(per.get(m, 0)) for m in dates]) for s, per in l1_per.items()]
-    l2_rows = [(s, [int(per.get(m, 0)) for m in dates]) for s, per in l2_per.items()]
-    return dates, l1_rows, l2_rows
+    # 每行数值 = 从首个日期列起的「当日新增」累计和（例：10月8日新增3 → 3；10月9日新增0 → 3；10月10日新增1 → 4）
+    def _cumulative(rows_per):
+        out = []
+        for s, per in rows_per.items():
+            total = 0
+            cum = []
+            for m in dates:
+                total += int(per.get(m, 0))
+                cum.append(total)
+            out.append((s, cum))
+        return out
+
+    return dates, _cumulative(l1_per), _cumulative(l2_per)
 
 
 def _write_stat_table(ws, start_row: int, header_label: str, date_labels: List[str],
@@ -475,7 +486,8 @@ def _write_stat_table(ws, start_row: int, header_label: str, date_labels: List[s
         r = start_row + 1 + i
         ws.cell(row=r, column=1, value=sector)
         for j, v in enumerate(vals):
-            ws.cell(row=r, column=2 + j, value=v)
+            # 累计值为0 → 不填充内容，显示为空
+            ws.cell(row=r, column=2 + j, value=(v if v else None))
     # 样式 + 边框（对象复用，见模块常量）
     end_row = start_row + len(table_rows)
     for r in range(start_row, end_row + 1):
@@ -540,10 +552,12 @@ def _parse_stat_table(ws, header_row: int) -> Tuple[List[str], List[Tuple[str, l
 
 def _merge_today_into_table(old_dates: List[str], old_rows: List[Tuple[str, list]],
                             today_label: str, today_counts: Dict[str, int]) -> Tuple[List[str], List[Tuple[str, list]]]:
-    """增量合并（确认后的规则）：
-    - 已有日期列数值沿用原值不动（不重算，已有列内容保持不变）；
+    """增量合并（确认后的规则，数值域 = 从首列起的「当日新增」累计值）：
+    - 已有日期列数值沿用原值不动（累计值原样保留，手工修正值不覆盖）；
     - 当日列已存在（重复执行）→ 仅刷新该列；不存在 → 追加到最右；
-    - 已有板块保持原顺序，当日新增板块追加到表尾（历史日期列填0）。"""
+    - 当日列 = 前一列累计值 + 当日新增（首列即当日新增本身）；
+      例：10月8日新增3、10月9日新增0、10月10日新增1 → 各列展示 3、3、4；
+    - 已有板块保持原顺序，当日新增板块追加到表尾（历史列累计0，写入时显示为空）。"""
     if today_label in old_dates:
         col_idx = old_dates.index(today_label)
         new_dates = list(old_dates)
@@ -554,12 +568,14 @@ def _merge_today_into_table(old_dates: List[str], old_rows: List[Tuple[str, list
     existing = {name for name, _ in old_rows}
     merged: List[Tuple[str, list]] = []
     for name, vals in old_rows:
-        v = list(vals)[:len(new_dates)] + [0] * (len(new_dates) - len(vals))  # 补齐列数
-        v[col_idx] = int(today_counts.get(name, 0))  # 当日列按本次覆盖的日期sheet刷新
+        v = list(vals)[:len(new_dates)] + [None] * (len(new_dates) - len(vals))  # 补齐列数（空=累计0）
+        # 前一列累计（沿用旧值，含手工修正；空单元格按0）
+        prev_total = int(v[col_idx - 1] or 0) if col_idx > 0 else 0
+        v[col_idx] = prev_total + int(today_counts.get(name, 0))  # 当日列 = 累计 + 当日新增
         merged.append((name, v))
     for name, cnt in today_counts.items():  # dict保序=当日新增板块出现顺序
         if name not in existing:
-            v = [0] * len(new_dates)
+            v = [None] * len(new_dates)  # 该板块此前未出现：历史列累计0（写入显示为空）
             v[col_idx] = int(cnt)
             merged.append((name, v))
     return new_dates, merged
@@ -579,12 +595,12 @@ def _layout_summary_sheet(ws, l1_dates: List[str], l1_rows: List[Tuple[str, list
     # 表1 + 图1：从第1行开始
     t1_end, t1_cols = _write_stat_table(ws, 1, "一级板块", l1_dates, l1_rows)
     chart_anchor_col = get_column_letter(t1_cols + 2)  # 表右侧空一列
-    _add_trend_chart(ws, f"{chart_anchor_col}1", "一级板块每日数量趋势", 1, len(l1_dates), len(l1_rows))
+    _add_trend_chart(ws, f"{chart_anchor_col}1", "一级板块累计数量趋势", 1, len(l1_dates), len(l1_rows))
 
     # 表2 + 图2：表1结束行下方，与图1高度(约18行)错开避免重叠
     t2_start = max(t1_end + 2, 20)
     _write_stat_table(ws, t2_start, "二级板块", l2_dates, l2_rows)
-    _add_trend_chart(ws, f"{chart_anchor_col}{t2_start}", "二级板块每日数量趋势", t2_start, len(l2_dates), len(l2_rows))
+    _add_trend_chart(ws, f"{chart_anchor_col}{t2_start}", "二级板块累计数量趋势", t2_start, len(l2_dates), len(l2_rows))
 
 
 def _rebuild_summary_sheet(wb):
@@ -598,11 +614,11 @@ def _rebuild_summary_sheet(wb):
 
 
 def _update_summary_sheet(wb, mmdd: str):
-    """Sheet1 增量更新（确认后的规则）：
+    """Sheet1 增量更新（确认后的规则，数值 = 从首列起的「当日新增」累计和）：
     - 已有日期列内容沿用原值不动（历史sheet异常/缺失也不会改变已填充的列）；
-    - 已有板块行顺序保持原样，当日新增的一级/二级板块追加到对应表尾（历史日期列填0）；
-    - 当日日期列已存在（重复执行）则仅刷新该列，否则新增一列；
-    - 两张折线图按新表尺寸重建（数据引用覆盖全部行/列）；
+    - 已有板块行顺序保持原样，当日新增的一级/二级板块追加到对应表尾（历史列累计0，显示为空）；
+    - 当日日期列已存在（重复执行）则仅刷新该列（= 前列累计 + 当日新增），否则新增一列；
+    - 累计为0的单元格写入留空；两张折线图按新表尺寸重建（数据引用覆盖全部行/列）；
     - 无 Sheet1（全新文件）或结构异常 → 全量聚合构建兜底。
     """
     if mmdd not in wb.sheetnames:
