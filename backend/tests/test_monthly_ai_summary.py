@@ -248,8 +248,10 @@ async def test_summary_new_file_and_sheets(tmp_path):
     assert data_cell.font.name == "宋体" and data_cell.font.size == 11
     assert data_cell.border.left.color.rgb == "FF000000" and data_cell.border.left.style == "thin"
 
-    # 两张折线图（每张每板块一条系列，系列名=板块名）
+    # 两张折线图（每张每板块一条系列，系列名=板块名）；空单元格(累计0留空)按0绘制保证曲线连续
     assert len(ws1._charts) == 2
+    assert ws1._charts[0].display_blanks == "zero"
+    assert ws1._charts[1].display_blanks == "zero"
     chart1 = ws1._charts[0]
     titles = [s.tx.strRef.f if s.tx and s.tx.strRef else "" for s in chart1.series]
     assert len(chart1.series) == 2  # 一级板块：医药生物 + 机械设备

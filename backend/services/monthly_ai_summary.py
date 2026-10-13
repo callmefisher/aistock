@@ -513,6 +513,8 @@ def _add_trend_chart(ws, anchor: str, title: str, header_row: int, n_dates: int,
     chart.y_axis.title = "数量"
     chart.x_axis.delete = False
     chart.y_axis.delete = False
+    # 空单元格(累计0留空)按0绘制，保证曲线连续（例：10月8日空、10月9日5 → 0→5 的线段，而非孤点）
+    chart.display_blanks = "zero"
 
     cats = Reference(ws, min_col=2, max_col=1 + n_dates, min_row=header_row, max_row=header_row)
     for i in range(n_rows):
