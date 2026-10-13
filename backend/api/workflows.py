@@ -692,15 +692,19 @@ def get_target_directory(step_type: str, date_str: Optional[str] = None, workflo
 
     resolver = get_resolver(BASE_DIR, workflow_type)
 
-    # 快捷批量上传的3类新文件目标目录：
+    # 快捷批量上传的4类新文件目标目录：
     # - upload_all_a: 全部A股（全局共享一份，与数据日期无关）→ data/excel/全部A股/
     # - match_39day_high: 39日新高（按数据日期）→ data/excel/{date}/39日新高/
     # - upload_ai_summary: 16 AI筛选汇总（按月）→ data/excel/YYYY-MM/
+    # - upload_ai_ma20_summary: 19 AI筛选20日线汇总（按月）→ data/excel/本月AI筛选20日线汇总/YYYY-MM/
     if step_type == "upload_all_a":
         return os.path.join(BASE_DIR, "全部A股")
     if step_type == "upload_ai_summary":
         month = (date_str or beijing_today_str())[:7]
         return os.path.join(BASE_DIR, month)
+    if step_type == "upload_ai_ma20_summary":
+        month = (date_str or beijing_today_str())[:7]
+        return os.path.join(BASE_DIR, "本月AI筛选20日线汇总", month)
     if step_type == "match_39day_high":
         return os.path.join(BASE_DIR, date_str or beijing_today_str(), "39日新高")
 
@@ -909,7 +913,9 @@ async def batch_run_workflows(
             return 1
         if t == "本月AI筛选汇总":
             return 2  # 依赖"当月每日新增"当日DB入库数据，须排在其后
-        return 3
+        if t == "本月AI筛选20日线汇总":
+            return 3  # 依赖"当月每日新增"当日20日线DB入库数据，须排在其后
+        return 4
 
     aggregation_ids.sort(key=_agg_order)  # 稳定排序：其余聚合类型保持原相对顺序
     sorted_ids = normal_ids + aggregation_ids

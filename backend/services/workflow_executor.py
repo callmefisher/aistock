@@ -27,6 +27,8 @@ from services.monthly_ai_summary import (  # noqa: F401
     execute_monthly_ai_summary,
     load_39day_high_codes,
 )
+# 本月AI筛选20日线汇总工作流实现（独立文件，复用 monthly_ai_summary 共享逻辑）
+from services.monthly_ai_ma20_summary import execute_monthly_ai_ma20_summary
 
 logger = logging.getLogger(__name__)
 
@@ -809,6 +811,9 @@ class WorkflowExecutor:
             elif step_type == "monthly_ai_summary":
                 # 本月AI筛选汇总（实现位于 services/monthly_ai_summary.py 独立文件）
                 return await execute_monthly_ai_summary(self, step_config, date_str)
+            elif step_type == "monthly_ai_ma20_summary":
+                # 本月AI筛选20日线汇总（实现位于 services/monthly_ai_ma20_summary.py 独立文件）
+                return await execute_monthly_ai_ma20_summary(self, step_config, date_str)
             elif step_type == "pledge_trend_analysis":
                 return await self._pledge_trend_analysis(step_config, input_data, date_str)
             elif step_type == "pending":

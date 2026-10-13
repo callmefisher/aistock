@@ -17,6 +17,9 @@
 - 39日新高：date_str → 证券代码集合（仅"股票代码/证券代码"列），仅保留最近2天，供条件交集"39日新高"标记列使用；
 - 全部A股板块映射：全局仅1份，不会膨胀。
 
+另：「本月AI筛选20日线汇总」(monthly_ai_ma20_summary.py) 复用本模块的
+load_all_a_sector_map / _update_summary_sheet / _reorder_sheets / _resolve_output_path（参数化前缀与关键字）。
+
 效率要点：全部A股/39日新高读取带缓存；匹配用向量化 isin；工作簿单次加载单次保存；
 聚合直接遍历内存中sheet的 values_only 行；样式对象复用（openpyxl样式为不可变共享对象）。
 """
@@ -271,7 +274,7 @@ _BORDER_ALL = Border(left=_THIN_BLACK, right=_THIN_BLACK, top=_THIN_BLACK, botto
 _CENTER = Alignment(horizontal="center", vertical="center")
 
 _DATE_SHEET_RE = re.compile(r"^\d{4}$")  # 日期sheet命名：MMDD，如 1009
-_FILENAME_DATE_RE = re.compile(r"AI筛选汇总(\d{4})")  # 输出文件名中的日期：16 10月AI筛选汇总1009.xlsx → 1009
+# 输出文件名中的日期在 _resolve_output_path 内按 keyword 动态解析（16...AI筛选汇总1009 → 1009）
 
 
 async def execute_monthly_ai_summary(executor, config: Dict[str, Any], date_str: Optional[str] = None) -> Dict[str, Any]:
@@ -383,25 +386,29 @@ async def execute_monthly_ai_summary(executor, config: Dict[str, Any], date_str:
     }
 
 
-def _resolve_output_path(out_dir: str, default_name: str) -> Tuple[str, str]:
+def _resolve_output_path(out_dir: str, default_name: str, prefix: str = "16",
+                         keyword: str = "AI筛选汇总", log_tag: str = "本月AI筛选汇总") -> Tuple[str, str]:
     """目标文件解析（确认后的规则）：
     - 目录为空 → 全新创建 default_name；
     - 目录已有同名文件 → 直接在该文件上填充（不新建）；
     - 目录非空但无同名 → 复制「最新日期」的已有文件为 default_name，在副本上填充
       （例：目录下有 0305/0306/0307，则复制 0307 为新数据日期文件名）。
-      最新日期按文件名中「AI筛选汇总」后的4位数字判断，解析失败按 mtime 兜底。
+      最新日期按文件名中 keyword（如「AI筛选汇总」）后的4位数字判断，解析失败按 mtime 兜底。
+    prefix/keyword 供「本月AI筛选20日线汇总」复用（19 / AI筛选20日线汇总）。
     返回 (目标路径, 模式)，模式 ∈ {"new", "reuse", "copy"}。"""
     candidates = [
         f for f in os.listdir(out_dir)
-        if f.endswith(".xlsx") and f.startswith("16") and "AI筛选汇总" in f and not f.startswith("~")
+        if f.endswith(".xlsx") and f.startswith(prefix) and keyword in f and not f.startswith("~")
     ] if os.path.isdir(out_dir) else []
     if not candidates:
         return os.path.join(out_dir, default_name), "new"
     if default_name in candidates:
         return os.path.join(out_dir, default_name), "reuse"
 
+    date_re = re.compile(keyword + r"(\d{4})")
+
     def _name_date(f: str) -> str:
-        m = _FILENAME_DATE_RE.search(f)
+        m = date_re.search(f)
         return m.group(1) if m else ""
 
     named = [(f, _name_date(f)) for f in candidates]
@@ -413,7 +420,7 @@ def _resolve_output_path(out_dir: str, default_name: str) -> Tuple[str, str]:
     src = os.path.join(out_dir, latest)
     dst = os.path.join(out_dir, default_name)
     shutil.copyfile(src, dst)
-    logger.info(f"[本月AI筛选汇总] 目录无同名文件，已复制最新文件 {latest} → {default_name}")
+    logger.info(f"[{log_tag}] 目录无同名文件，已复制最新文件 {latest} → {default_name}")
     return dst, "copy"
 
 

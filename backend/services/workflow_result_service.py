@@ -10,6 +10,69 @@ from core.database import AsyncSessionLocal
 logger = logging.getLogger(__name__)
 
 
+def _normalize_col(c):
+    """列名规范化：datetime 表头（如涨幅排名的日期表头）转为 "X月X日" 格式"""
+    from datetime import datetime as dt_datetime
+    if isinstance(c, (pd.Timestamp, dt_datetime)):
+        return f"{c.month}月{c.day}日"
+    if hasattr(c, 'month') and hasattr(c, 'day'):
+        return f"{c.month}月{c.day}日"
+    return str(c) if not isinstance(c, str) else c
+
+
+async def _upsert_result_records(
+    workflow_id: int,
+    workflow_type: str,
+    workflow_name: str,
+    date_str: str,
+    step_type: str,
+    file_path: str,
+    records: list,
+    columns: list,
+) -> bool:
+    """压缩 records 并 UPSERT 写入 workflow_results（唯一键 workflow_id+date_str+step_type）。"""
+    full_json = json.dumps(records, ensure_ascii=False, default=str)
+    compressed = zlib.compress(full_json.encode('utf-8'), level=6)
+
+    preview = records[:50]
+    file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+    source_filename = os.path.basename(file_path)
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(text("""
+            INSERT INTO workflow_results
+            (workflow_id, workflow_type, workflow_name, date_str, step_type,
+             row_count, columns_json, data_compressed, preview_json, file_size, source_filename, created_at)
+            VALUES
+            (:workflow_id, :workflow_type, :workflow_name, :date_str, :step_type,
+             :row_count, :columns_json, :data_compressed, :preview_json, :file_size, :source_filename, NOW())
+            AS new_row
+            ON DUPLICATE KEY UPDATE
+            workflow_name = new_row.workflow_name,
+            row_count = new_row.row_count,
+            columns_json = new_row.columns_json,
+            data_compressed = new_row.data_compressed,
+            preview_json = new_row.preview_json,
+            file_size = new_row.file_size,
+            source_filename = new_row.source_filename,
+            created_at = new_row.created_at
+        """), {
+            'workflow_id': workflow_id,
+            'workflow_type': workflow_type or '',
+            'workflow_name': workflow_name,
+            'date_str': date_str,
+            'step_type': step_type,
+            'row_count': len(records),
+            'columns_json': json.dumps(list(columns), ensure_ascii=False),
+            'data_compressed': compressed,
+            'preview_json': json.dumps(preview, ensure_ascii=False, default=str),
+            'file_size': file_size,
+            'source_filename': source_filename,
+        })
+        await session.commit()
+    return True
+
+
 async def save_workflow_result(
     workflow_id: int,
     workflow_type: str,
@@ -18,7 +81,13 @@ async def save_workflow_result(
     file_path: str,
     step_type: str = "final"
 ) -> bool:
-    """读取最终 Excel，压缩为 JSON 写入 DB。"""
+    """读取最终 Excel，压缩为 JSON 写入 DB。
+
+    「当月每日新增」双 sheet 入库：首 sheet 照旧存 step_type='final'
+    （供「本月AI筛选汇总」读取）；第 2 个 sheet「20日线」（站上20日线当日新增）
+    另存 step_type='final_ma20'（供「本月AI筛选20日线汇总」DB优先读取）。
+    文件无该 sheet（当日20日线数据缺失）时跳过 final_ma20，不报错。
+    """
     try:
         # 质押类型：final 文件是双 sheet（中大盘{date} / 小盘{date}），需合并读入，
         # 并根据 sheet 名注入"来源"列（供条件交集区分"质押中大盘"/"质押小盘"）
@@ -48,59 +117,35 @@ async def save_workflow_result(
                 df = pd.read_excel(file_path)
         else:
             df = pd.read_excel(file_path)
-        # 列名可能含 datetime 对象（如涨幅排名的日期表头），转为 "X月X日" 格式
-        from datetime import datetime as dt_datetime
-        def _normalize_col(c):
-            if isinstance(c, (pd.Timestamp, dt_datetime)):
-                return f"{c.month}月{c.day}日"
-            if hasattr(c, 'month') and hasattr(c, 'day'):
-                return f"{c.month}月{c.day}日"
-            return str(c) if not isinstance(c, str) else c
+        # 列名可能含 datetime 对象（如涨幅排名的日期表头），统一规范化
         df.columns = [_normalize_col(c) for c in df.columns]
         df = df.fillna('')
         records = df.to_dict('records')
 
-        full_json = json.dumps(records, ensure_ascii=False, default=str)
-        compressed = zlib.compress(full_json.encode('utf-8'), level=6)
+        await _upsert_result_records(
+            workflow_id, workflow_type, workflow_name,
+            date_str, step_type, file_path, records, df.columns.tolist(),
+        )
+        logger.info(f"工作流结果已保存到DB: workflow_id={workflow_id}, rows={len(df)}, step={step_type}")
 
-        preview = records[:50]
-        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-        source_filename = os.path.basename(file_path)
+        # 「当月每日新增」：第2个sheet「20日线」同样入库（step_type=final_ma20）
+        if workflow_type == "当月每日新增" and step_type == "final":
+            try:
+                df_ma20 = pd.read_excel(file_path, sheet_name="20日线")
+                df_ma20.columns = [_normalize_col(c) for c in df_ma20.columns]
+                df_ma20 = df_ma20.fillna('')
+                records_ma20 = df_ma20.to_dict('records')
+                await _upsert_result_records(
+                    workflow_id, workflow_type, workflow_name,
+                    date_str, "final_ma20", file_path, records_ma20, df_ma20.columns.tolist(),
+                )
+                logger.info(f"当月每日新增20日线sheet已保存到DB: workflow_id={workflow_id}, rows={len(df_ma20)}")
+            except ValueError:
+                # 文件无「20日线」sheet（当日20日线数据缺失，步骤内跳过该sheet）
+                logger.info(f"当月每日新增：文件无「20日线」sheet，跳过 final_ma20 入库: {file_path}")
+            except Exception as e:
+                logger.warning(f"当月每日新增：「20日线」sheet入库失败: {e}")
 
-        async with AsyncSessionLocal() as session:
-            await session.execute(text("""
-                INSERT INTO workflow_results
-                (workflow_id, workflow_type, workflow_name, date_str, step_type,
-                 row_count, columns_json, data_compressed, preview_json, file_size, source_filename, created_at)
-                VALUES
-                (:workflow_id, :workflow_type, :workflow_name, :date_str, :step_type,
-                 :row_count, :columns_json, :data_compressed, :preview_json, :file_size, :source_filename, NOW())
-                AS new_row
-                ON DUPLICATE KEY UPDATE
-                workflow_name = new_row.workflow_name,
-                row_count = new_row.row_count,
-                columns_json = new_row.columns_json,
-                data_compressed = new_row.data_compressed,
-                preview_json = new_row.preview_json,
-                file_size = new_row.file_size,
-                source_filename = new_row.source_filename,
-                created_at = new_row.created_at
-            """), {
-                'workflow_id': workflow_id,
-                'workflow_type': workflow_type or '',
-                'workflow_name': workflow_name,
-                'date_str': date_str,
-                'step_type': step_type,
-                'row_count': len(df),
-                'columns_json': json.dumps(df.columns.tolist(), ensure_ascii=False),
-                'data_compressed': compressed,
-                'preview_json': json.dumps(preview, ensure_ascii=False, default=str),
-                'file_size': file_size,
-                'source_filename': source_filename,
-            })
-            await session.commit()
-
-        logger.info(f"工作流结果已保存到DB: workflow_id={workflow_id}, rows={len(df)}, compressed={len(compressed)}bytes")
         return True
     except Exception as e:
         logger.error(f"保存工作流结果失败: {e}")

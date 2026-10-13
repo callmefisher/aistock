@@ -230,8 +230,10 @@ WORKFLOW_TYPE_CONFIG = {
         "display_name": "当月每日新增",
         "base_subdir": "当月每日新增",
         "is_aggregation": True,
-        # 注意：不再 is_export_only —— 首个sheet「当月每日新增」需写入 workflow_results，
-        # 供「本月AI筛选汇总」工作流按数据日期读取（save_workflow_result 只读首sheet）
+        # 注意：不再 is_export_only —— 双 sheet 均写入 workflow_results：
+        # 首 sheet「当月每日新增」存 step_type='final'（save_workflow_result 主流程，
+        # 供「本月AI筛选汇总」读取）；第 2 个 sheet「20日线」存 step_type='final_ma20'
+        # （save_workflow_result 追加写入，供「本月AI筛选20日线汇总」DB优先读取）
         "directories": {
             # 数据目录按月组织（非日期目录，由 monthly_daily_new 步骤内直接生成）：
             # 当月每日新增/2026年10月新增/17 10月新增1010.xlsx
@@ -265,6 +267,26 @@ WORKFLOW_TYPE_CONFIG = {
         },
         "match_sources": {},
         "allowed_steps": ["monthly_ai_summary"],
+    },
+
+    "本月AI筛选20日线汇总": {
+        "display_name": "本月AI筛选20日线汇总",
+        "base_subdir": "本月AI筛选20日线汇总",
+        "is_aggregation": True,
+        "is_export_only": True,
+        "directories": {
+            # 输出按月落到专属目录 data/excel/本月AI筛选20日线汇总/{YYYY-MM}/
+            # （由 monthly_ai_ma20_summary 步骤内直接生成），
+            # 如 data/excel/本月AI筛选20日线汇总/2026-10/19 10月AI筛选20日线汇总1012.xlsx
+            "upload_date": "本月AI筛选20日线汇总/{month_root}",
+            "public": "",
+        },
+        "naming": {
+            # 默认 "19 {month}月AI筛选20日线汇总{mmdd}.xlsx"（月份不补零、MMDD补零），如 19 10月AI筛选20日线汇总1012.xlsx
+            "output_template": "19 {month}月AI筛选20日线汇总{mmdd}.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["monthly_ai_ma20_summary"],
     },
 
     "导出20日均线趋势": {

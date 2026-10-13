@@ -470,8 +470,8 @@ const filenameDateMismatches = computed(() => {
 const duplicateWorkflowFiles = computed(() => {
   const groups = {}
   for (const r of resolvedRows.value) {
-    // 质押固定 2 个；本月AI筛选汇总目录允许保留多个文件（同名覆盖，不同名共存）
-    if (r.workflow_type === '质押' || r.workflow_type === '本月AI筛选汇总' || !r.workflow_type || r.sub_dir) continue
+    // 质押固定 2 个；本月AI筛选汇总/本月AI筛选20日线汇总目录允许保留多个文件（同名覆盖，不同名共存）
+    if (r.workflow_type === '质押' || r.workflow_type === '本月AI筛选汇总' || r.workflow_type === '本月AI筛选20日线汇总' || !r.workflow_type || r.sub_dir) continue
     const key = r.workflow_type
     if (!groups[key]) groups[key] = []
     groups[key].push(r.filename)

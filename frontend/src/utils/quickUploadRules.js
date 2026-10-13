@@ -149,6 +149,22 @@ export function resolveTarget(filename, date_str = '{date}') {
     }
   }
 
+  // 专用规则 4: 19 AI筛选20日线汇总（"19"开头且含"AI筛选20日线汇总"，按数据日期月份）
+  // e.g. `19 3月AI筛选20日线汇总0312.xlsx`（数据日期2027-03-12）→ data/excel/本月AI筛选20日线汇总/2027-03/
+  if (base.startsWith('19') && base.includes('AI筛选20日线汇总')) {
+    const d = date_str || '{date}'
+    const month = /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(0, 7) : d
+    return {
+      filename,
+      workflow_type: '本月AI筛选20日线汇总',
+      step_type: 'upload_ai_ma20_summary',
+      sub_dir: null,
+      target_dir: `data/excel/本月AI筛选20日线汇总/${month}/`,
+      status: 'resolved',
+      reason: '"19"开头 + 含"AI筛选20日线汇总" → 本月AI筛选20日线汇总按月目录',
+    }
+  }
+
   // 优先级 1: 子目录关键字
   for (const { keywords, step_type, sub_dir } of SUBDIR_KEYWORDS) {
     const matchedKeyword = keywords.find(k => base.includes(k))
