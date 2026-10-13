@@ -174,6 +174,13 @@
             style="margin-top: 8px"
           />
           <el-alert
+            v-if="form.workflow_type === '本月AI筛选汇总'"
+            title="本月AI筛选汇总：按数据日期读当日「当月每日新增」（DB优先），匹配全部A股一级/二级板块，输出到 data/excel/YYYY-MM/16 x月AI筛选汇总xxxx.xlsx（Sheet1双表双图+日期sheet），一键执行排在当月每日新增之后"
+            type="warning"
+            :closable="false"
+            style="margin-top: 8px"
+          />
+          <el-alert
             v-if="form.workflow_type === '涨幅排名'"
             title="涨幅排名：按第2列降序排名，自动对比上一工作日数据，Top5深红标注，排名提升浅红标注"
             type="info"
@@ -204,6 +211,9 @@
                   </template>
                   <template v-else-if="form.workflow_type === '当月每日新增'">
                     <el-option label="当月每日新增导出" value="monthly_daily_new" />
+                  </template>
+                  <template v-else-if="form.workflow_type === '本月AI筛选汇总'">
+                    <el-option label="本月AI筛选汇总导出" value="monthly_ai_summary" />
                   </template>
                   <template v-else-if="form.workflow_type === '导出20日均线趋势'">
                     <el-option label="导出趋势Excel" value="export_ma20_trend" />
@@ -795,6 +805,17 @@
                     v-model="step.config.output_filename"
                     placeholder="留空自动按数据日期生成，如 17 10月新增1010.xlsx"
                   />
+                </el-form-item>
+              </template>
+
+              <template v-if="step.type === 'monthly_ai_summary'">
+                <el-form-item label="输出文件名">
+                  <el-input
+                    :model-value="step.config.output_filename || monthlyAiSummaryAutoFilename(step.config?.date_str)"
+                    placeholder="留空自动按数据日期生成，如 16 10月AI筛选汇总1012.xlsx"
+                    @input="val => step.config.output_filename = val"
+                  />
+                  <div class="form-tip">默认按数据日期生成，可直接编辑覆盖；清空后恢复默认文件名</div>
                 </el-form-item>
               </template>
 
@@ -1441,6 +1462,7 @@ const getStepType = (type) => {
     export_high_price_trend: 'warning',
     ranking_sort: 'success',
     monthly_daily_new: 'warning',
+    monthly_ai_summary: 'warning',
     pledge_trend_analysis: 'warning',
     pending: 'danger'
   }
@@ -1464,14 +1486,15 @@ const getStepTypeName = (type) => {
     export_high_price_trend: '导出百日新高趋势Excel',
     ranking_sort: '涨幅排名排序',
     monthly_daily_new: '当月每日新增导出',
+    monthly_ai_summary: '本月AI筛选汇总导出',
     pledge_trend_analysis: '质押异动和趋势',
     pending: '待定'
   }
   return names[type] || type
 }
 
-// 条件交集 & 导出20日均线趋势 & 百日新高总趋势 相关
-const AGGREGATION_TYPES = ['条件交集', '当月每日新增', '导出20日均线趋势', '百日新高总趋势']
+// 条件交集 & 当月每日新增 & 本月AI筛选汇总 & 导出20日均线趋势 & 百日新高总趋势 相关
+const AGGREGATION_TYPES = ['条件交集', '当月每日新增', '本月AI筛选汇总', '导出20日均线趋势', '百日新高总趋势']
 const isAggregationType = computed(() => AGGREGATION_TYPES.includes(form.value.workflow_type))
 const isParallelIntersection = computed(() => currentWorkflow.value?.workflow_type === '条件交集')
 
@@ -1511,6 +1534,26 @@ const defaultMonthlyNewStep = () => {
     config: {
       date_str: today,
       output_filename: monthlyNewAutoFilename(today)
+    },
+    status: 'pending'
+  }
+}
+
+// 本月AI筛选汇总：默认输出 "16 {M}月AI筛选汇总{MMDD}.xlsx"（月份不补零、MMDD补零）
+const monthlyAiSummaryAutoFilename = (dateStr) => {
+  const d = dateStr || todayBeijing()
+  const compact = d.replace(/-/g, '')
+  const m = Number(d.slice(5, 7))
+  return `16 ${m}月AI筛选汇总${compact.slice(4)}.xlsx`
+}
+
+const defaultMonthlyAiSummaryStep = () => {
+  const today = todayBeijing()
+  return {
+    type: 'monthly_ai_summary',
+    config: {
+      date_str: today,
+      output_filename: ''  // 空值由 UI 显示层兜底为默认文件名（按数据日期生成），可编辑覆盖
     },
     status: 'pending'
   }
@@ -1725,6 +1768,8 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
     form.value.steps = [defaultIntersectionStep()]
   } else if (newType === '当月每日新增') {
     form.value.steps = [defaultMonthlyNewStep()]
+  } else if (newType === '本月AI筛选汇总') {
+    form.value.steps = [defaultMonthlyAiSummaryStep()]
   } else if (newType === '导出20日均线趋势') {
     form.value.steps = [defaultMa20TrendStep()]
   } else if (newType === '百日新高总趋势') {
@@ -2900,6 +2945,13 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.4;
+  margin-top: 2px;
 }
 
 .target-dir-info {

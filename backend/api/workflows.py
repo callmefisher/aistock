@@ -692,6 +692,18 @@ def get_target_directory(step_type: str, date_str: Optional[str] = None, workflo
 
     resolver = get_resolver(BASE_DIR, workflow_type)
 
+    # 快捷批量上传的3类新文件目标目录：
+    # - upload_all_a: 全部A股（全局共享一份，与数据日期无关）→ data/excel/全部A股/
+    # - match_39day_high: 39日新高（按数据日期）→ data/excel/{date}/39日新高/
+    # - upload_ai_summary: 16 AI筛选汇总（按月）→ data/excel/YYYY-MM/
+    if step_type == "upload_all_a":
+        return os.path.join(BASE_DIR, "全部A股")
+    if step_type == "upload_ai_summary":
+        month = (date_str or beijing_today_str())[:7]
+        return os.path.join(BASE_DIR, month)
+    if step_type == "match_39day_high":
+        return os.path.join(BASE_DIR, date_str or beijing_today_str(), "39日新高")
+
     if step_type in ["match_high_price", "match_ma20", "match_soe", "match_sector"]:
         return resolver.get_match_source_directory(step_type, date_str)
     else:
@@ -724,6 +736,15 @@ async def upload_step_file(
     logger.info(f"[Upload] target_dir={target_dir}")
     os.makedirs(target_dir, exist_ok=True)
 
+    # 全部A股 / 39日新高：目录下已有文件先删除，只保留最新上传的
+    if step_type in ("upload_all_a", "match_39day_high"):
+        for old in glob.glob(os.path.join(target_dir, "*.xlsx")) + glob.glob(os.path.join(target_dir, "*.xls")):
+            try:
+                os.remove(old)
+                logger.info(f"[Upload] 清理旧文件(只保留最新): {old}")
+            except OSError as _e:
+                logger.warning(f"[Upload] 清理旧文件失败: {old}, {_e}")
+
     # 安全防御：客户端传来的 filename 可能含路径分隔符（如 Safari 的
     # webkitdirectory 会让 file.name = "0422/foo.xlsx"），也可能被
     # 恶意构造 "../../etc/passwd"。统一取 basename 剥到叶子名。
@@ -744,8 +765,14 @@ async def upload_step_file(
         file_size = os.path.getsize(file_path)
         logger.info(f"[Upload] success, size={file_size}")
 
-        from services.workflow_executor import invalidate_match_source_cache
+        from services.workflow_executor import (
+            invalidate_match_source_cache,
+            invalidate_39day_high_cache,
+            invalidate_all_a_cache,
+        )
         invalidate_match_source_cache(target_dir)
+        invalidate_39day_high_cache(target_dir)
+        invalidate_all_a_cache(target_dir)
 
         return {
             "success": True,
@@ -808,8 +835,14 @@ async def delete_step_file(
         dir_path = os.path.dirname(file_path)
         os.remove(file_path)
 
-        from services.workflow_executor import invalidate_match_source_cache
+        from services.workflow_executor import (
+            invalidate_match_source_cache,
+            invalidate_39day_high_cache,
+            invalidate_all_a_cache,
+        )
         invalidate_match_source_cache(dir_path)
+        invalidate_39day_high_cache(dir_path)
+        invalidate_all_a_cache(dir_path)
 
         return {"success": True, "message": "文件已删除"}
     except Exception as e:
@@ -874,7 +907,9 @@ async def batch_run_workflows(
             return 0
         if t == "当月每日新增":
             return 1
-        return 2
+        if t == "本月AI筛选汇总":
+            return 2  # 依赖"当月每日新增"当日DB入库数据，须排在其后
+        return 3
 
     aggregation_ids.sort(key=_agg_order)  # 稳定排序：其余聚合类型保持原相对顺序
     sorted_ids = normal_ids + aggregation_ids

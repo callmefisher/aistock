@@ -75,6 +75,7 @@
               <el-table-column label="状态" width="120">
                 <template #default="scope">
                   <el-tag v-if="scope?.row?.will_overwrite" type="danger">将覆盖</el-tag>
+                  <el-tag v-else-if="scope?.row?.clears_dir" type="warning">清空后新增</el-tag>
                   <el-tag v-else type="success">新增</el-tag>
                 </template>
               </el-table-column>
@@ -113,8 +114,8 @@
             </div>
           </el-collapse-item>
         </el-collapse>
-        <el-divider v-if="missingWorkflowTypes.length || missingPublicSubdirs.length" />
-        <div v-if="missingWorkflowTypes.length || missingPublicSubdirs.length">
+        <el-divider v-if="missingWorkflowTypes.length || missingPublicSubdirs.length || missingExtraSources.length" />
+        <div v-if="missingWorkflowTypes.length || missingPublicSubdirs.length || missingExtraSources.length">
           <el-alert type="warning" :closable="false" show-icon>
             <template #title>缺失检查（仅警告，可继续上传）</template>
             <div style="font-size: 13px; margin-top: 6px">
@@ -126,6 +127,11 @@
                 <strong>未收到文件的公共数据（{{ missingPublicSubdirs.length }} 个）：</strong>
                 {{ missingPublicSubdirs.join('、') }}
                 <span style="color: #909399">（所有工作流共享，缺失时执行会自动从历史日期复制，但当日数据不是最新的）</span>
+              </div>
+              <div v-if="missingExtraSources.length" style="margin-top: 4px">
+                <strong>未收到文件的公共数据：</strong>
+                {{ missingExtraSources.join('、') }}
+                <span style="color: #909399">（条件交集"39日新高"标记列与"本月AI筛选汇总"板块匹配依赖该数据，缺失时对应列/板块为空）</span>
               </div>
             </div>
           </el-alert>
@@ -193,9 +199,9 @@
         <el-divider v-if="totalFilesExceeded" />
         <div v-if="totalFilesExceeded">
           <el-alert type="warning" :closable="false" show-icon>
-            <template #title>上传文件数超出预期（最多 13 个，当前 {{ totalFilesExceeded }} 个）</template>
+            <template #title>上传文件数超出预期（最多 16 个，当前 {{ totalFilesExceeded }} 个）</template>
             <div style="font-size: 13px; margin-top: 6px">
-              正常应上传 13 个文件：8 个工作流（质押 2 个）+ 4 个公共子目录 + 1 个涨幅排名。请检查是否夹带了历史遗留文件。
+              正常应上传 16 个文件：9 个工作流文件（8 类，质押 2 个）+ 4 个公共子目录 + 全部A股 + 39日新高 + AI筛选汇总。请检查是否夹带了历史遗留文件。
             </div>
           </el-alert>
         </div>
@@ -303,7 +309,7 @@ const FORCED_SUBDIR_GROUPS = ALWAYS_PREVIEW_STEPS
 // groups computed 补显时用：sub_dir → 后端返回的真实 target_dir
 const forcedSubdirTargetMap = ref({})
 
-// 分组展示顺序：主工作流按数字前缀 1→9，之后是 4 个公共子目录
+// 分组展示顺序：主工作流按数字前缀 1→9，之后是公共子目录与专用数据源
 const GROUP_ORDER = [
   '并购重组',        // 1
   '股权转让',        // 2
@@ -314,7 +320,9 @@ const GROUP_ORDER = [
   '涨幅排名',        // 8
   '招投标',          // 9
 ]
-const SUBDIR_ORDER = ['百日新高', '20日均线', '国企', '一级板块']
+const SUBDIR_ORDER = ['百日新高', '20日均线', '国企', '一级板块', '全部A股', '39日新高']
+// 上传时后端会先清空目录只保留最新文件的子目录（同名不同名都覆盖）
+const CLEAR_ON_UPLOAD_SUBDIRS = ['全部A股', '39日新高']
 
 function groupSortKey(g) {
   // 公共子目录：SUBDIR_ORDER 里的索引 + 偏移到主工作流之后
@@ -343,6 +351,7 @@ const groups = computed(() => {
     map[key].rows.push({
       ...r,
       will_overwrite: (existingFilesMap.value[key] || []).some(f => f.filename === r.filename),
+      clears_dir: CLEAR_ON_UPLOAD_SUBDIRS.includes(r.sub_dir),
     })
   }
   // 强制补显：国企/一级板块即便用户没选文件，也要把"目录已有"（含历史复制）渲染成分组
@@ -373,6 +382,8 @@ const REQUIRED_WORKFLOW_TYPES = [
 ]
 // 公共匹配源（并购重组子目录，所有工作流执行时都会读）
 const REQUIRED_PUBLIC_SUBDIRS = ['百日新高', '20日均线', '国企', '一级板块']
+// 快捷批量上传新增的专用数据源（缺失时仅警告不拦截）
+const REQUIRED_EXTRA_SOURCES = ['39日新高', '全部A股']
 
 const missingWorkflowTypes = computed(() => {
   // 只统计非子目录文件对应的 workflow_type（子目录文件的 workflow_type 固定是"并购重组"，
@@ -393,8 +404,16 @@ const missingPublicSubdirs = computed(() => {
   return REQUIRED_PUBLIC_SUBDIRS.filter(s => !uploadedSubdirs.has(s))
 })
 
+// 缺失的专用数据源（39日新高/全部A股）：39日新高按数据日期，全部A股全局共享
+const missingExtraSources = computed(() => {
+  const uploadedSubdirs = new Set(
+    resolvedRows.value.map(r => r.sub_dir).filter(Boolean)
+  )
+  return REQUIRED_EXTRA_SOURCES.filter(s => !uploadedSubdirs.has(s))
+})
+
 const totalMissing = computed(
-  () => missingWorkflowTypes.value.length + missingPublicSubdirs.value.length
+  () => missingWorkflowTypes.value.length + missingPublicSubdirs.value.length + missingExtraSources.value.length
 )
 
 // 公共子目录若已有旧文件，在下方统一告警（同目录下多份历史文件会污染匹配）
@@ -451,7 +470,8 @@ const filenameDateMismatches = computed(() => {
 const duplicateWorkflowFiles = computed(() => {
   const groups = {}
   for (const r of resolvedRows.value) {
-    if (r.workflow_type === '质押' || !r.workflow_type || r.sub_dir) continue
+    // 质押固定 2 个；本月AI筛选汇总目录允许保留多个文件（同名覆盖，不同名共存）
+    if (r.workflow_type === '质押' || r.workflow_type === '本月AI筛选汇总' || !r.workflow_type || r.sub_dir) continue
     const key = r.workflow_type
     if (!groups[key]) groups[key] = []
     groups[key].push(r.filename)
@@ -462,7 +482,7 @@ const duplicateWorkflowFiles = computed(() => {
 })
 
 const totalFilesExceeded = computed(() => {
-  return resolvedRows.value.length > 13 ? resolvedRows.value.length : 0
+  return resolvedRows.value.length > 16 ? resolvedRows.value.length : 0
 })
 
 const canGoPreview = computed(() => acceptedFiles.value.length > 0 && dateStr.value)

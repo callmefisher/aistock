@@ -19,6 +19,14 @@ from utils.stock_code_normalizer import (
     match_stock_code_flexible,
     is_public_file as check_is_public_file
 )
+# 本月AI筛选汇总工作流实现 + 39日新高/全部A股 缓存（独立文件，防止本文件过大难维护）；
+# invalidate_* 为 re-export，供API层上传/删除文件后失效缓存调用
+from services.monthly_ai_summary import (  # noqa: F401
+    invalidate_39day_high_cache,
+    invalidate_all_a_cache,
+    execute_monthly_ai_summary,
+    load_39day_high_codes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +35,7 @@ logger = logging.getLogger(__name__)
 _match_source_cache: Dict[str, tuple] = {}  # dir_path → (max_mtime, stock_dict)
 _public_file_cache: Dict[str, tuple] = {}   # file_path → (mtime, DataFrame/dict)
 _PUBLIC_FILE_CACHE_MAX = 50  # 最大缓存条目数，超出时淘汰最早的条目
+# 39日新高/全部A股 缓存与加载器位于 services/monthly_ai_summary.py（独立文件，防止本文件过大）
 
 
 def _get_dir_mtime(dir_path: str) -> float:
@@ -797,6 +806,9 @@ class WorkflowExecutor:
                 return await self._ranking_sort(step_config, input_data, date_str)
             elif step_type == "monthly_daily_new":
                 return await self._monthly_daily_new(step_config, date_str)
+            elif step_type == "monthly_ai_summary":
+                # 本月AI筛选汇总（实现位于 services/monthly_ai_summary.py 独立文件）
+                return await execute_monthly_ai_summary(self, step_config, date_str)
             elif step_type == "pledge_trend_analysis":
                 return await self._pledge_trend_analysis(step_config, input_data, date_str)
             elif step_type == "pending":
@@ -2538,6 +2550,33 @@ class WorkflowExecutor:
         ma20_display = ma20_display[~ma20_display["证券简称"].fillna("").astype(str).str.upper().str.contains("ST")]
         logger.info(f"[并行交集] 排除ST: 百日新高{before_st_h-len(high_display)}行, 站上20日线{before_st_m-len(ma20_display)}行")
 
+        # 39日新高标记列（仅sheet"条件交集站上20日线"）：证券简称后插入"39日新高"列，
+        # 每行用证券代码匹配当日 /data/excel/{date}/39日新高/ 源（仅"股票代码/证券代码"列），
+        # 命中填证券代码（_format_parallel_excel 中红底标记），否则为空；不影响其他列。
+        # 次日合并读取的前日文件含本列时，列选择已将其剔除、此处按当日源全量刷新。
+        high39_codes: Set[str] = set()
+        try:
+            high39_codes = load_39day_high_codes(self.base_dir, date_str)
+        except Exception as e:
+            logger.warning(f"[并行交集] 读取39日新高源失败({date_str}): {e}")
+        if "证券代码" in ma20_display.columns:
+            insert_at = (
+                ma20_display.columns.get_loc("证券简称") + 1
+                if "证券简称" in ma20_display.columns
+                else ma20_display.columns.get_loc("证券代码") + 1
+            )
+            if "39日新高" not in ma20_display.columns:
+                _codes = ma20_display["证券代码"].astype(str).str.strip()
+                if high39_codes:
+                    _mask = _codes.apply(lambda c: (normalize_stock_code(c) in high39_codes))
+                else:
+                    _mask = pd.Series(False, index=ma20_display.index)
+                ma20_display.insert(
+                    insert_at, "39日新高",
+                    pd.Series(np.where(_mask, _codes, ""), index=ma20_display.index, dtype=object),
+                )
+        logger.info(f"[并行交集] 39日新高标记: {len(high39_codes)}个源代码键, 命中{int((ma20_display['39日新高'].astype(str).str.len() > 0).sum()) if '39日新高' in ma20_display.columns else 0}行")
+
         # 6. 输出3个文件
         daily_dir = os.path.join(base_dir, date_str)
         os.makedirs(daily_dir, exist_ok=True)
@@ -2788,6 +2827,7 @@ class WorkflowExecutor:
             wb = _lw(path)
             center_align = Alignment(horizontal="center", vertical="center", wrap_text=False)
             green_fill = PatternFill(fill_type="solid", start_color="CAEED3", end_color="CAEED3")
+            red_fill = PatternFill(fill_type="solid", start_color="FFFF0000", end_color="FFFF0000")
 
             sheet_count_col_map = {
                 "条件交集百日新高": high_count_col,
@@ -2808,6 +2848,14 @@ class WorkflowExecutor:
                     if h == "证券代码":
                         code_col_idx = i + 1
                         break
+
+                # 39日新高列（仅"条件交集站上20日线"sheet存在）：非空单元格红底
+                high39_col_idx = None
+                if ws.title == "条件交集站上20日线":
+                    for i, h in enumerate(header_row):
+                        if h == "39日新高":
+                            high39_col_idx = i + 1
+                            break
 
                 target_count_col = sheet_count_col_map.get(ws.title)
                 count_col_idx = None
@@ -2851,6 +2899,16 @@ class WorkflowExecutor:
                                     ws.cell(row=r_idx, column=c_idx).fill = green_fill
                                 highlight_count += 1
                     logger.info(f"[并行交集] {ws.title} 高亮行数: {highlight_count} (次数=1且不在基准中)")
+
+                # 39日新高：非空单元格红色背景
+                if high39_col_idx is not None:
+                    marked39 = 0
+                    for r_idx in range(2, ws.max_row + 1):
+                        cell = ws.cell(row=r_idx, column=high39_col_idx)
+                        if cell.value is not None and str(cell.value).strip() != "":
+                            cell.fill = red_fill
+                            marked39 += 1
+                    logger.info(f"[并行交集] {ws.title} 39日新高红底标记: {marked39}行")
 
                 ws.auto_filter.ref = ws.dimensions
 

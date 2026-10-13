@@ -30,10 +30,12 @@ class WorkflowPathResolver:
 
         dir_template = self.config["directories"]["upload_date"]
         # {month_dir}: 按月组织的数据目录（如 "2026年10月新增"），仅部分模板使用；
+        # {month_root}: 根级月份目录（如 "2026-10"，本月AI筛选汇总输出用）。
         # 对不含该占位符的模板无影响（str.format 忽略多余 kwargs）
         m = re.match(r"^(\d{4})-(\d{2})-\d{2}$", date_str or "")
         month_dir = f"{m.group(1)}年{int(m.group(2))}月新增" if m else ""
-        dir_path = dir_template.format(date=date_str, month_dir=month_dir)
+        month_root = f"{m.group(1)}-{m.group(2)}" if m else date_str[:7] if date_str else ""
+        dir_path = dir_template.format(date=date_str, month_dir=month_dir, month_root=month_root)
 
         return os.path.join(self.base_dir, dir_path)
 

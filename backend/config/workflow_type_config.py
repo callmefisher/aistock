@@ -230,7 +230,8 @@ WORKFLOW_TYPE_CONFIG = {
         "display_name": "当月每日新增",
         "base_subdir": "当月每日新增",
         "is_aggregation": True,
-        "is_export_only": True,
+        # 注意：不再 is_export_only —— 首个sheet「当月每日新增」需写入 workflow_results，
+        # 供「本月AI筛选汇总」工作流按数据日期读取（save_workflow_result 只读首sheet）
         "directories": {
             # 数据目录按月组织（非日期目录，由 monthly_daily_new 步骤内直接生成）：
             # 当月每日新增/2026年10月新增/17 10月新增1010.xlsx
@@ -245,6 +246,25 @@ WORKFLOW_TYPE_CONFIG = {
         },
         "match_sources": {},
         "allowed_steps": ["monthly_daily_new"],
+    },
+
+    "本月AI筛选汇总": {
+        "display_name": "本月AI筛选汇总",
+        "base_subdir": "本月AI筛选汇总",
+        "is_aggregation": True,
+        "is_export_only": True,
+        "directories": {
+            # 输出按月落到根目录 data/excel/{YYYY-MM}/（由 monthly_ai_summary 步骤内直接生成），
+            # 如 data/excel/2026-10/16 10月AI筛选汇总1009.xlsx
+            "upload_date": "{month_root}",
+            "public": "",
+        },
+        "naming": {
+            # 默认 "16 {month}月AI筛选汇总{mmdd}.xlsx"（月份不补零、MMDD补零），如 16 10月AI筛选汇总1009.xlsx
+            "output_template": "16 {month}月AI筛选汇总{mmdd}.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["monthly_ai_summary"],
     },
 
     "导出20日均线趋势": {

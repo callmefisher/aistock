@@ -63,6 +63,10 @@ function buildTargetDir(workflow_type, sub_dir, date_str) {
   return parts.join('/') + '/'
 }
 
+// 快捷批量上传专用规则（优先级高于子目录关键字与数字前缀）：
+// 1) 全部A股：文件名含"全部A股"，即使含板块关键字也当作全部A股（不按日期，全局共享一份）
+// 2) 39日新高：文件名含"39日新高"或"39日"（按数据日期）
+// 3) 16 AI筛选汇总：以"16"开头且含"AI筛选汇总"（按数据日期月份，目录 data/excel/YYYY-MM/）
 export function resolveTarget(filename, date_str = '{date}') {
   if (!filename) {
     return {
@@ -98,6 +102,50 @@ export function resolveTarget(filename, date_str = '{date}') {
       target_dir: buildTargetDir(wt, null, date_str),
       status: 'resolved',
       reason: `首位数字 "8" + 含"涨跌幅" → ${wt}`,
+    }
+  }
+
+  // 专用规则 1: 全部A股（含"全部A股"关键字；即使含"板块"等关键字也优先当作全部A股）
+  // e.g. `6、全部A股 板块信息2026 0901.xlsx` → data/excel/全部A股/（而非一级板块）
+  if (base.includes('全部A股')) {
+    return {
+      filename,
+      workflow_type: '并购重组',
+      step_type: 'upload_all_a',
+      sub_dir: '全部A股',
+      target_dir: 'data/excel/全部A股/',
+      status: 'resolved',
+      reason: '含"全部A股" → 全部A股（全局共享，与日期无关）',
+    }
+  }
+
+  // 专用规则 2: 39日新高（含"39日新高"或"39日"，按数据日期）
+  if (base.includes('39日新高') || base.includes('39日')) {
+    const d = date_str || '{date}'
+    return {
+      filename,
+      workflow_type: '并购重组',
+      step_type: 'match_39day_high',
+      sub_dir: '39日新高',
+      target_dir: `data/excel/${d}/39日新高/`,
+      status: 'resolved',
+      reason: '含"39日新高/39日" → 39日新高（按数据日期）',
+    }
+  }
+
+  // 专用规则 3: 16 AI筛选汇总（"16"开头且含"AI筛选汇总"，按数据日期月份）
+  // e.g. `16 3月AI筛选汇总0312.xlsx`（数据日期2027-03-12）→ data/excel/2027-03/
+  if (base.startsWith('16') && base.includes('AI筛选汇总')) {
+    const d = date_str || '{date}'
+    const month = /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(0, 7) : d
+    return {
+      filename,
+      workflow_type: '本月AI筛选汇总',
+      step_type: 'upload_ai_summary',
+      sub_dir: null,
+      target_dir: `data/excel/${month}/`,
+      status: 'resolved',
+      reason: '"16"开头 + 含"AI筛选汇总" → 按月目录',
     }
   }
 
