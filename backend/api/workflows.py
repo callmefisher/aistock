@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Form, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List, Optional, Union, Any, Dict
+from typing import List, Optional, Union, Any, Dict, Tuple
 from pydantic import BaseModel
 from datetime import datetime
 import os
@@ -881,6 +881,35 @@ class BatchRunRequest(BaseModel):
     workflow_ids: List[int]
 
 
+# 聚合类依赖链顺序（依赖前者产出的必须排在其后）：
+# 条件交集 → 当月每日新增 → 本月AI筛选汇总 → 本月AI筛选20日线汇总
+# 依据：当月每日新增读条件交集当日产出；本月AI筛选汇总/本月AI筛选20日线汇总
+# 分别读当月每日新增进库的首sheet（final）/第2个sheet（final_ma20）
+_AGG_DEPENDENCY_ORDER = {
+    "条件交集": 0,
+    "当月每日新增": 1,
+    "本月AI筛选汇总": 2,
+    "本月AI筛选20日线汇总": 3,
+}
+
+
+def _sort_batch_workflow_ids(items: List[Tuple[int, str, bool]]) -> List[int]:
+    """一键批量执行的工作流排序（纯函数，便于回归测试锁定顺序）。
+
+    items: [(workflow_id, workflow_type, is_aggregation), ...]，按用户勾选顺序
+    返回执行顺序的 workflow_id 列表：
+    - 普通（非聚合）工作流最先执行，保持勾选时的相对顺序；
+    - 聚合类按 _AGG_DEPENDENCY_ORDER 依赖链排序，未登记的其他聚合类型最后执行；
+    - 同优先级保持稳定（勾选时的相对顺序，Python sort 为稳定排序）。
+    """
+    normal_ids = [wid for wid, _t, is_agg in items if not is_agg]
+    agg_ids = [wid for wid, _t, is_agg in items if is_agg]
+    type_map = {wid: t for wid, t, _is_agg in items}
+
+    agg_ids.sort(key=lambda wid: _AGG_DEPENDENCY_ORDER.get(type_map.get(wid, ""), 4))
+    return normal_ids + agg_ids
+
+
 @router.post("/batch-run/")
 async def batch_run_workflows(
     request: BatchRunRequest,
@@ -890,35 +919,19 @@ async def batch_run_workflows(
     task_id = f"batch_{uuid.uuid4().hex[:12]}"
     workflow_ids = request.workflow_ids
 
-    # 聚合类型（is_aggregation）排到最后执行，确保其他工作流数据最完整
-    # 其中"当月每日新增"依赖"条件交集"当日产出，须保证条件交集先执行
-    normal_ids = []
-    aggregation_ids = []
-    agg_type_map = {}
+    # 普通工作流先执行（数据最完整）；聚合类按依赖链排序（见 _sort_batch_workflow_ids）：
+    # 条件交集 → 当月每日新增 → 本月AI筛选汇总 → 本月AI筛选20日线汇总 → 其他聚合
+    # 执行为严格串行（_run_batch_workflows 中 for 循环逐个 await），
+    # 因此排序即实际执行顺序，依赖方执行时前置产出已落库。
+    items: List[Tuple[int, str, bool]] = []
     for wid in workflow_ids:
         result = await db.execute(select(Workflow).where(Workflow.id == wid))
         wf = result.scalar_one_or_none()
         from config.workflow_type_config import get_type_config as _gtc
-        if wf and _gtc(wf.workflow_type or "").get("is_aggregation"):
-            aggregation_ids.append(wid)
-            agg_type_map[wid] = wf.workflow_type or ""
-        else:
-            normal_ids.append(wid)
+        wf_type = (wf.workflow_type or "") if wf else ""
+        items.append((wid, wf_type, bool(wf and _gtc(wf_type).get("is_aggregation"))))
 
-    def _agg_order(wid: int) -> int:
-        t = agg_type_map.get(wid, "")
-        if t == "条件交集":
-            return 0
-        if t == "当月每日新增":
-            return 1
-        if t == "本月AI筛选汇总":
-            return 2  # 依赖"当月每日新增"当日DB入库数据，须排在其后
-        if t == "本月AI筛选20日线汇总":
-            return 3  # 依赖"当月每日新增"当日20日线DB入库数据，须排在其后
-        return 4
-
-    aggregation_ids.sort(key=_agg_order)  # 稳定排序：其余聚合类型保持原相对顺序
-    sorted_ids = normal_ids + aggregation_ids
+    sorted_ids = _sort_batch_workflow_ids(items)
 
     batch = BatchExecution(
         id=task_id,
