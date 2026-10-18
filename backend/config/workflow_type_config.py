@@ -289,6 +289,65 @@ WORKFLOW_TYPE_CONFIG = {
         "allowed_steps": ["monthly_ai_ma20_summary"],
     },
 
+    # ==============================================================
+    # 本周类工作流（13/14/18号表）：执行顺序均在「条件交集」之后；
+    # 输出目录为数据日期目录下的专属子目录（35天回溯编辑，见 services/weekly_common.py）
+    # ==============================================================
+    "本周20日线新高": {
+        "display_name": "本周20日线新高",
+        "base_subdir": "本周20日线新高",
+        "is_aggregation": True,
+        "is_export_only": True,
+        "directories": {
+            # 输出 data/excel/{date}/本周20日收盘价新高输出/13 占20日线无振幅{mmdd}.xlsx
+            # 数据源为公共上传目录 data/excel/{date}/本周20日收盘价新高/
+            "upload_date": "{date}/本周20日收盘价新高输出",
+            "public": "",
+        },
+        "naming": {
+            "output_template": "13 占20日线无振幅{mmdd}.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["weekly_ma20_close_high"],
+    },
+
+    "本周总市值千亿新高": {
+        "display_name": "本周总市值千亿新高",
+        "base_subdir": "本周总市值千亿新高",
+        "is_aggregation": True,
+        "is_export_only": True,
+        "directories": {
+            # 输出 data/excel/{date}/本周总市值千亿新高输出/14 总市值大于1000亿 本周最高价格大于上周最高价格{mmdd}.xlsx
+            # 数据源为公共上传目录 data/excel/{date}/本周总市值千亿新高/
+            # 附带输出 20号表 data/excel/{date}/20号表本周总市值千亿新高A列/
+            "upload_date": "{date}/本周总市值千亿新高输出",
+            "public": "",
+        },
+        "naming": {
+            "output_template": "14 总市值大于1000亿 本周最高价格大于上周最高价格{mmdd}.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["weekly_mv1000_high"],
+    },
+
+    "全部A股总市值大于800亿": {
+        "display_name": "全部A股总市值大于800亿",
+        "base_subdir": "全部A股总市值大于800亿",
+        "is_aggregation": True,
+        "is_export_only": True,
+        "directories": {
+            # 输出 data/excel/{date}/全部A股800亿输出/18 全部A股总市值大于800亿{mmdd}.xlsx
+            # 数据源为公共上传目录 data/excel/{date}/全部A股800亿/
+            "upload_date": "{date}/全部A股800亿输出",
+            "public": "",
+        },
+        "naming": {
+            "output_template": "18 全部A股总市值大于800亿{mmdd}.xlsx",
+        },
+        "match_sources": {},
+        "allowed_steps": ["all_a_800"],
+    },
+
     "导出20日均线趋势": {
         "display_name": "导出20日均线趋势",
         "base_subdir": "导出20日均线趋势",

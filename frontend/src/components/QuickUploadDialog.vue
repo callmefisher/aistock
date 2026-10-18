@@ -114,6 +114,22 @@
             </div>
           </el-collapse-item>
         </el-collapse>
+        <el-divider v-if="missingBlockingSubdirs.length" />
+        <div v-if="missingBlockingSubdirs.length">
+          <el-alert type="error" :closable="false" show-icon>
+            <template #title>缺失必需公共数据（已阻断上传，补齐后自动恢复）</template>
+            <div style="font-size: 13px; margin-top: 6px">
+              <div>
+                <strong>未收到文件的必需公共数据（{{ missingBlockingSubdirs.length }} 个）：</strong>
+                {{ missingBlockingSubdirs.join('、') }}
+              </div>
+              <div style="color: #909399; margin-top: 4px">
+                「本周20日线新高」「本周总市值千亿新高」「全部A股总市值大于800亿」三类工作流分别依赖上述对应公共文件，
+                每类至少需上传 1 个文件，否则无法上传。
+              </div>
+            </div>
+          </el-alert>
+        </div>
         <el-divider v-if="missingWorkflowTypes.length || missingPublicSubdirs.length || missingExtraSources.length" />
         <div v-if="missingWorkflowTypes.length || missingPublicSubdirs.length || missingExtraSources.length">
           <el-alert type="warning" :closable="false" show-icon>
@@ -199,9 +215,9 @@
         <el-divider v-if="totalFilesExceeded" />
         <div v-if="totalFilesExceeded">
           <el-alert type="warning" :closable="false" show-icon>
-            <template #title>上传文件数超出预期（最多 16 个，当前 {{ totalFilesExceeded }} 个）</template>
+            <template #title>上传文件数超出预期（最多 22 个，当前 {{ totalFilesExceeded }} 个）</template>
             <div style="font-size: 13px; margin-top: 6px">
-              正常应上传 16 个文件：9 个工作流文件（8 类，质押 2 个）+ 4 个公共子目录 + 全部A股 + 39日新高 + AI筛选汇总。请检查是否夹带了历史遗留文件。
+              正常应上传最多 22 个文件：9 个工作流文件（8 类，质押 2 个）+ 4 个公共子目录 + 全部A股 + 39日新高 + AI筛选汇总 + 本周类 3 个公共文件（本周20日收盘价新高 / 本周总市值千亿新高 / 全部A股800亿）+ 13/14/18 号表输出文件（如手工补传）。请检查是否夹带了历史遗留文件。
             </div>
           </el-alert>
         </div>
@@ -241,7 +257,7 @@
     <template #footer>
       <el-button v-if="currentStep > 0 && currentStep < 2" @click="currentStep--">上一步</el-button>
       <el-button v-if="currentStep === 0" type="primary" :disabled="!canGoPreview" @click="goPreview">下一步</el-button>
-      <el-button v-if="currentStep === 1" type="primary" :disabled="!resolvedRows.length" @click="() => startUpload()">确认上传</el-button>
+      <el-button v-if="currentStep === 1" type="primary" :disabled="!resolvedRows.length || missingBlockingSubdirs.length" @click="() => startUpload()">确认上传</el-button>
       <el-button v-if="currentStep === 2 && failedUploads.length && !uploading" @click="retryFailed">重试失败项</el-button>
       <el-button v-if="currentStep === 2 && !uploading" type="primary" @click="finishAndTriggerRun">完成并执行</el-button>
       <el-button @click="handleClose">取消</el-button>
@@ -320,9 +336,19 @@ const GROUP_ORDER = [
   '涨幅排名',        // 8
   '招投标',          // 9
 ]
-const SUBDIR_ORDER = ['百日新高', '20日均线', '国企', '一级板块', '全部A股', '39日新高']
-// 上传时后端会先清空目录只保留最新文件的子目录（同名不同名都覆盖）
-const CLEAR_ON_UPLOAD_SUBDIRS = ['全部A股', '39日新高']
+const SUBDIR_ORDER = [
+  '百日新高', '20日均线', '国企', '一级板块', '全部A股', '39日新高',
+  '本周20日收盘价新高', '本周20日收盘价新高输出',
+  '本周总市值千亿新高', '本周总市值千亿新高输出',
+  '全部A股800亿', '全部A股800亿输出',
+]
+// 上传时后端会先清空目标目录只保留最新文件的子目录（同名不同名都覆盖）
+const CLEAR_ON_UPLOAD_SUBDIRS = [
+  '全部A股', '39日新高',
+  '本周20日收盘价新高', '本周20日收盘价新高输出',
+  '本周总市值千亿新高', '本周总市值千亿新高输出',
+  '全部A股800亿', '全部A股800亿输出',
+]
 
 function groupSortKey(g) {
   // 公共子目录：SUBDIR_ORDER 里的索引 + 偏移到主工作流之后
@@ -384,6 +410,8 @@ const REQUIRED_WORKFLOW_TYPES = [
 const REQUIRED_PUBLIC_SUBDIRS = ['百日新高', '20日均线', '国企', '一级板块']
 // 快捷批量上传新增的专用数据源（缺失时仅警告不拦截）
 const REQUIRED_EXTRA_SOURCES = ['39日新高', '全部A股']
+// 本周类公共数据源（13/14/18号表工作流的数据依赖，缺失时阻断上传）
+const REQUIRED_BLOCKING_PUBLIC_SUBDIRS = ['本周20日收盘价新高', '本周总市值千亿新高', '全部A股800亿']
 
 const missingWorkflowTypes = computed(() => {
   // 只统计非子目录文件对应的 workflow_type（子目录文件的 workflow_type 固定是"并购重组"，
@@ -410,6 +438,14 @@ const missingExtraSources = computed(() => {
     resolvedRows.value.map(r => r.sub_dir).filter(Boolean)
   )
   return REQUIRED_EXTRA_SOURCES.filter(s => !uploadedSubdirs.has(s))
+})
+
+// 本周类公共数据缺失（13/14/18号表数据依赖）→ 阻断上传
+const missingBlockingSubdirs = computed(() => {
+  const uploadedSubdirs = new Set(
+    resolvedRows.value.map(r => r.sub_dir).filter(Boolean)
+  )
+  return REQUIRED_BLOCKING_PUBLIC_SUBDIRS.filter(s => !uploadedSubdirs.has(s))
 })
 
 const totalMissing = computed(
@@ -482,7 +518,7 @@ const duplicateWorkflowFiles = computed(() => {
 })
 
 const totalFilesExceeded = computed(() => {
-  return resolvedRows.value.length > 16 ? resolvedRows.value.length : 0
+  return resolvedRows.value.length > 22 ? resolvedRows.value.length : 0
 })
 
 const canGoPreview = computed(() => acceptedFiles.value.length > 0 && dateStr.value)

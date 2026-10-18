@@ -570,3 +570,58 @@ describe('QuickUploadDialog · pledgeGroupIssue', () => {
     expect(vm.pledgeGroupIssue).toBeNull()
   })
 })
+
+// ------- 新增：本周类公共数据缺失阻断（missingBlockingSubdirs） -------
+describe('QuickUploadDialog · missingBlockingSubdirs', () => {
+  function pushWeekly(vm, sub_dir, filename = `11${sub_dir}.xlsx`) {
+    vm.parsedRows.push({
+      filename,
+      target_dir: `data/excel/2026-10-16/${sub_dir}/`,
+      step_type: 'merge_excel',
+      workflow_type: '并购重组',
+      sub_dir,
+      status: 'resolved',
+    })
+  }
+
+  it('B1: 三类公共数据齐全 → 空数组（不阻断）', () => {
+    const vm = mountDialog().vm
+    pushWeekly(vm, '本周20日收盘价新高')
+    pushWeekly(vm, '本周总市值千亿新高')
+    pushWeekly(vm, '全部A股800亿')
+    expect(vm.missingBlockingSubdirs).toEqual([])
+  })
+
+  it('B2: 全部缺失 → 3项全列（阻断上传）', () => {
+    const vm = mountDialog().vm
+    expect(vm.missingBlockingSubdirs).toEqual([
+      '本周20日收盘价新高', '本周总市值千亿新高', '全部A股800亿',
+    ])
+  })
+
+  it('B3: 缺 其中1类 → 仅列该类', () => {
+    const vm = mountDialog().vm
+    pushWeekly(vm, '本周20日收盘价新高')
+    pushWeekly(vm, '全部A股800亿')
+    expect(vm.missingBlockingSubdirs).toEqual(['本周总市值千亿新高'])
+  })
+
+  it('B4: 输出目录文件不抵扣公共数据（本周20日收盘价新高输出 ≠ 公共数据）', () => {
+    const vm = mountDialog().vm
+    pushWeekly(vm, '本周20日收盘价新高输出', '13 占20日线无振幅 1016.xlsx')
+    expect(vm.missingBlockingSubdirs).toContain('本周20日收盘价新高')
+  })
+
+  it('B5: 只统计 resolved 行（unresolved 不计）', () => {
+    const vm = mountDialog().vm
+    vm.parsedRows.push({
+      filename: 'xx.xlsx',
+      target_dir: 'data/excel/2026-10-16/本周20日收盘价新高/',
+      step_type: 'merge_excel',
+      workflow_type: '并购重组',
+      sub_dir: '本周20日收盘价新高',
+      status: 'unresolved',
+    })
+    expect(vm.missingBlockingSubdirs).toContain('本周20日收盘价新高')
+  })
+})

@@ -188,6 +188,27 @@
             style="margin-top: 8px"
           />
           <el-alert
+            v-if="form.workflow_type === '本周20日线新高'"
+            title="本周20日线新高（13号表）：按数据日期统计「本周20日收盘价新高」公共文件数据行数，35天回溯编辑 data/excel/{date}/本周20日收盘价新高输出/13 占20日线无振幅xxxx.xlsx（日期/股票数量表格+折线图，横轴按周），一键执行排在条件交集之后"
+            type="warning"
+            :closable="false"
+            style="margin-top: 8px"
+          />
+          <el-alert
+            v-if="form.workflow_type === '本周总市值千亿新高'"
+            title="本周总市值千亿新高（14号表+20号表）：复制当日「本周总市值千亿新高」公共文件，35天回溯编辑 data/excel/{date}/本周总市值千亿新高输出/14 总市值大于1000亿 本周最高价格大于上周最高价格xxxx.xlsx（新增MMDD sheet按代码降序+B列后空列，筛选结果sheet不动），并输出20号表A列到 data/excel/{date}/20号表本周总市值千亿新高A列/，一键执行排在条件交集之后"
+            type="warning"
+            :closable="false"
+            style="margin-top: 8px"
+          />
+          <el-alert
+            v-if="form.workflow_type === '全部A股总市值大于800亿'"
+            title="全部A股总市值大于800亿（18号表）：对比当日「全部A股800亿」公共文件，35天回溯编辑 data/excel/{date}/全部A股800亿输出/18 全部A股总市值大于800亿xxxx.xlsx（新增股票前3列追加+板块列匹配[行业类别]全部+当日日期39日新高列），一键执行排在条件交集之后"
+            type="warning"
+            :closable="false"
+            style="margin-top: 8px"
+          />
+          <el-alert
             v-if="form.workflow_type === '涨幅排名'"
             title="涨幅排名：按第2列降序排名，自动对比上一工作日数据，Top5深红标注，排名提升浅红标注"
             type="info"
@@ -224,6 +245,15 @@
                   </template>
                   <template v-else-if="form.workflow_type === '本月AI筛选20日线汇总'">
                     <el-option label="本月AI筛选20日线汇总导出" value="monthly_ai_ma20_summary" />
+                  </template>
+                  <template v-else-if="form.workflow_type === '本周20日线新高'">
+                    <el-option label="本周20日线新高导出" value="weekly_ma20_close_high" />
+                  </template>
+                  <template v-else-if="form.workflow_type === '本周总市值千亿新高'">
+                    <el-option label="本周总市值千亿新高导出" value="weekly_mv1000_high" />
+                  </template>
+                  <template v-else-if="form.workflow_type === '全部A股总市值大于800亿'">
+                    <el-option label="全部A股总市值大于800亿导出" value="all_a_800" />
                   </template>
                   <template v-else-if="form.workflow_type === '导出20日均线趋势'">
                     <el-option label="导出趋势Excel" value="export_ma20_trend" />
@@ -834,6 +864,39 @@
                   <el-input
                     :model-value="step.config.output_filename || monthlyAiMa20SummaryAutoFilename(step.config?.date_str)"
                     placeholder="留空自动按数据日期生成，如 19 10月AI筛选20日线汇总1012.xlsx"
+                    @input="val => step.config.output_filename = val"
+                  />
+                  <div class="form-tip">默认按数据日期生成，可直接编辑覆盖；清空后恢复默认文件名</div>
+                </el-form-item>
+              </template>
+
+              <template v-if="step.type === 'weekly_ma20_close_high'">
+                <el-form-item label="输出文件名">
+                  <el-input
+                    :model-value="step.config.output_filename || weeklyMa20HighAutoFilename(step.config?.date_str)"
+                    placeholder="留空自动按数据日期生成，如 13 占20日线无振幅1015.xlsx"
+                    @input="val => step.config.output_filename = val"
+                  />
+                  <div class="form-tip">默认按数据日期生成，可直接编辑覆盖；清空后恢复默认文件名</div>
+                </el-form-item>
+              </template>
+
+              <template v-if="step.type === 'weekly_mv1000_high'">
+                <el-form-item label="输出文件名">
+                  <el-input
+                    :model-value="step.config.output_filename || weeklyMv1000HighAutoFilename(step.config?.date_str)"
+                    placeholder="留空自动按数据日期生成，如 14 总市值大于1000亿 本周最高价格大于上周最高价格1015.xlsx"
+                    @input="val => step.config.output_filename = val"
+                  />
+                  <div class="form-tip">默认按数据日期生成，可直接编辑覆盖；清空后恢复默认文件名</div>
+                </el-form-item>
+              </template>
+
+              <template v-if="step.type === 'all_a_800'">
+                <el-form-item label="输出文件名">
+                  <el-input
+                    :model-value="step.config.output_filename || allA800AutoFilename(step.config?.date_str)"
+                    placeholder="留空自动按数据日期生成，如 18 全部A股总市值大于800亿1015.xlsx"
                     @input="val => step.config.output_filename = val"
                   />
                   <div class="form-tip">默认按数据日期生成，可直接编辑覆盖；清空后恢复默认文件名</div>
@@ -1485,6 +1548,9 @@ const getStepType = (type) => {
     monthly_daily_new: 'warning',
     monthly_ai_summary: 'warning',
     monthly_ai_ma20_summary: 'warning',
+    weekly_ma20_close_high: 'warning',
+    weekly_mv1000_high: 'warning',
+    all_a_800: 'warning',
     pledge_trend_analysis: 'warning',
     pending: 'danger'
   }
@@ -1510,14 +1576,17 @@ const getStepTypeName = (type) => {
     monthly_daily_new: '当月每日新增导出',
     monthly_ai_summary: '本月AI筛选汇总导出',
     monthly_ai_ma20_summary: '本月AI筛选20日线汇总导出',
+    weekly_ma20_close_high: '本周20日线新高导出',
+    weekly_mv1000_high: '本周总市值千亿新高导出',
+    all_a_800: '全部A股总市值大于800亿导出',
     pledge_trend_analysis: '质押异动和趋势',
     pending: '待定'
   }
   return names[type] || type
 }
 
-// 条件交集 & 当月每日新增 & 本月AI筛选汇总 & 本月AI筛选20日线汇总 & 导出20日均线趋势 & 百日新高总趋势 相关
-const AGGREGATION_TYPES = ['条件交集', '当月每日新增', '本月AI筛选汇总', '本月AI筛选20日线汇总', '导出20日均线趋势', '百日新高总趋势']
+// 条件交集 & 当月每日新增 & 本月AI筛选汇总 & 本月AI筛选20日线汇总 & 本周三类 & 导出20日均线趋势 & 百日新高总趋势 相关
+const AGGREGATION_TYPES = ['条件交集', '当月每日新增', '本月AI筛选汇总', '本月AI筛选20日线汇总', '本周20日线新高', '本周总市值千亿新高', '全部A股总市值大于800亿', '导出20日均线趋势', '百日新高总趋势']
 const isAggregationType = computed(() => AGGREGATION_TYPES.includes(form.value.workflow_type))
 const isParallelIntersection = computed(() => currentWorkflow.value?.workflow_type === '条件交集')
 
@@ -1594,6 +1663,63 @@ const defaultMonthlyAiMa20SummaryStep = () => {
   const today = todayBeijing()
   return {
     type: 'monthly_ai_ma20_summary',
+    config: {
+      date_str: today,
+      output_filename: ''  // 空值由 UI 显示层兜底为默认文件名（按数据日期生成），可编辑覆盖
+    },
+    status: 'pending'
+  }
+}
+
+// 本周20日线新高（13号表）：默认输出 "13 占20日线无振幅{MMDD}.xlsx"（MMDD补零）
+const weeklyMa20HighAutoFilename = (dateStr) => {
+  const d = dateStr || todayBeijing()
+  const compact = d.replace(/-/g, '')
+  return `13 占20日线无振幅${compact.slice(4)}.xlsx`
+}
+
+const defaultWeeklyMa20HighStep = () => {
+  const today = todayBeijing()
+  return {
+    type: 'weekly_ma20_close_high',
+    config: {
+      date_str: today,
+      output_filename: ''  // 空值由 UI 显示层兜底为默认文件名（按数据日期生成），可编辑覆盖
+    },
+    status: 'pending'
+  }
+}
+
+// 本周总市值千亿新高（14号表）：默认输出 "14 总市值大于1000亿 本周最高价格大于上周最高价格{MMDD}.xlsx"
+const weeklyMv1000HighAutoFilename = (dateStr) => {
+  const d = dateStr || todayBeijing()
+  const compact = d.replace(/-/g, '')
+  return `14 总市值大于1000亿 本周最高价格大于上周最高价格${compact.slice(4)}.xlsx`
+}
+
+const defaultWeeklyMv1000HighStep = () => {
+  const today = todayBeijing()
+  return {
+    type: 'weekly_mv1000_high',
+    config: {
+      date_str: today,
+      output_filename: ''  // 空值由 UI 显示层兜底为默认文件名（按数据日期生成），可编辑覆盖
+    },
+    status: 'pending'
+  }
+}
+
+// 全部A股总市值大于800亿（18号表）：默认输出 "18 全部A股总市值大于800亿{MMDD}.xlsx"
+const allA800AutoFilename = (dateStr) => {
+  const d = dateStr || todayBeijing()
+  const compact = d.replace(/-/g, '')
+  return `18 全部A股总市值大于800亿${compact.slice(4)}.xlsx`
+}
+
+const defaultAllA800Step = () => {
+  const today = todayBeijing()
+  return {
+    type: 'all_a_800',
     config: {
       date_str: today,
       output_filename: ''  // 空值由 UI 显示层兜底为默认文件名（按数据日期生成），可编辑覆盖
@@ -1815,6 +1941,12 @@ watch(() => form.value.workflow_type, (newType, oldType) => {
     form.value.steps = [defaultMonthlyAiSummaryStep()]
   } else if (newType === '本月AI筛选20日线汇总') {
     form.value.steps = [defaultMonthlyAiMa20SummaryStep()]
+  } else if (newType === '本周20日线新高') {
+    form.value.steps = [defaultWeeklyMa20HighStep()]
+  } else if (newType === '本周总市值千亿新高') {
+    form.value.steps = [defaultWeeklyMv1000HighStep()]
+  } else if (newType === '全部A股总市值大于800亿') {
+    form.value.steps = [defaultAllA800Step()]
   } else if (newType === '导出20日均线趋势') {
     form.value.steps = [defaultMa20TrendStep()]
   } else if (newType === '百日新高总趋势') {

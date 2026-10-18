@@ -260,3 +260,89 @@ describe('resolveTarget - 专用规则优先级（叠加质押 vs 全部A股）'
     expect(r.target_dir).toBe('data/excel/减持叠加质押和大宗交易/2026-10-13/')
   })
 })
+
+describe('resolveTarget - 本周类新文件识别（13/14/18号表）', () => {
+  it('W0: 含"占20日线无振幅" → 13号表输出目录（优先于20日线子目录关键字）', () => {
+    const r = resolveTarget('13 占20日线无振幅 1015.xlsx', '2026-10-15')
+    expect(r.status).toBe('resolved')
+    expect(r.step_type).toBe('upload_weekly_ma20_out')
+    expect(r.sub_dir).toBe('本周20日收盘价新高输出')
+    expect(r.target_dir).toBe('data/excel/2026-10-15/本周20日收盘价新高输出/')
+  })
+
+  it('W1: 收盘价+20日均线+上周 → 本周20日收盘价新高（不当作老的20日均线公共数据）', () => {
+    const r = resolveTarget('本周20日收盘价大于20日均线且大于上周最高价格1016.xlsx', '2026-10-16')
+    expect(r.status).toBe('resolved')
+    expect(r.step_type).toBe('upload_weekly_ma20_high')
+    expect(r.sub_dir).toBe('本周20日收盘价新高')
+    expect(r.target_dir).toBe('data/excel/2026-10-16/本周20日收盘价新高/')
+  })
+
+  it('W1: 收盘价+20日线+上周（同义词）同样命中', () => {
+    const r = resolveTarget('收盘价站上20日线大于上周最高价格.xlsx', '2026-10-16')
+    expect(r.step_type).toBe('upload_weekly_ma20_high')
+  })
+
+  it('W1: 只含20日均线不含上周 → 仍走老的 match_ma20', () => {
+    const r = resolveTarget('20日均线0422.xlsx')
+    expect(r.step_type).toBe('match_ma20')
+  })
+
+  it('W2 公共文件: 总市值大于+亿+大于上周最高价格 → 本周总市值千亿新高', () => {
+    const r = resolveTarget('总市值大于1000亿 本周最高价格大于上周最高价格1016.xlsx', '2026-10-16')
+    expect(r.status).toBe('resolved')
+    expect(r.step_type).toBe('upload_weekly_mv1000_high')
+    expect(r.sub_dir).toBe('本周总市值千亿新高')
+    expect(r.target_dir).toBe('data/excel/2026-10-16/本周总市值千亿新高/')
+  })
+
+  it('W2 输出文件: 14开头+结尾4位数字 → 本周总市值千亿新高输出（与公共目录区分）', () => {
+    const r = resolveTarget('14 总市值大于1000亿 本周最高价格大于上周最高价格1016.xlsx', '2026-10-16')
+    expect(r.status).toBe('resolved')
+    expect(r.step_type).toBe('upload_weekly_mv1000_out')
+    expect(r.sub_dir).toBe('本周总市值千亿新高输出')
+    expect(r.target_dir).toBe('data/excel/2026-10-16/本周总市值千亿新高输出/')
+  })
+
+  it('W2: 14开头但结尾非4位数字 → 仍为公共文件', () => {
+    const r = resolveTarget('14 总市值大于1000亿 本周最高价格大于上周最高价格.xlsx', '2026-10-16')
+    expect(r.step_type).toBe('upload_weekly_mv1000_high')
+  })
+
+  it('W3 公共文件: 全部A股总市值大于800亿 → 全部A股800亿', () => {
+    const r = resolveTarget('全部A股总市值大于800亿1015.xlsx', '2026-10-15')
+    expect(r.status).toBe('resolved')
+    expect(r.step_type).toBe('upload_all_a_800')
+    expect(r.sub_dir).toBe('全部A股800亿')
+    expect(r.target_dir).toBe('data/excel/2026-10-15/全部A股800亿/')
+  })
+
+  it('W3 输出文件: 18开头+结尾4位数字 → 全部A股800亿输出', () => {
+    const r = resolveTarget('18 全部A股总市值大于800亿1015.xlsx', '2026-10-15')
+    expect(r.status).toBe('resolved')
+    expect(r.step_type).toBe('upload_all_a_800_out')
+    expect(r.sub_dir).toBe('全部A股800亿输出')
+    expect(r.target_dir).toBe('data/excel/2026-10-15/全部A股800亿输出/')
+  })
+
+  it('W3: 18开头但结尾非4位数字 → 仍为公共文件', () => {
+    const r = resolveTarget('18 全部A股总市值大于800亿.xlsx', '2026-10-15')
+    expect(r.step_type).toBe('upload_all_a_800')
+  })
+
+  it('优先级: 全部A股总市值大于800亿 先于 全部A股 通用规则', () => {
+    const r = resolveTarget('18 全部A股总市值大于800亿1015.xlsx')
+    expect(r.step_type).toBe('upload_all_a_800_out')
+  })
+
+  it('老的全部A股板块信息文件不受 W3 影响', () => {
+    const r = resolveTarget('6、全部A股 板块信息2026 0901.xlsx')
+    expect(r.step_type).toBe('upload_all_a')
+    expect(r.target_dir).toBe('data/excel/全部A股/')
+  })
+
+  it('未传数据日期时 target_dir 使用 {date} 占位', () => {
+    const r = resolveTarget('13 占20日线无振幅 1015.xlsx')
+    expect(r.target_dir).toBe('data/excel/{date}/本周20日收盘价新高输出/')
+  })
+})

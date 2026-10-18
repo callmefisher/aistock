@@ -83,6 +83,47 @@ class TestFileUploadAPI:
         assert target_dir.endswith("2026-04-12")
 
 
+class TestWeeklyUploadTargetDirectory:
+    """快捷批量上传新增类型（13/14/18号表公共数据与输出）目标目录映射测试"""
+
+    @pytest.mark.parametrize("step_type,sub_dir", [
+        ("upload_weekly_ma20_high", "本周20日收盘价新高"),
+        ("upload_weekly_ma20_out", "本周20日收盘价新高输出"),
+        ("upload_weekly_mv1000_high", "本周总市值千亿新高"),
+        ("upload_weekly_mv1000_out", "本周总市值千亿新高输出"),
+        ("upload_all_a_800", "全部A股800亿"),
+        ("upload_all_a_800_out", "全部A股800亿输出"),
+    ])
+    def test_weekly_upload_dirs(self, step_type, sub_dir):
+        """6类新文件按数据日期映射到对应子目录 data/excel/{date}/{sub_dir}/"""
+        from api.workflows import get_target_directory
+
+        target_dir = get_target_directory(step_type, "2026-10-16")
+        assert target_dir.endswith(os.path.join("2026-10-16", sub_dir)), target_dir
+
+    def test_weekly_upload_dirs_differ_between_public_and_output(self):
+        """公共数据目录与输出目录必须区分（如 本周总市值千亿新高 vs …输出）"""
+        from api.workflows import get_target_directory
+
+        pub = get_target_directory("upload_weekly_mv1000_high", "2026-10-16")
+        out = get_target_directory("upload_weekly_mv1000_out", "2026-10-16")
+        assert pub != out
+        assert pub.endswith("本周总市值千亿新高")
+        assert out.endswith("本周总市值千亿新高输出")
+
+
+class TestBatchAggregationOrder:
+    """批量执行顺序：本周三类工作流排在条件交集之后的链尾"""
+
+    def test_agg_dependency_order_contains_weekly_types(self):
+        from api.workflows import _AGG_DEPENDENCY_ORDER as order
+        assert order["条件交集"] < order["当月每日新增"] < order["本月AI筛选汇总"] < order["本月AI筛选20日线汇总"]
+        # 本周三类均在条件交集之后（且相互独立，固定链尾顺序）
+        assert order["本周20日线新高"] > order["条件交集"]
+        assert order["本周总市值千亿新高"] > order["条件交集"]
+        assert order["全部A股总市值大于800亿"] > order["条件交集"]
+
+
 class TestFileOperations:
     """文件操作测试"""
 

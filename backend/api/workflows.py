@@ -616,13 +616,19 @@ async def run_workflow(
     if last_output_file and not failed and not type_config.get("is_export_only"):
         from services.workflow_result_service import save_workflow_result
         try:
+            # 当月每日新增：「20日线」sheet 导出已临时屏蔽（EXPORT_MDN_MA20_SHEET=False），
+            # DB 所需的 final_ma20 记录由执行器结果 _ma20_records 透传，不再依赖 Excel sheet
+            ma20_override = None
+            if workflow_type == "当月每日新增" and isinstance(last_exec_result, dict):
+                ma20_override = last_exec_result.get("_ma20_records")
             db_saved = await save_workflow_result(
                 workflow_id=workflow_id,
                 workflow_type=workflow_type,
                 workflow_name=workflow.name,
                 date_str=output_date_str,
                 file_path=last_output_file,
-                step_type="final"
+                step_type="final",
+                ma20_records_override=ma20_override
             )
             if not db_saved:
                 logger.warning(f"[单工作流] {workflow_id} save_workflow_result 返回 False")
@@ -708,6 +714,24 @@ def get_target_directory(step_type: str, date_str: Optional[str] = None, workflo
     if step_type == "match_39day_high":
         return os.path.join(BASE_DIR, date_str or beijing_today_str(), "39日新高")
 
+    # 快捷批量上传：本周类（13/14/18号表）公共数据与输出文件目标目录（按数据日期）
+    # - upload_weekly_ma20_high: 「本周20日收盘价新高」公共文件
+    # - upload_weekly_ma20_out: 「13 占20日线无振幅」输出文件
+    # - upload_weekly_mv1000_high: 「本周总市值千亿新高」公共文件
+    # - upload_weekly_mv1000_out: 「14 总市值大于1000亿…」输出文件
+    # - upload_all_a_800: 「全部A股800亿」公共文件
+    # - upload_all_a_800_out: 「18 全部A股总市值大于800亿」输出文件
+    _weekly_upload_dirs = {
+        "upload_weekly_ma20_high": "本周20日收盘价新高",
+        "upload_weekly_ma20_out": "本周20日收盘价新高输出",
+        "upload_weekly_mv1000_high": "本周总市值千亿新高",
+        "upload_weekly_mv1000_out": "本周总市值千亿新高输出",
+        "upload_all_a_800": "全部A股800亿",
+        "upload_all_a_800_out": "全部A股800亿输出",
+    }
+    if step_type in _weekly_upload_dirs:
+        return os.path.join(BASE_DIR, date_str or beijing_today_str(), _weekly_upload_dirs[step_type])
+
     if step_type in ["match_high_price", "match_ma20", "match_soe", "match_sector"]:
         return resolver.get_match_source_directory(step_type, date_str)
     else:
@@ -740,8 +764,22 @@ async def upload_step_file(
     logger.info(f"[Upload] target_dir={target_dir}")
     os.makedirs(target_dir, exist_ok=True)
 
-    # 全部A股 / 39日新高：目录下已有文件先删除，只保留最新上传的
-    if step_type in ("upload_all_a", "match_39day_high"):
+    # 上传前先清空目标目录内旧文件（同名覆盖 + 目录已有文件先删除，只保留最新上传的）：
+    # - 全部A股 / 39日新高：全局或当日唯一公共数据源；
+    # - upload_weekly_ma20_high / upload_weekly_ma20_out：13号表公共数据 / 输出目录
+    #   （两类目录各自清空互不影响——批量上传时两类文件顺序落盘不互删，
+    #   且不会错删其他类型目录）；
+    # - upload_weekly_mv1000_high / upload_weekly_mv1000_out：14号表公共数据 / 输出目录
+    #   （注意区分两者，各自清空）；
+    # - upload_all_a_800 / upload_all_a_800_out：18号表公共数据 / 输出目录
+    #   （公共目录只允许1个文件，上传前先删除老的；输出目录同理）。
+    clear_dir_step_types = (
+        "upload_all_a", "match_39day_high",
+        "upload_weekly_ma20_high", "upload_weekly_ma20_out",
+        "upload_weekly_mv1000_high", "upload_weekly_mv1000_out",
+        "upload_all_a_800", "upload_all_a_800_out",
+    )
+    if step_type in clear_dir_step_types:
         for old in glob.glob(os.path.join(target_dir, "*.xlsx")) + glob.glob(os.path.join(target_dir, "*.xls")):
             try:
                 os.remove(old)
@@ -777,6 +815,10 @@ async def upload_step_file(
         invalidate_match_source_cache(target_dir)
         invalidate_39day_high_cache(target_dir)
         invalidate_all_a_cache(target_dir)
+        # 18号表「板块」列依赖的全部A股行业列映射缓存（weekly_common）同步失效
+        if step_type == "upload_all_a":
+            from services.weekly_common import invalidate_all_a_column_cache
+            invalidate_all_a_column_cache()
 
         return {
             "success": True,
@@ -883,13 +925,19 @@ class BatchRunRequest(BaseModel):
 
 # 聚合类依赖链顺序（依赖前者产出的必须排在其后）：
 # 条件交集 → 当月每日新增 → 本月AI筛选汇总 → 本月AI筛选20日线汇总
+#          → 本周20日线新高 / 本周总市值千亿新高 / 全部A股总市值大于800亿
 # 依据：当月每日新增读条件交集当日产出；本月AI筛选汇总/本月AI筛选20日线汇总
-# 分别读当月每日新增进库的首sheet（final）/第2个sheet（final_ma20）
+# 分别读当月每日新增进库的首sheet（final）/第2个sheet（final_ma20）；
+# 本周三类工作流（13/14/18号表）均只要求在「条件交集」之后（各自读当日
+# 快捷上传的公共数据文件，与当月类聚合无相互依赖，固定排在链尾保证满足）。
 _AGG_DEPENDENCY_ORDER = {
     "条件交集": 0,
     "当月每日新增": 1,
     "本月AI筛选汇总": 2,
     "本月AI筛选20日线汇总": 3,
+    "本周20日线新高": 4,
+    "本周总市值千亿新高": 5,
+    "全部A股总市值大于800亿": 6,
 }
 
 
@@ -906,7 +954,7 @@ def _sort_batch_workflow_ids(items: List[Tuple[int, str, bool]]) -> List[int]:
     agg_ids = [wid for wid, _t, is_agg in items if is_agg]
     type_map = {wid: t for wid, t, _is_agg in items}
 
-    agg_ids.sort(key=lambda wid: _AGG_DEPENDENCY_ORDER.get(type_map.get(wid, ""), 4))
+    agg_ids.sort(key=lambda wid: _AGG_DEPENDENCY_ORDER.get(type_map.get(wid, ""), 7))
     return normal_ids + agg_ids
 
 
@@ -991,6 +1039,7 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
 
                 start_time = datetime.now()
                 input_data = None
+                last_exec_result = None  # 当月每日新增：透传 _ma20_records 供 DB 入库
 
                 workflow_type = workflow.workflow_type or ""
                 result_entry["workflow_type"] = workflow_type
@@ -1039,6 +1088,7 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                         if exec_result.get("success"):
                             step_result["status"] = "completed"
                             step_result["message"] = exec_result.get("message", "")
+                            last_exec_result = exec_result
 
                             # 优先使用内存中的 DataFrame，避免磁盘读写
                             if "_df" in exec_result and exec_result["_df"] is not None:
@@ -1096,13 +1146,18 @@ async def _run_batch_workflows(task_id: str, workflow_ids: list, username: str):
                 if result_entry["output_file"] and result_entry["status"] == "completed" and not _tc.get("is_export_only"):
                     from services.workflow_result_service import save_workflow_result
                     try:
+                        # 当月每日新增：「20日线」sheet 导出已临时屏蔽，final_ma20 记录由 _ma20_records 透传
+                        ma20_override = None
+                        if workflow_type == "当月每日新增" and isinstance(last_exec_result, dict):
+                            ma20_override = last_exec_result.get("_ma20_records")
                         await save_workflow_result(
                             workflow_id=wf_id,
                             workflow_type=workflow_type,
                             workflow_name=workflow.name,
                             date_str=output_date_str,
                             file_path=result_entry["output_file"],
-                            step_type="final"
+                            step_type="final",
+                            ma20_records_override=ma20_override
                         )
                     except Exception as e:
                         logger.error(f"[批量] 工作流{wf_id} DB写入失败: {e}")

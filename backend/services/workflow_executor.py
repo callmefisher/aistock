@@ -29,6 +29,10 @@ from services.monthly_ai_summary import (  # noqa: F401
 )
 # 本月AI筛选20日线汇总工作流实现（独立文件，复用 monthly_ai_summary 共享逻辑）
 from services.monthly_ai_ma20_summary import execute_monthly_ai_ma20_summary
+# 本周类工作流（13/14/18号表）实现（独立文件，复用 weekly_common 公共逻辑）
+from services.weekly_ma20_close_high import execute_weekly_ma20_close_high
+from services.weekly_mv1000_high import execute_weekly_mv1000_high
+from services.all_a_800 import execute_all_a_800
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +241,12 @@ _MDN_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # 当月每日新增：站上20日线期间统计列固定起始日（列名前缀，固定不变，
 # 如"2026-03-18至2026-10-12站上20日线日期"），用于位置兜底时识别预期的日期列
 _MDN_MA20_PERIOD_START = "2026-03-18"
+
+# 17号表「20日线」sheet 导出开关：False=临时屏蔽该 sheet 生成（Excel 不再含该 sheet），
+# 但 DB 仍正常入库 step_type='final_ma20'（执行结果通过 _ma20_records 透传，
+# 见 save_workflow_result 的 ma20_records_override），后续依赖不受影响。
+# 注意：生成代码保留，后续如需恢复该 sheet 导出，改回 True 即可。
+EXPORT_MDN_MA20_SHEET = False
 
 
 def filter_monthly_daily_new_codes(rows: List[Tuple[str, str]], date_str: str) -> Tuple[List[str], List[str], bool]:
@@ -814,6 +824,15 @@ class WorkflowExecutor:
             elif step_type == "monthly_ai_ma20_summary":
                 # 本月AI筛选20日线汇总（实现位于 services/monthly_ai_ma20_summary.py 独立文件）
                 return await execute_monthly_ai_ma20_summary(self, step_config, date_str)
+            elif step_type == "weekly_ma20_close_high":
+                # 本周20日线新高 / 13号表（实现位于 services/weekly_ma20_close_high.py 独立文件）
+                return await execute_weekly_ma20_close_high(self, step_config, date_str)
+            elif step_type == "weekly_mv1000_high":
+                # 本周总市值千亿新高 / 14号表+20号表（实现位于 services/weekly_mv1000_high.py 独立文件）
+                return await execute_weekly_mv1000_high(self, step_config, date_str)
+            elif step_type == "all_a_800":
+                # 全部A股总市值大于800亿 / 18号表（实现位于 services/all_a_800.py 独立文件）
+                return await execute_all_a_800(self, step_config, date_str)
             elif step_type == "pledge_trend_analysis":
                 return await self._pledge_trend_analysis(step_config, input_data, date_str)
             elif step_type == "pending":
@@ -3146,16 +3165,18 @@ class WorkflowExecutor:
                                        ma20_marked: Optional[List[str]] = None) -> pd.DataFrame:
         """写当月每日新增 Excel（单文件双 sheet，每个 sheet 单列"证券代码"）：
         - sheet"当月每日新增"：百日新高当日新增（主输出）
-        - sheet"20日线"：站上20日线当日新增（ma20_codes 非 None 时写入）
+        - sheet"20日线"：站上20日线当日新增（ma20_codes 非 None 且 EXPORT_MDN_MA20_SHEET
+          开启时写入；当前临时屏蔽导出，DB 入库不受影响）
         居中 + 列宽 + 当日新增 #D8EAD8 背景（日期列严格只含数据日期才标绿）"""
         df_out = pd.DataFrame({"证券代码": output_codes})
+        export_ma20_sheet = ma20_codes is not None and EXPORT_MDN_MA20_SHEET
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             df_out.to_excel(writer, index=False, sheet_name="当月每日新增")
-            if ma20_codes is not None:
+            if export_ma20_sheet:
                 pd.DataFrame({"证券代码": ma20_codes}).to_excel(writer, index=False, sheet_name="20日线")
 
         marked_map = {"当月每日新增": set(marked_codes)}
-        if ma20_codes is not None:
+        if export_ma20_sheet:
             marked_map["20日线"] = set(ma20_marked or [])
         try:
             from openpyxl import load_workbook as _lw
@@ -3276,6 +3297,10 @@ class WorkflowExecutor:
             "_df": df_out,
             "new_codes": output_codes,
             "marked_codes": marked_codes,
+            # 20日线 sheet 导出已临时屏蔽（EXPORT_MDN_MA20_SHEET=False）：
+            # DB 入库数据经此字段透传（None=数据缺失跳过 final_ma20；[]=当日无新增），
+            # 由 api/workflows.py 调 save_workflow_result(ma20_records_override=...) 使用
+            "_ma20_records": None if ma20_codes is None else [{"证券代码": c} for c in ma20_codes],
         }
 
     async def _export_ma20_trend(self, config: Dict, date_str: Optional[str] = None) -> Dict[str, Any]:

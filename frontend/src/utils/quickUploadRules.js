@@ -121,6 +121,78 @@ export function resolveTarget(filename, date_str = '{date}') {
     }
   }
 
+  // 专用规则 W0: 「13 占20日线无振幅」输出文件（13号表工作流产物，优先级最高）
+  // e.g. `13 占20日线无振幅 1015.xlsx` → data/excel/{date}/本周20日收盘价新高输出/
+  // 注意：含"20日线"字样但不是老的"20日均线"公共数据，必须先于 SUBDIR_KEYWORDS 判定
+  if (base.includes('占20日线无振幅')) {
+    const d = date_str || '{date}'
+    return {
+      filename,
+      workflow_type: '并购重组',
+      step_type: 'upload_weekly_ma20_out',
+      sub_dir: '本周20日收盘价新高输出',
+      target_dir: `data/excel/${d}/本周20日收盘价新高输出/`,
+      status: 'resolved',
+      reason: '含"占20日线无振幅" → 13号表输出目录（本周20日收盘价新高输出）',
+    }
+  }
+
+  // 专用规则 W1: 「本周20日收盘价新高」公共文件
+  // 文件名同时含"收盘价"+"20日均线/20日线"+"上周"（新文件，勿当作老的"20日均线"公共数据）
+  // e.g. `本周20日收盘价大于20日均线且大于上周最高价格1016.xlsx` → data/excel/{date}/本周20日收盘价新高/
+  if (base.includes('收盘价') && (base.includes('20日均线') || base.includes('20日线')) && base.includes('上周')) {
+    const d = date_str || '{date}'
+    return {
+      filename,
+      workflow_type: '并购重组',
+      step_type: 'upload_weekly_ma20_high',
+      sub_dir: '本周20日收盘价新高',
+      target_dir: `data/excel/${d}/本周20日收盘价新高/`,
+      status: 'resolved',
+      reason: '含"收盘价"+"20日均线/20日线"+"上周" → 本周20日收盘价新高（公共数据）',
+    }
+  }
+
+  // 专用规则 W2: 「本周总市值千亿新高」公共文件 / 「14」开头输出文件
+  // 文件名含"总市值大于"+"亿"+"大于上周最高价格"；
+  // 若同时以"14"开头且结尾4位为数字（如 `14 总市值大于1000亿 本周最高价格大于上周最高价格1016.xlsx`）
+  // → 输出目录，否则 → 公共目录。注意区分两者。
+  if (base.includes('总市值大于') && base.includes('亿') && base.includes('大于上周最高价格')) {
+    const d = date_str || '{date}'
+    const isOut = base.startsWith('14') && /^\d{4}$/.test(base.slice(-4))
+    return {
+      filename,
+      workflow_type: '并购重组',
+      step_type: isOut ? 'upload_weekly_mv1000_out' : 'upload_weekly_mv1000_high',
+      sub_dir: isOut ? '本周总市值千亿新高输出' : '本周总市值千亿新高',
+      target_dir: `data/excel/${d}/${isOut ? '本周总市值千亿新高输出' : '本周总市值千亿新高'}/`,
+      status: 'resolved',
+      reason: isOut
+        ? '"14"开头+结尾4位数字 → 14号表输出目录（本周总市值千亿新高输出）'
+        : '含"总市值大于"+"亿"+"大于上周最高价格" → 本周总市值千亿新高（公共数据）',
+    }
+  }
+
+  // 专用规则 W3: 「全部A股800亿」公共文件 / 「18」开头输出文件
+  // 文件名含"全部A股总市值大于800亿"；
+  // 若同时以"18"开头且结尾4位为数字（如 `18 全部A股总市值大于800亿1015.xlsx`）
+  // → 输出目录，否则 → 公共目录。注意与老的"全部A股"全局公共目录区分。
+  if (base.includes('全部A股总市值大于800亿')) {
+    const d = date_str || '{date}'
+    const isOut = base.startsWith('18') && /^\d{4}$/.test(base.slice(-4))
+    return {
+      filename,
+      workflow_type: '并购重组',
+      step_type: isOut ? 'upload_all_a_800_out' : 'upload_all_a_800',
+      sub_dir: isOut ? '全部A股800亿输出' : '全部A股800亿',
+      target_dir: `data/excel/${d}/${isOut ? '全部A股800亿输出' : '全部A股800亿'}/`,
+      status: 'resolved',
+      reason: isOut
+        ? '"18"开头+结尾4位数字 → 18号表输出目录（全部A股800亿输出）'
+        : '含"全部A股总市值大于800亿" → 全部A股800亿（公共数据）',
+    }
+  }
+
   // 专用规则 1: 全部A股（含"全部A股"关键字；即使含"板块"等关键字也优先当作全部A股）
   // e.g. `6、全部A股 板块信息2026 0901.xlsx` → data/excel/全部A股/（而非一级板块）
   if (base.includes('全部A股')) {

@@ -3,7 +3,7 @@ import json
 import os
 import logging
 import pandas as pd
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from sqlalchemy import text
 from core.database import AsyncSessionLocal
 
@@ -79,7 +79,8 @@ async def save_workflow_result(
     workflow_name: str,
     date_str: str,
     file_path: str,
-    step_type: str = "final"
+    step_type: str = "final",
+    ma20_records_override: Optional[List[dict]] = None,
 ) -> bool:
     """读取最终 Excel，压缩为 JSON 写入 DB。
 
@@ -87,6 +88,11 @@ async def save_workflow_result(
     （供「本月AI筛选汇总」读取）；第 2 个 sheet「20日线」（站上20日线当日新增）
     另存 step_type='final_ma20'（供「本月AI筛选20日线汇总」DB优先读取）。
     文件无该 sheet（当日20日线数据缺失）时跳过 final_ma20，不报错。
+
+    ma20_records_override（仅当月每日新增生效）：17号表「20日线」sheet 导出已临时
+    屏蔽（EXPORT_MDN_MA20_SHEET=False），Excel 文件不再含该 sheet，此时由执行器
+    通过 _ma20_records 透传记录列表入库（None=数据缺失跳过；[]=当日无新增照常入库）；
+    不传（None）时回退为从文件读取（兼容历史文件/开关恢复后的路径）。
     """
     try:
         # 质押类型：final 文件是双 sheet（中大盘{date} / 小盘{date}），需合并读入，
@@ -130,21 +136,28 @@ async def save_workflow_result(
 
         # 「当月每日新增」：第2个sheet「20日线」同样入库（step_type=final_ma20）
         if workflow_type == "当月每日新增" and step_type == "final":
-            try:
-                df_ma20 = pd.read_excel(file_path, sheet_name="20日线")
-                df_ma20.columns = [_normalize_col(c) for c in df_ma20.columns]
-                df_ma20 = df_ma20.fillna('')
-                records_ma20 = df_ma20.to_dict('records')
-                await _upsert_result_records(
-                    workflow_id, workflow_type, workflow_name,
-                    date_str, "final_ma20", file_path, records_ma20, df_ma20.columns.tolist(),
-                )
-                logger.info(f"当月每日新增20日线sheet已保存到DB: workflow_id={workflow_id}, rows={len(df_ma20)}")
-            except ValueError:
-                # 文件无「20日线」sheet（当日20日线数据缺失，步骤内跳过该sheet）
-                logger.info(f"当月每日新增：文件无「20日线」sheet，跳过 final_ma20 入库: {file_path}")
-            except Exception as e:
-                logger.warning(f"当月每日新增：「20日线」sheet入库失败: {e}")
+            records_ma20: Optional[List[dict]] = ma20_records_override
+            if records_ma20 is None:
+                # 未提供透传记录：从文件第2个sheet「20日线」读取（历史路径）
+                try:
+                    df_ma20 = pd.read_excel(file_path, sheet_name="20日线")
+                    df_ma20.columns = [_normalize_col(c) for c in df_ma20.columns]
+                    df_ma20 = df_ma20.fillna('')
+                    records_ma20 = df_ma20.to_dict('records')
+                except ValueError:
+                    # 文件无「20日线」sheet（当日20日线数据缺失或导出已屏蔽）
+                    logger.info(f"当月每日新增：文件无「20日线」sheet且无透传记录，跳过 final_ma20 入库: {file_path}")
+                except Exception as e:
+                    logger.warning(f"当月每日新增：「20日线」sheet入库失败: {e}")
+            if records_ma20 is not None:
+                try:
+                    await _upsert_result_records(
+                        workflow_id, workflow_type, workflow_name,
+                        date_str, "final_ma20", file_path, records_ma20, ["证券代码"],
+                    )
+                    logger.info(f"当月每日新增20日线已保存到DB: workflow_id={workflow_id}, rows={len(records_ma20)}")
+                except Exception as e:
+                    logger.warning(f"当月每日新增：final_ma20 入库失败: {e}")
 
         return True
     except Exception as e:
