@@ -170,11 +170,15 @@ def _export_table20(base_dir: str, date_str: str, mv1000_path: str, mmdd: str) -
     ws.title = mmdd
     for row in sorted_col:
         ws.append([row[0] if row and row[0] is not None else ""])
-    # 列宽加大（股票代码如 600519.SH 需要）
-    ws.column_dimensions["A"].width = 16
-    # 数据行单元格格式：数值、保留2位小数——只改格式不改值（文本内容不受影响）
-    for r in range(2, ws.max_row + 1):
-        ws.cell(row=r, column=1).number_format = "0.00"
+    # 样式与用户模板「21 总市值大于1000亿....xlsx」完全一致：
+    # 全部单元格（含表头）数值格式 0.00_);[Red]\(0.00\)（数值2位、负数红色括号），
+    # 宋体11，A列宽18.75——只改格式不改值（文本内容不受影响）
+    from openpyxl.styles import Font
+    for r in range(1, ws.max_row + 1):
+        cell = ws.cell(row=r, column=1)
+        cell.number_format = "0.00_);[Red]\\(0.00\\)"
+        cell.font = Font(name="宋体", size=11)
+    ws.column_dimensions["A"].width = 18.75
     wb.save(out_path)
     wb.close()
     return out_path
