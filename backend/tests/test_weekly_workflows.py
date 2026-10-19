@@ -153,6 +153,61 @@ def test_resolve_output_file_new_mode(tmp_path):
     assert path == os.path.join(str(tmp_path), "2026-10-15", "输出", "a1015.xlsx")
 
 
+def test_resolve_backtrack_picks_largest_mmdd_not_mtime(tmp_path):
+    """用户实测场景回归：回溯目录同时存在 1015 老文件（用户后上传、mtime 更新）
+    与 1016 工作流文件（先生成、mtime 较旧）→ 必须拷贝文件名日期最大的 1016，
+    不得按 mtime 误选 1015。13/14/18 三表共用该解析逻辑。"""
+    import time
+    base = str(tmp_path)
+    # 10-16 回溯目录：先写 1016（老mtime），后写 1015（新mtime，模拟用户上传）
+    d16 = os.path.join(base, "2026-10-16", "输出")
+    os.makedirs(d16)
+    f16 = os.path.join(d16, "13 占20日线无振幅1016.xlsx")
+    pd.DataFrame({"日期": ["10月16日"], "股票数量": [100]}).to_excel(f16, index=False)
+    old_ts = time.time() - 3600
+    os.utime(f16, (old_ts, old_ts))
+    f15 = os.path.join(d16, "13 占20日线无振幅 1015.xlsx")
+    pd.DataFrame({"日期": ["10月15日"], "股票数量": [50]}).to_excel(f15, index=False)
+    # f15 mtime = now > f16 mtime：若按 mtime 排序会错误选中 1015
+
+    # 数据日期 10-17，当日目录无文件 → 回溯 10-16
+    path, mode = resolve_daily_output_file(base, "2026-10-17", "输出", "13 占20日线无振幅1017.xlsx")
+    assert mode == "copy"
+    assert os.path.basename(path) == "13 占20日线无振幅1017.xlsx"
+    # 拷贝内容来自 1016（文件名日期最大），而非 mtime 更新的 1015
+    wb = load_workbook(path)
+    ws = wb.worksheets[0]
+    assert ws.cell(2, 1).value == "10月16日"
+    assert ws.cell(2, 2).value == 100
+    # 两个源文件均原样保留
+    assert os.path.exists(f15) and os.path.exists(f16)
+
+
+def test_resolve_daily_dir_multiple_files_picks_largest_mmdd(tmp_path):
+    """数据日期目录内有多个其他名文件 → 同样按文件名 MMDD 最大选源"""
+    base = str(tmp_path)
+    d = os.path.join(base, "2026-10-17", "输出")
+    os.makedirs(d)
+    pd.DataFrame({"x": ["old"]}).to_excel(os.path.join(d, "14 总市值大于1000亿 本周最高价格大于上周最高价格1015.xlsx"), index=False)
+    pd.DataFrame({"x": ["new"]}).to_excel(os.path.join(d, "14 总市值大于1000亿 本周最高价格大于上周最高价格1016.xlsx"), index=False)
+    path, mode = resolve_daily_output_file(base, "2026-10-17", "输出",
+                                           "14 总市值大于1000亿 本周最高价格大于上周最高价格1017.xlsx")
+    assert mode == "copy"
+    wb = load_workbook(path)
+    assert wb.worksheets[0].cell(2, 1).value == "new", "应选文件名日期最大的 1016"
+
+
+def test_filename_mmdd_key_extraction():
+    """MMDD 键提取：13/14/18 号表命名格式 + 无日期名兜底"""
+    from services.weekly_common import _filename_mmdd_key
+    assert _filename_mmdd_key("/x/13 占20日线无振幅1016.xlsx") == 1016
+    assert _filename_mmdd_key("/x/13 占20日线无振幅 1015.xlsx") == 1015
+    assert _filename_mmdd_key("/x/14 总市值大于1000亿 本周最高价格大于上周最高价格1016.xlsx") == 1016
+    assert _filename_mmdd_key("/x/18 全部A股总市值大于800亿1015.xlsx") == 1015
+    assert _filename_mmdd_key("/x/20 总市值大于1000亿 本周最高价格大于上周最高价格.xlsx") == -1
+    assert _filename_mmdd_key("/x/无数字.xlsx") == -1
+
+
 def test_resolve_output_file_reuse_same_name(tmp_path):
     """数据日期目录已有同名可读文件 → 直接复用（同名强制覆盖更新语义）"""
     d = os.path.join(str(tmp_path), "2026-10-15", "输出")

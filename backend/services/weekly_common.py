@@ -16,6 +16,7 @@
 import os
 import glob
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -93,6 +94,17 @@ def is_readable_xlsx(path: str) -> bool:
         return False
 
 
+def _filename_mmdd_key(path: str) -> int:
+    """文件名末尾 MMDD 数字键（如「13 占20日线无振幅1016.xlsx」→ 1016）；
+    提取不到返回 -1（排在有日期文件之后）。
+
+    回溯目录可能同时存在多个日期版本（如用户上传的 1015 老文件 +
+    工作流生成的 1016 文件，且上传者 mtime 更新），选源必须以
+    文件名日期为准（1016 > 1015），mtime 仅作同日期兜底。"""
+    m = re.search(r"(\d{3,4})\s*\.xlsx$", os.path.basename(path), re.IGNORECASE)
+    return int(m.group(1)) if m else -1
+
+
 def resolve_daily_output_file(base_dir: str, date_str: str, out_subdir: str,
                               default_name: str, log_tag: str = "") -> Tuple[str, str]:
     """本周类工作流目标文件解析（35天回溯规则，含数据日期当日）。
@@ -103,8 +115,12 @@ def resolve_daily_output_file(base_dir: str, date_str: str, out_subdir: str,
       * 默认名文件损坏 → 警告并跳过（继续找其他候选，不因坏文件阻断工作流）；
       * 其他可读文件 → 拷贝最新一个并重命名为默认名，在新副本上编辑；
     - 数据日期目录无可读文件 → 从近到远回溯 LOOKBACK_DAYS-1 个历史日期，
-      拷贝最近一个可读文件到数据日期目录、重命名为默认名；
+      拷贝最近日期目录中最新一个可读文件到数据日期目录、重命名为默认名；
     - 35日内均无可读文件 → 全新生成（路径=数据日期目录/默认名）。
+
+    「最新」判定：候选多个文件时，优先取文件名末尾 MMDD 数值最大者
+    （如 1016 > 1015；用户上传的 1015 老文件即使 mtime 更新也不得优先于
+    工作流生成的 1016），同 MMDD 或无 MMDD 时按 mtime 降序兜底。
 
     返回 (目标文件路径, 模式)，模式 ∈ {"reuse", "copy", "new"}。
     """
@@ -120,6 +136,10 @@ def resolve_daily_output_file(base_dir: str, date_str: str, out_subdir: str,
         shutil.copyfile(src, dst)
         return dst
 
+    def _sort_candidates(paths: List[str]) -> List[str]:
+        # 文件名 MMDD 优先（降序），mtime 兜底
+        return sorted(paths, key=lambda p: (_filename_mmdd_key(p), os.path.getmtime(p)), reverse=True)
+
     # ---- 数据日期目录 ----
     if default_name in names:
         p = os.path.join(out_dir, default_name)
@@ -129,7 +149,7 @@ def resolve_daily_output_file(base_dir: str, date_str: str, out_subdir: str,
         logger.warning(f"[{tag}] 数据日期目录同名文件损坏，跳过: {p}")
 
     others = [os.path.join(out_dir, n) for n in names if n != default_name]
-    for src in sorted(others, key=lambda p: os.path.getmtime(p), reverse=True):
+    for src in _sort_candidates(others):
         if is_readable_xlsx(src):
             dst = _copy_as_default(src)
             logger.info(f"[{tag}] 数据日期目录其他文件({os.path.basename(src)})拷贝重命名为 {default_name}，在新副本上编辑")
@@ -140,7 +160,7 @@ def resolve_daily_output_file(base_dir: str, date_str: str, out_subdir: str,
     for back_date in scan_back_dates(date_str)[1:]:
         back_dir = os.path.join(base_dir, back_date, out_subdir)
         back_names = [os.path.join(back_dir, n) for n in list_excel_files(back_dir)]
-        for src in sorted(back_names, key=lambda p: os.path.getmtime(p), reverse=True):
+        for src in _sort_candidates(back_names):
             if is_readable_xlsx(src):
                 dst = _copy_as_default(src)
                 logger.info(f"[{tag}] 回溯到 {back_date}，拷贝 {os.path.basename(src)} → {default_name}，在新副本上编辑")
