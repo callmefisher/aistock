@@ -262,7 +262,7 @@ describe('resolveTarget - 专用规则优先级（叠加质押 vs 全部A股）'
 })
 
 describe('resolveTarget - 本周类新文件识别（13/14/18号表）', () => {
-  it('W0: 含"占20日线无振幅" → 13号表输出目录（优先于20日线子目录关键字）', () => {
+  it('W0: "13"开头 + 20日线 + 无振幅 → 13号表输出目录（优先于20日线子目录关键字）', () => {
     const r = resolveTarget('13 占20日线无振幅 1015.xlsx', '2026-10-15')
     expect(r.status).toBe('resolved')
     expect(r.step_type).toBe('upload_weekly_ma20_out')
@@ -270,22 +270,41 @@ describe('resolveTarget - 本周类新文件识别（13/14/18号表）', () => {
     expect(r.target_dir).toBe('data/excel/2026-10-15/本周20日收盘价新高输出/')
   })
 
-  it('W1: 收盘价+20日均线+上周 → 本周20日收盘价新高（不当作老的20日均线公共数据）', () => {
-    const r = resolveTarget('本周20日收盘价大于20日均线且大于上周最高价格1016.xlsx', '2026-10-16')
+  it('W0: "13"开头 + 20日均线 + 无振幅 → 13号表输出目录（关键词同义）', () => {
+    const r = resolveTarget('13 20日均线无振幅 1015.xlsx', '2026-10-15')
+    expect(r.step_type).toBe('upload_weekly_ma20_out')
+    expect(r.target_dir).toBe('data/excel/2026-10-15/本周20日收盘价新高输出/')
+  })
+
+  it('W0: 含"20日均线"+"无振幅"（非13开头）→ 本周20日收盘价新高（公共数据）', () => {
+    const r = resolveTarget('本周20日收盘价 大于20日均线 无振幅1016.xlsx', '2026-10-16')
     expect(r.status).toBe('resolved')
     expect(r.step_type).toBe('upload_weekly_ma20_high')
     expect(r.sub_dir).toBe('本周20日收盘价新高')
     expect(r.target_dir).toBe('data/excel/2026-10-16/本周20日收盘价新高/')
   })
 
-  it('W1: 收盘价+20日线+上周（同义词）同样命中', () => {
-    const r = resolveTarget('收盘价站上20日线大于上周最高价格.xlsx', '2026-10-16')
+  it('W0: 含"20日线"+"无振幅"（非13开头）→ 本周20日收盘价新高', () => {
+    const r = resolveTarget('站上20日线 无振幅1016.xlsx', '2026-10-16')
     expect(r.step_type).toBe('upload_weekly_ma20_high')
   })
 
-  it('W1: 只含20日均线不含上周 → 仍走老的 match_ma20', () => {
+  it('W0: 含"20日均线"+"有振幅" → 不命中W0，落回老的 match_ma20（data/excel/{date}/20日均线/）', () => {
+    const r = resolveTarget('20日均线 有振幅0422.xlsx', '2026-04-22')
+    expect(r.step_type).toBe('match_ma20')
+    expect(r.sub_dir).toBe('20日均线')
+    expect(r.target_dir).toBe('data/excel/2026-04-22/20日均线/')
+  })
+
+  it('W0: 纯"20日均线"（不含振幅字样）→ 仍走老的 match_ma20（兼容老公共文件）', () => {
     const r = resolveTarget('20日均线0422.xlsx')
     expect(r.step_type).toBe('match_ma20')
+  })
+
+  it('W0: 非数字"13"开头的无振幅文件 → 公共目录而非输出目录', () => {
+    const r = resolveTarget('占20日线无振幅 1015.xlsx', '2026-10-15')
+    expect(r.step_type).toBe('upload_weekly_ma20_high')
+    expect(r.target_dir).toBe('data/excel/2026-10-15/本周20日收盘价新高/')
   })
 
   it('W2 公共文件: 总市值大于+亿+大于上周最高价格 → 本周总市值千亿新高', () => {

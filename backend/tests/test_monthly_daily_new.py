@@ -413,8 +413,14 @@ def test_monthly_daily_new_single_digit_month(tmp_path):
 
 def test_monthly_daily_new_ma20_output(tmp_path):
     """主文件含两个 sheet → 单文件双 sheet："当月每日新增"=百日新高新增 +
-    "20日线"=站上20日线新增，两路过滤/标绿逻辑一致"""
+    "20日线"=站上20日线新增，两路过滤/标绿逻辑一致。
+
+    20日线 sheet 导出当前被 EXPORT_MDN_MA20_SHEET=False 临时屏蔽：
+    Excel 不再含该 sheet，但数据经结果 _ma20_records 透传（DB 入库不受影响，
+    由 test_weekly_workflows 的透传测试覆盖）；开关恢复 True 后本测试自动回到
+    完整断言（生成代码未删除）。"""
     base = str(tmp_path)
+    from services.workflow_executor import EXPORT_MDN_MA20_SHEET
     _make_intersection_file(base, "2026-10-09", [
         ("000001.SZ", "2026-10-01,2026-10-09"),   # 当月更早 → 排除
         ("000002.SZ", "2026-10-09"),               # 纯新 → 输出+标绿
@@ -431,8 +437,21 @@ def test_monthly_daily_new_ma20_output(tmp_path):
     assert result["new_codes"] == ["000002.SZ"]
     assert "20日线新增2个代码（标绿1个）" in result["message"]
 
-    # sheet 结构：主sheet在前，20日线sheet在后
     from openpyxl import load_workbook
+    if not EXPORT_MDN_MA20_SHEET:
+        # 屏蔽期：Excel 仅主 sheet；20日线记录经 _ma20_records 透传供 DB 入库
+        assert load_workbook(out_file).sheetnames == ["当月每日新增"]
+        assert result["_ma20_records"] == [{"证券代码": "000001.SZ"}, {"证券代码": "000004.SZ"}]
+        header, values, fills = _read_output(out_file)
+        assert header == "证券代码"
+        assert values == ["000002.SZ"]
+        assert fills == ["FFD8EAD8"]
+        # 幂等：重复执行透传结果一致
+        result2 = _run_step(tmp_path, {"date_str": "2026-10-09"})
+        assert result2["_ma20_records"] == result["_ma20_records"]
+        return
+
+    # sheet 结构：主sheet在前，20日线sheet在后
     wb = load_workbook(out_file)
     assert wb.sheetnames == ["当月每日新增", "20日线"]
 
@@ -458,7 +477,9 @@ def test_monthly_daily_new_ma20_output(tmp_path):
 
 
 def test_monthly_daily_new_ma20_from_db(tmp_path):
-    """20日线数据源 DB（stock_pools 选股池）优先：Excel 无站上20日线 sheet 时仍写入20日线 sheet"""
+    """20日线数据源 DB（stock_pools 选股池）优先：Excel 无站上20日线 sheet 时仍产出20日线数据。
+    20日线 sheet 导出被 EXPORT_MDN_MA20_SHEET 临时屏蔽时，改经 _ma20_records 透传（DB 入库不受影响）；
+    开关恢复 True 后自动回到 Excel sheet 断言。"""
     pools = [_pool_row("2026-10-09", [
         ("000001.SZ", "2026-10-09"),
         ("000002.SZ", "2026-10-01,2026-10-09"),   # 当月更早 → 排除
@@ -469,6 +490,12 @@ def test_monthly_daily_new_ma20_from_db(tmp_path):
         result = _run_step(tmp_path, {"date_str": "2026-10-09"})
     assert result["success"] is True
     from openpyxl import load_workbook
+    from services.workflow_executor import EXPORT_MDN_MA20_SHEET
+    if not EXPORT_MDN_MA20_SHEET:
+        # 屏蔽期：Excel 仅主 sheet；DB 来源的20日线新增经 _ma20_records 透传
+        assert load_workbook(result["file_path"]).sheetnames == ["当月每日新增"]
+        assert result["_ma20_records"] == [{"证券代码": "000001.SZ"}]
+        return
     assert load_workbook(result["file_path"]).sheetnames == ["当月每日新增", "20日线"]
     _, values, fills = _read_output(result["file_path"], "20日线")
     assert values == ["000001.SZ"]

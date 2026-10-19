@@ -764,15 +764,16 @@ async def upload_step_file(
     logger.info(f"[Upload] target_dir={target_dir}")
     os.makedirs(target_dir, exist_ok=True)
 
-    # 上传前先清空目标目录内旧文件（同名覆盖 + 目录已有文件先删除，只保留最新上传的）：
-    # - 全部A股 / 39日新高：全局或当日唯一公共数据源；
-    # - upload_weekly_ma20_high / upload_weekly_ma20_out：13号表公共数据 / 输出目录
-    #   （两类目录各自清空互不影响——批量上传时两类文件顺序落盘不互删，
-    #   且不会错删其他类型目录）；
-    # - upload_weekly_mv1000_high / upload_weekly_mv1000_out：14号表公共数据 / 输出目录
-    #   （注意区分两者，各自清空）；
-    # - upload_all_a_800 / upload_all_a_800_out：18号表公共数据 / 输出目录
-    #   （公共目录只允许1个文件，上传前先删除老的；输出目录同理）。
+    # 上传前清空【目标目录自身】的旧文件（同名覆盖 + 目录已有文件先删除，只保留最新上传的）。
+    # 清理规则（各类目录完全独立，互不影响）：
+    #   上传A只清理A目录，上传B只清理B目录——绝不联动清理其他类型目录；
+    #   如「本周20日收盘价新高」（公共数据）与「本周20日收盘价新高输出」（13号表输出）
+    #   两个目录各自独立：上传公共文件只清公共目录，上传输出文件只清输出目录。
+    # 涉及类型：
+    #   - upload_all_a / match_39day_high：全局或当日唯一公共数据源；
+    #   - upload_weekly_ma20_high / upload_weekly_ma20_out：13号表公共数据 / 输出目录；
+    #   - upload_weekly_mv1000_high / upload_weekly_mv1000_out：14号表公共数据 / 输出目录；
+    #   - upload_all_a_800 / upload_all_a_800_out：18号表公共数据 / 输出目录。
     clear_dir_step_types = (
         "upload_all_a", "match_39day_high",
         "upload_weekly_ma20_high", "upload_weekly_ma20_out",
@@ -780,6 +781,7 @@ async def upload_step_file(
         "upload_all_a_800", "upload_all_a_800_out",
     )
     if step_type in clear_dir_step_types:
+        # 只清空 target_dir 自身（本 step_type 的目标目录），不触碰任何其他目录
         for old in glob.glob(os.path.join(target_dir, "*.xlsx")) + glob.glob(os.path.join(target_dir, "*.xls")):
             try:
                 os.remove(old)
@@ -1400,14 +1402,25 @@ async def download_workflow_result(
         logger.warning(f"[下载-DEBUG] 目录不存在: {daily_dir}")
 
     if file_name:
-        file_path = os.path.join(daily_dir, file_name)
+        # file_name 支持相对 {base_dir}/{date} 的子目录路径
+        # （如「20号表本周总市值千亿新高A列/20 xxx.xlsx」，14号表工作流附带输出的20号表下载）；
+        # 普通文件名仍在 daily_dir 下解析（原行为不变）。normpath 防路径穿越。
+        if "/" in file_name or "\\" in file_name:
+            date_root = os.path.join(BASE_DIR, output_date_str)
+            file_path = os.path.normpath(os.path.join(date_root, file_name))
+            root_norm = os.path.normpath(date_root)
+            if file_path != root_norm and not file_path.startswith(root_norm + os.sep):
+                raise HTTPException(status_code=400, detail="非法文件路径")
+        else:
+            file_path = os.path.join(daily_dir, file_name)
         logger.info(f"[下载-DEBUG] 尝试下载: file_path={file_path}, exists={os.path.exists(file_path)}")
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail=f"文件不存在: {file_name}")
 
         import tempfile
+        download_name = os.path.basename(file_path.replace("\\", "/"))
         tmp_dir = tempfile.mkdtemp()
-        tmp_path = os.path.join(tmp_dir, file_name)
+        tmp_path = os.path.join(tmp_dir, download_name)
         shutil.copy2(file_path, tmp_path)
 
         def cleanup_tmp():
@@ -1420,7 +1433,7 @@ async def download_workflow_result(
 
         return FileResponse(
             path=tmp_path,
-            filename=file_name,
+            filename=download_name,
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             headers={
                 "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",

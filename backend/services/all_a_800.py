@@ -29,7 +29,7 @@ from services.weekly_common import (
     read_sheet_rows,
     resolve_daily_output_file,
 )
-from utils.stock_code_normalizer import normalize_stock_code
+from utils.stock_code_normalizer import match_stock_code_flexible, normalize_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +60,31 @@ def resolve_output_filename(config: dict, date_str: str) -> str:
 
 
 def _find_code_col_index(header: List) -> int:
-    """定位代码列索引（0起）：优先「股票代码」，其次「证券代码」，否则第0列。"""
+    """定位代码列索引（0起）：优先「股票代码」，其次「证券代码」（均含包含匹配——
+    源文件表头可能是多行文本如"证券代码\\n[单位]只"），否则第0列。"""
     for i, h in enumerate(header):
         if str(h).strip() == "股票代码":
             return i
     for i, h in enumerate(header):
-        if str(h).strip() == "证券代码":
+        if "股票代码" in str(h):
+            return i
+    for i, h in enumerate(header):
+        if "证券代码" in str(h):
             return i
     return 0
+
+
+def _is_valid_stock_row(code_raw) -> bool:
+    """过滤非证券代码行：如表尾“数据来源：xxx”说明行——normalize 对其返回非空文本，
+    会污染代码集合与新增行识别，必须在匹配前排除。"""
+    if code_raw is None:
+        return False
+    s = str(code_raw).strip()
+    if not s or s.startswith("数据来源"):
+        return False
+    # normalize 后必须形如纯数字代码（可带 .SH/.SZ/.BJ 后缀）
+    nc = normalize_stock_code(s)
+    return bool(re.match(r"^\d{6}(\.(SH|SZ|BJ))?$", nc))
 
 
 def _sheet_header(ws) -> List:
@@ -118,8 +135,17 @@ async def execute_all_a_800(executor, config: dict, date_str: Optional[str] = No
         assert ws is not None
         ws.title = "Sheet1"
     else:
-        wb = load_workbook(target_path)
-        ws = wb.worksheets[0]
+        # reuse/copy 模式：目标文件解析已验证可读，此处 try 兜底竞态/极端损坏，降级全新生成
+        try:
+            wb = load_workbook(target_path)
+            ws = wb.worksheets[0]
+        except Exception as e:
+            logger.warning(f"[全部A股800亿] 目标文件加载失败，降级全新生成: {target_path}, {e}")
+            wb = Workbook()
+            ws = wb.active
+            assert ws is not None
+            ws.title = "Sheet1"
+            mode = "new(降级)"
 
     # 表头为空（如拷贝来的空模板）时，先用数据源前3列表头初始化
     if ws.max_row < 1 or ws.cell(row=1, column=1).value in (None, ""):
@@ -128,34 +154,50 @@ async def execute_all_a_800(executor, config: dict, date_str: Optional[str] = No
 
     # ------------------------------------------------------------------
     # 对比新增：B 中 A 不存在的证券代码 → 前3列追加到 A 底部
+    # （“数据来源：xxx”等非代码行一律排除，不参与比对也不追加）
     # ------------------------------------------------------------------
     a_header = _sheet_header(ws)
     a_code_col = _find_code_col_index(a_header) + 1  # 1起
     b_code_idx = _find_code_col_index(public_rows[0])
 
     existing_codes = set()
+    last_valid_row = 1  # 最后一个有效代码数据行（1=仅有表头）
     for r in range(2, ws.max_row + 1):
-        nc = normalize_stock_code(ws.cell(row=r, column=a_code_col).value)
-        if nc:
-            existing_codes.add(nc)
+        raw = ws.cell(row=r, column=a_code_col).value
+        if _is_valid_stock_row(raw):
+            existing_codes.add(normalize_stock_code(raw))
+            last_valid_row = r
 
     new_rows = []
+    skipped_invalid = 0
     for row in public_rows[1:]:
         if not any(v not in (None, "") for v in row):
             continue
-        nc = normalize_stock_code(row[b_code_idx]) if b_code_idx < len(row) else None
-        if not nc or nc in existing_codes:
+        raw = row[b_code_idx] if b_code_idx < len(row) else None
+        if not _is_valid_stock_row(raw):
+            skipped_invalid += 1
+            continue
+        nc = normalize_stock_code(raw)
+        if nc in existing_codes:
             continue
         new_rows.append(row)
         existing_codes.add(nc)
 
-    append_start = ws.max_row + 1 if ws.max_row >= 1 else 2
-    for i, row in enumerate(new_rows):
-        r = append_start + i
-        for c, v in enumerate(row[:NEW_ROW_COPY_COLS], start=1):
-            ws.cell(row=r, column=c).value = v
+    # 新增行紧贴最后一个有效数据行追加（表格下方可能有“数据来源”等杂散行，
+    # insert_rows 将其下移，不覆盖不跳行）
+    if new_rows:
+        insert_at = last_valid_row + 1
+        ws.insert_rows(insert_at, amount=len(new_rows))
+        for i, row in enumerate(new_rows):
+            r = insert_at + i
+            for c, v in enumerate(row[:NEW_ROW_COPY_COLS], start=1):
+                ws.cell(row=r, column=c).value = v
+        last_valid_row = insert_at + len(new_rows) - 1
 
-    new_row_nums = list(range(append_start, append_start + len(new_rows)))
+    # 全部数据行范围（含新增）：39日新高整列重匹配用
+    all_data_rows = list(range(2, last_valid_row + 1))
+    # 新增行范围（板块列仅新增行填充）
+    new_row_nums = list(range(last_valid_row - len(new_rows) + 1, last_valid_row + 1))
 
     # ------------------------------------------------------------------
     # 「板块」列：不存在则在C列之后新增；仅新增行填充（[行业类别]全部 匹配）
@@ -168,14 +210,25 @@ async def execute_all_a_800(executor, config: dict, date_str: Optional[str] = No
         logger.info("[全部A股800亿] 已新增「板块」列")
 
     sector_map = load_all_a_column_map(base_dir, ALL_A_INDUSTRY_MARKER)
+    sector_hit = 0
     for r in new_row_nums:
         code = ws.cell(row=r, column=a_code_col).value
-        nc = normalize_stock_code(code)
-        ws.cell(row=r, column=sector_idx + 1).value = sector_map.get(nc, "") if nc else ""
+        # 双键匹配（精确键 + 纯数字键）：全部A股文件代码常带 .SZ/.SH 后缀，
+        # 本表代码多为纯数字，直接 .get() 会 miss（板块为空的根因），复用既有灵活匹配
+        val = match_stock_code_flexible(code, sector_map) if code else ""
+        if val:
+            sector_hit += 1
+        ws.cell(row=r, column=sector_idx + 1).value = val
 
     # ------------------------------------------------------------------
-    # 「{M}/{D}\n39日新高」列：板块列之后插入（同日已存在则复用）；仅新增行填充
+    # 「{M}/{D}\n39日新高」列：板块列之后插入（同日已存在则复用）。
+    # 整列重匹配：每次执行对全部已有数据行（含新增）按当日 39日新高 公共数据
+    # 重新匹配——命中填入该行证券代码，未命中清空（反映当日最新状态）。
+    # 表头单元格为“日期在上、39日新高在下”的单列双行格式，写入后立即设置
+    # 自动换行 + 行高，保证打开文件即呈现双行（无需鼠标点击单元格）。
     # ------------------------------------------------------------------
+    from openpyxl.styles import Alignment
+
     m, d = int(date_str[5:7]), int(date_str[8:10])
     col39_name = f"{m}/{d}\n39日新高"
     col39_idx = _find_col_by_name(ws, col39_name)
@@ -185,28 +238,44 @@ async def execute_all_a_800(executor, config: dict, date_str: Optional[str] = No
         ws.cell(row=1, column=insert_at).value = col39_name
         col39_idx = insert_at - 1  # 0起
         logger.info(f"[全部A股800亿] 已新增「{col39_name}」列")
+    # 表头双行显示（重复执行时也统一刷新格式）
+    _head = ws.cell(row=1, column=col39_idx + 1)
+    _head.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+    ws.row_dimensions[1].height = 30
 
-    if new_row_nums:
-        high39_codes = load_39day_high_codes(base_dir, date_str)
-        hit = 0
-        for r in new_row_nums:
-            code = ws.cell(row=r, column=a_code_col).value
-            nc = normalize_stock_code(code)
-            if nc and nc in high39_codes:
-                ws.cell(row=r, column=col39_idx + 1).value = code
-                hit += 1
-    else:
-        hit = 0
+    high39_codes = load_39day_high_codes(base_dir, date_str)
+    high39_count = len(high39_codes)
+    hit = 0
+    for r in all_data_rows:
+        code = ws.cell(row=r, column=a_code_col).value
+        nc = normalize_stock_code(code)
+        if nc and nc in high39_codes:
+            ws.cell(row=r, column=col39_idx + 1).value = code
+            hit += 1
+        else:
+            ws.cell(row=r, column=col39_idx + 1).value = ""
 
     wb.save(target_path)
     wb.close()
 
     logger.info(
-        f"[全部A股800亿] 完成: {target_path} ({mode}) 新增行={len(new_rows)} 39日新高命中={hit}"
+        f"[全部A股800亿] 完成: {target_path} ({mode}) "
+        f"B有效数据行(代码列={public_rows[0][b_code_idx] if b_code_idx < len(public_rows[0]) else 'A列'}) "
+        f"A已有代码={len(existing_codes) - len(new_rows)} 新增行={len(new_rows)} "
+        f"排除非代码行={skipped_invalid} 板块命中(新增行)={sector_hit}/{len(new_rows)} "
+        f"39日新高源={high39_count}个代码 整列重匹配命中={hit}/{len(all_data_rows)}"
     )
     return {
         "success": True,
-        "message": f"18号表已生成({mode})，数据日期 {date_str} 新增 {len(new_rows)} 行，39日新高命中 {hit}",
+        "message": (
+            f"18号表已生成({mode})，数据日期 {date_str}：新增 {len(new_rows)} 行"
+            f"（排除非代码行 {skipped_invalid}），板块命中 {sector_hit}，"
+            f"39日新高整列重匹配 {len(all_data_rows)} 行、命中 {hit}"
+        ),
         "file_path": target_path,
-        "_preview": [{"数据日期": date_str, "新增行数": len(new_rows), "39日新高命中": hit}],
+        "_preview": [{
+            "数据日期": date_str, "新增行数": len(new_rows),
+            "排除非代码行": skipped_invalid, "板块命中": sector_hit,
+            "39日新高源代码数": high39_count, "39日新高命中": hit,
+        }],
     }

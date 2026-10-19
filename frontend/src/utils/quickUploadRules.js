@@ -121,35 +121,25 @@ export function resolveTarget(filename, date_str = '{date}') {
     }
   }
 
-  // 专用规则 W0: 「13 占20日线无振幅」输出文件（13号表工作流产物，优先级最高）
-  // e.g. `13 占20日线无振幅 1015.xlsx` → data/excel/{date}/本周20日收盘价新高输出/
-  // 注意：含"20日线"字样但不是老的"20日均线"公共数据，必须先于 SUBDIR_KEYWORDS 判定
-  if (base.includes('占20日线无振幅')) {
+  // 专用规则 W0: 「20日均线/20日线」+「无振幅」统一识别（优先级高于子目录关键字与数字前缀）
+  // - 开头为"13" → 13号表输出目录 data/excel/{date}/本周20日收盘价新高输出/
+  //   e.g. `13 占20日线无振幅 1015.xlsx`
+  // - 其余 → 公共数据目录 data/excel/{date}/本周20日收盘价新高/
+  // 含「有振幅」或不含「振幅」字样的 20日均线/20日线 文件不命中本规则，
+  // 落回下方 SUBDIR_KEYWORDS 老规则 → data/excel/{date}/20日均线/
+  if ((base.includes('20日均线') || base.includes('20日线')) && base.includes('无振幅')) {
     const d = date_str || '{date}'
+    const isOut = base.startsWith('13')
     return {
       filename,
       workflow_type: '并购重组',
-      step_type: 'upload_weekly_ma20_out',
-      sub_dir: '本周20日收盘价新高输出',
-      target_dir: `data/excel/${d}/本周20日收盘价新高输出/`,
+      step_type: isOut ? 'upload_weekly_ma20_out' : 'upload_weekly_ma20_high',
+      sub_dir: isOut ? '本周20日收盘价新高输出' : '本周20日收盘价新高',
+      target_dir: `data/excel/${d}/${isOut ? '本周20日收盘价新高输出' : '本周20日收盘价新高'}/`,
       status: 'resolved',
-      reason: '含"占20日线无振幅" → 13号表输出目录（本周20日收盘价新高输出）',
-    }
-  }
-
-  // 专用规则 W1: 「本周20日收盘价新高」公共文件
-  // 文件名同时含"收盘价"+"20日均线/20日线"+"上周"（新文件，勿当作老的"20日均线"公共数据）
-  // e.g. `本周20日收盘价大于20日均线且大于上周最高价格1016.xlsx` → data/excel/{date}/本周20日收盘价新高/
-  if (base.includes('收盘价') && (base.includes('20日均线') || base.includes('20日线')) && base.includes('上周')) {
-    const d = date_str || '{date}'
-    return {
-      filename,
-      workflow_type: '并购重组',
-      step_type: 'upload_weekly_ma20_high',
-      sub_dir: '本周20日收盘价新高',
-      target_dir: `data/excel/${d}/本周20日收盘价新高/`,
-      status: 'resolved',
-      reason: '含"收盘价"+"20日均线/20日线"+"上周" → 本周20日收盘价新高（公共数据）',
+      reason: isOut
+        ? '"13"开头 + 含"20日均线/20日线"+"无振幅" → 13号表输出目录（本周20日收盘价新高输出）'
+        : '含"20日均线/20日线"+"无振幅" → 本周20日收盘价新高（公共数据）',
     }
   }
 

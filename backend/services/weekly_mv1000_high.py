@@ -86,28 +86,89 @@ def sort_rows_by_code_desc(rows: List[List]) -> List[List]:
     return [header] + data
 
 
+def _is_invalid_data_row(row) -> bool:
+    """数据行无效判定：全空行，或任一非空单元格为「数据来源」说明行 /
+    undefined / null / none / nan 等脏数据（写入 MMDD sheet 前排除）。"""
+    if not row or not any(v not in (None, "") for v in row):
+        return True
+    for v in row:
+        if v in (None, ""):
+            continue
+        s = str(v).strip()
+        if s.startswith("数据来源"):
+            return True
+        low = s.lower()
+        if "undefined" in low or low in ("null", "none", "nan"):
+            return True
+    return False
+
+
 def _write_mmdd_sheet(wb, sheet_name: str, rows: List[List]) -> None:
-    """（重）建 MMDD sheet：位于「筛选结果」之后；内容=排序结果+B列后空白列。"""
+    """（重）建 MMDD sheet：位于「筛选结果」之后；内容=排序结果+B列后空白列。
+
+    数据行排除「数据来源」/undefined 等无效行（表头保留原样；
+    「筛选结果」sheet 不修改，保持公共文件原貌）。"""
     if sheet_name in wb.sheetnames:
         del wb[sheet_name]
     ws = wb.create_sheet(title=sheet_name, index=1)
     sorted_rows = sort_rows_by_code_desc(rows)
-    for row in sorted_rows:
+    filtered = [sorted_rows[0]] + [r for r in sorted_rows[1:] if not _is_invalid_data_row(r)]
+    skipped = len(sorted_rows) - len(filtered)
+    if skipped:
+        logger.info(f"[本周总市值千亿新高] MMDD sheet 排除无效行 {skipped} 行（数据来源/undefined等）")
+    for row in filtered:
         ws.append(["" if v is None else v for v in row])
     # B列后插入一列空白列
     ws.insert_cols(3)
 
 
-def _export_table20(base_dir: str, date_str: str, rows: List[List]) -> str:
-    """20号表：MMDD sheet 的 A 列（含表头）复制到独立 Excel，固定文件名输出。"""
+def _is_invalid_table20_cell(v) -> bool:
+    """20号表无效行判定：空值、「数据来源」开头的说明行、undefined/null 等脏数据。"""
+    if v is None:
+        return True
+    s = str(v).strip()
+    if not s:
+        return True
+    if s.startswith("数据来源"):
+        return True
+    low = s.lower()
+    if "undefined" in low or low in ("null", "none", "nan"):
+        return True
+    return False
+
+
+def _export_table20(base_dir: str, date_str: str, mv1000_path: str, mmdd: str) -> str:
+    """20号表：从已生成的 14号表 的 MMDD sheet 拷贝第一列（A列，含表头）到独立 Excel，
+    按股票代码/证券代码降序排列，仅此一列；排除「数据来源」/undefined 等无效行；固定文件名输出。"""
     out_dir = os.path.join(base_dir, date_str, TABLE20_SUBDIR)
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, TABLE20_FILENAME)
 
+    # 读取 14号表 MMDD sheet 的 A 列（第一列）
+    wb_src = load_workbook(mv1000_path, read_only=True, data_only=True)
+    try:
+        if mmdd not in wb_src.sheetnames:
+            raise ValueError(f"14号表缺少 sheet「{mmdd}」: {mv1000_path}")
+        ws_src = wb_src[mmdd]
+        rows = [list(row) for row in ws_src.iter_rows(min_col=1, max_col=1, values_only=True)]
+    finally:
+        wb_src.close()
+
+    if not rows:
+        raise ValueError(f"14号表 sheet「{mmdd}」无数据: {mv1000_path}")
+
+    # 表头保留原样；数据行剔除无效行（数据来源说明行、undefined/null 脏数据、空行）
+    header, data_rows = rows[0], rows[1:]
+    col_a = [header] + [r for r in data_rows if not _is_invalid_table20_cell(r[0] if r else None)]
+
+    # 单列按代码降序（表头不动），复用既有排序逻辑
+    sorted_col = sort_rows_by_code_desc(col_a)
+
     wb = Workbook()
     ws = wb.active
-    ws.title = mmdd_of(date_str)
-    for row in rows:
+    assert ws is not None
+    ws.title = mmdd
+    for row in sorted_col:
         ws.append([row[0] if row and row[0] is not None else ""])
     wb.save(out_path)
     wb.close()
@@ -150,18 +211,38 @@ async def execute_weekly_mv1000_high(executor, config: dict, date_str: Optional[
         for row in public_rows:
             ws.append(["" if v is None else v for v in row])
     else:
-        # 直接编辑老文件（或35日内拷贝来的副本），「筛选结果」内容不修改
-        wb = load_workbook(target_path)
-        if FIRST_SHEET_NAME not in wb.sheetnames:
-            wb.worksheets[0].title = FIRST_SHEET_NAME
+        # 编辑目标文件（reuse=同名可读 / copy=35日内拷贝重命名副本），「筛选结果」内容不修改。
+        # 加载失败时降级为全新生成（目标文件解析已验证可读，此处兜底竞态/极端损坏，
+        # 保证 20号表输出与步骤成功，不因单个坏文件中断工作流）。
+        try:
+            wb = load_workbook(target_path)
+            if FIRST_SHEET_NAME not in wb.sheetnames:
+                wb.worksheets[0].title = FIRST_SHEET_NAME
+        except Exception as e:
+            logger.warning(f"[本周总市值千亿新高] 目标文件加载失败，降级全新生成: {target_path}, {e}")
+            wb = Workbook()
+            ws = wb.active
+            assert ws is not None
+            ws.title = FIRST_SHEET_NAME
+            for row in public_rows:
+                ws.append(["" if v is None else v for v in row])
+            mode = "new(降级)"
+
+    # 只保留2个sheet：第1个「筛选结果」+ 第2个当前数据日期（如 1016）；
+    # 拷贝来的历史文件可能残留旧日期sheet（1014/1015等），全部删除
+    for name in list(wb.sheetnames):
+        if name not in (FIRST_SHEET_NAME, mmdd):
+            del wb[name]
+    # 保证 sheet 顺序：筛选结果在前，数据日期在后
+    if FIRST_SHEET_NAME in wb.sheetnames and wb.sheetnames[0] != FIRST_SHEET_NAME:
+        wb.move_sheet(FIRST_SHEET_NAME, offset=-wb.sheetnames.index(FIRST_SHEET_NAME))
 
     _write_mmdd_sheet(wb, mmdd, public_rows)
     wb.save(target_path)
-
-    # 20号表：MMDD sheet 的 A 列（排序后）单独输出
-    sorted_rows = sort_rows_by_code_desc(public_rows)
-    table20_path = _export_table20(base_dir, date_str, sorted_rows)
     wb.close()
+
+    # 20号表：从已保存的 14号表 MMDD sheet 拷贝第一列（A列），降序，仅此一列
+    table20_path = _export_table20(base_dir, date_str, target_path, mmdd)
 
     count = max(len(public_rows) - 1, 0)
     logger.info(f"[本周总市值千亿新高] 完成: {target_path} ({mode}) 记录数={count}; 20号表: {table20_path}")
@@ -170,5 +251,7 @@ async def execute_weekly_mv1000_high(executor, config: dict, date_str: Optional[
         "message": f"14号表已生成({mode})，数据日期 {date_str} 记录数 {count}；20号表A列已输出",
         "file_path": target_path,
         "table20_path": table20_path,
+        # 20号表相对 {date} 的下载路径（含子目录），merge 进 step_config 供前端批量下载
+        "_extra_outputs": {"output_filename_table20": f"{TABLE20_SUBDIR}/{TABLE20_FILENAME}"},
         "_preview": [{"数据日期": date_str, "记录数": count}],
     }

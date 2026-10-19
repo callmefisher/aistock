@@ -68,11 +68,32 @@ def count_public_rows(base_dir: str, date_str: str) -> Optional[int]:
 
 
 def _cell_to_date(value) -> Optional[date]:
-    """单元格值 → date（兼容 datetime/date/『M月D日』/『YYYY-MM-DD』文本）。"""
+    """单元格值 → date。
+
+    兼容四种形态：
+    - datetime / date 对象；
+    - int/float Excel 日期序列值（手工/外部工具做的老文件常见：值如 46184、
+      格式 General，openpyxl 读出为 int。若不识别会导致整列日期行判定为空，
+      新行错误写入第2行覆盖历史数据、图表只剩单点）；
+    - 『M月D日』文本；『YYYY-MM-DD』文本。
+
+    序列值限定 2000~2100 年范围，防止误判普通数字。
+    """
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
         return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        from openpyxl.utils.datetime import from_excel
+        try:
+            dt = from_excel(value)
+        except Exception:
+            return None
+        if isinstance(dt, datetime):
+            dt = dt.date()
+        if dt and 2000 <= dt.year <= 2100:
+            return dt
+        return None
     if isinstance(value, str):
         m = re.match(r"^\s*(\d{1,2})月(\d{1,2})日\s*$", value)
         if m:
@@ -83,9 +104,12 @@ def _cell_to_date(value) -> Optional[date]:
     return None
 
 
-def _table_font(ws) -> None:
-    """表格区域统一字体：宋体 12。"""
-    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=2):
+def _table_font(ws, up_to_row: int = None) -> None:
+    """表格区域统一字体：宋体 12（默认刷到最后一行；指定 up_to_row 时只刷到该行，不碰表格下方杂散内容）。"""
+    max_row = up_to_row if up_to_row is not None else ws.max_row
+    if max_row < 1:
+        return
+    for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=2):
         for cell in row:
             cell.font = TABLE_FONT
 
@@ -99,22 +123,38 @@ def _apply_table(ws, row_date: date, count: int) -> int:
         ws["A1"] = "日期"
         ws["B1"] = "股票数量"
 
-    # 查找数据日期已有行
+    # 扫描日期列：定位「数据日期已有行」与「最后一个有效日期行」
+    # （表格下方可能存在空行/杂散内容，追加必须紧贴最后一个日期行，而非 max_row）
     target_row = None
+    last_date_row = None
     for r in range(2, ws.max_row + 1):
-        if _cell_to_date(ws.cell(row=r, column=1).value) == row_date:
-            target_row = r
-            break
+        cell = ws.cell(row=r, column=1)
+        cell_date = _cell_to_date(cell.value)
+        if cell_date is not None:
+            # 历史行可能为 int 序列值 + General 格式（手工文件），显示为数字 46184；
+            # 统一刷为「X月X日」格式（不改值），保证表格展示一致
+            if not isinstance(cell.value, (datetime, date)):
+                cell.number_format = DATE_NUMBER_FORMAT
+            last_date_row = r
+            if cell_date == row_date:
+                target_row = r
 
     if target_row is None:
-        target_row = ws.max_row + 1
+        # 新行 = 表格里最后一个日期的下一行（同日已存在则只刷新数量）。
+        # last_date_row=None 且表格非空时说明 A 列全是无法解析的杂散内容——
+        # 此时不覆盖第2行（防丢数据），从 max_row+1 追加。
+        if last_date_row is not None:
+            target_row = last_date_row + 1
+        else:
+            target_row = ws.max_row + 1 if ws.max_row >= 1 else 2
         ws.cell(row=target_row, column=1).value = datetime(row_date.year, row_date.month, row_date.day)
+        last_date_row = target_row
 
     ws.cell(row=target_row, column=2).value = count
     ws.cell(row=target_row, column=1).number_format = DATE_NUMBER_FORMAT
 
-    _table_font(ws)
-    return max(ws.max_row - 1, 0)
+    _table_font(ws, last_date_row)
+    return max((last_date_row or 1) - 1, 0)
 
 
 def _rebuild_chart(ws, data_rows: int) -> None:
@@ -182,8 +222,17 @@ async def execute_weekly_ma20_close_high(executor, config: dict, date_str: Optio
         assert ws is not None
         ws.title = _SHEET_NAME
     else:
-        wb = load_workbook(target_path)
-        ws = wb.worksheets[0]
+        # reuse/copy 模式：目标文件解析已验证可读，此处 try 兜底竞态/极端损坏，降级全新生成
+        try:
+            wb = load_workbook(target_path)
+            ws = wb.worksheets[0]
+        except Exception as e:
+            logger.warning(f"[本周20日线新高] 目标文件加载失败，降级全新生成: {target_path}, {e}")
+            wb = Workbook()
+            ws = wb.active
+            assert ws is not None
+            ws.title = _SHEET_NAME
+            mode = "new(降级)"
 
     data_rows = _apply_table(ws, row_date, count)
     _rebuild_chart(ws, data_rows)

@@ -2307,6 +2307,15 @@ const downloadResult = async () => {
         await api.download(`/workflows/download-result/${currentWorkflow.value.id}?file_name=${encodeURIComponent(files[i])}`)
       }
       ElMessage.success(`下载完成 (${files.length} 个文件)`)
+    } else if (currentWorkflow.value.workflow_type === '本周总市值千亿新高') {
+      // 14号表 + 附带输出的20号表一起下载
+      const config = currentWorkflow.value.steps?.[0]?.config || {}
+      const table20 = config.output_filename_table20
+        || '20号表本周总市值千亿新高A列/20 总市值大于1000亿 本周最高价格大于上周最高价格.xlsx'
+      await api.download(`/workflows/download-result/${currentWorkflow.value.id}`)
+      await new Promise(r => setTimeout(r, 300))
+      await api.download(`/workflows/download-result/${currentWorkflow.value.id}?file_name=${encodeURIComponent(table20)}`)
+      ElMessage.success('下载完成 (2 个文件：14号表 + 20号表)')
     } else {
       await api.download(`/workflows/download-result/${currentWorkflow.value.id}`)
       ElMessage.success('下载成功')
@@ -2349,6 +2358,21 @@ const downloadBatchResult = async (workflowId, workflowType) => {
         await api.download(`/workflows/download-result/${workflowId}?file_name=${encodeURIComponent(files[i])}`)
       }
       ElMessage.success(`下载完成 (${files.length} 个文件)`)
+    } else if (workflowType === '本周总市值千亿新高') {
+      // 14号表 + 附带输出的20号表一起下载（20号表在 {date}/20号表...A列/ 子目录）
+      const wf = workflows.value.find(w => w.id === workflowId)
+      const config = wf?.steps?.[0]?.config || {}
+      const table20 = config.output_filename_table20
+        || '20号表本周总市值千亿新高A列/20 总市值大于1000亿 本周最高价格大于上周最高价格.xlsx'
+      for (let i = 0; i < 2; i++) {
+        if (i > 0) await new Promise(r => setTimeout(r, 300))
+        if (i === 0) {
+          await api.download(`/workflows/download-result/${workflowId}`)
+        } else {
+          await api.download(`/workflows/download-result/${workflowId}?file_name=${encodeURIComponent(table20)}`)
+        }
+      }
+      ElMessage.success('下载完成 (2 个文件：14号表 + 20号表)')
     } else {
       await api.download(`/workflows/download-result/${workflowId}`)
       ElMessage.success('下载成功')

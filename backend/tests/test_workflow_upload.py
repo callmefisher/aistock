@@ -112,6 +112,92 @@ class TestWeeklyUploadTargetDirectory:
         assert out.endswith("本周总市值千亿新高输出")
 
 
+class TestDownloadResultSubdirFile:
+    """download-result 端点：支持 {date} 下子目录文件下载（20号表）+ 防路径穿越。
+
+    背景：14号表工作流附带输出 20号表 到 data/excel/{date}/20号表本周总市值千亿新高A列/，
+    前端批量下载时通过 file_name="子目录/文件名" 一起下载。
+    """
+
+    def _make_weekly_mv1000_workflow(self, db_session, date_str="2026-10-16"):
+        from models.models import Workflow
+        wf = Workflow(
+            name="本周总市值千亿新高", description="",
+            workflow_type="本周总市值千亿新高", date_str=date_str,
+            steps=[{"type": "weekly_mv1000_high", "config": {"date_str": date_str}, "status": "completed"}],
+            status="active",
+        )
+        db_session.add(wf)
+        return wf
+
+    @pytest.mark.asyncio
+    async def test_download_subdir_table20(self, client, auth_headers, db_session, tmp_path):
+        """file_name 含子目录 → 相对 {date} 根目录解析，20号表可下载"""
+        from unittest.mock import patch
+        wf = self._make_weekly_mv1000_workflow(db_session)
+        await db_session.commit()
+        await db_session.refresh(wf)
+
+        t20_dir = os.path.join(str(tmp_path), "2026-10-16", "20号表本周总市值千亿新高A列")
+        os.makedirs(t20_dir)
+        t20 = os.path.join(t20_dir, "20 总市值大于1000亿 本周最高价格大于上周最高价格.xlsx")
+        pd.DataFrame({"股票代码": ["000001.SZ"]}).to_excel(t20, index=False)
+
+        with patch("api.workflows.BASE_DIR", str(tmp_path)):
+            resp = await client.get(
+                f"/api/v1/workflows/download-result/{wf.id}",
+                params={"file_name": "20号表本周总市值千亿新高A列/20 总市值大于1000亿 本周最高价格大于上周最高价格.xlsx"},
+                headers=auth_headers,
+            )
+        assert resp.status_code == 200
+        assert "spreadsheetml" in resp.headers.get("content-type", "")
+        # 下载内容为20号表文件本体（子目录解析成功）
+        assert len(resp.content) > 0
+
+    @pytest.mark.asyncio
+    async def test_download_subdir_rejects_path_traversal(self, client, auth_headers, db_session, tmp_path):
+        """file_name 含 ../ 路径穿越 → 400 拒绝"""
+        from unittest.mock import patch
+        wf = self._make_weekly_mv1000_workflow(db_session)
+        await db_session.commit()
+        await db_session.refresh(wf)
+
+        secret_dir = os.path.join(str(tmp_path), "2026-10-15")
+        os.makedirs(secret_dir)
+        pd.DataFrame({"x": [1]}).to_excel(os.path.join(secret_dir, "secret.xlsx"), index=False)
+
+        with patch("api.workflows.BASE_DIR", str(tmp_path)):
+            resp = await client.get(
+                f"/api/v1/workflows/download-result/{wf.id}",
+                params={"file_name": "../2026-10-15/secret.xlsx"},
+                headers=auth_headers,
+            )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_download_plain_filename_still_works(self, client, auth_headers, db_session, tmp_path):
+        """普通文件名（无子目录）→ 仍在 daily_dir（本周总市值千亿新高输出）下解析（原行为不变）"""
+        from unittest.mock import patch
+        wf = self._make_weekly_mv1000_workflow(db_session)
+        await db_session.commit()
+        await db_session.refresh(wf)
+
+        out_dir = os.path.join(str(tmp_path), "2026-10-16", "本周总市值千亿新高输出")
+        os.makedirs(out_dir)
+        main_file = os.path.join(out_dir, "14 总市值大于1000亿 本周最高价格大于上周最高价格1016.xlsx")
+        pd.DataFrame({"股票代码": ["000001.SZ"]}).to_excel(main_file, index=False)
+
+        with patch("api.workflows.BASE_DIR", str(tmp_path)):
+            resp = await client.get(
+                f"/api/v1/workflows/download-result/{wf.id}",
+                params={"file_name": "14 总市值大于1000亿 本周最高价格大于上周最高价格1016.xlsx"},
+                headers=auth_headers,
+            )
+        assert resp.status_code == 200
+        assert "spreadsheetml" in resp.headers.get("content-type", "")
+        assert len(resp.content) > 0
+
+
 class TestBatchAggregationOrder:
     """批量执行顺序：本周三类工作流排在条件交集之后的链尾"""
 
@@ -122,6 +208,99 @@ class TestBatchAggregationOrder:
         assert order["本周20日线新高"] > order["条件交集"]
         assert order["本周总市值千亿新高"] > order["条件交集"]
         assert order["全部A股总市值大于800亿"] > order["条件交集"]
+
+
+class TestUploadClearDirectoryIndependence:
+    """上传清目录独立性（API 级）：上传A只清理A目录，上传B只清理B目录，绝不联动。
+
+    背景：「本周20日收盘价新高」（公共数据）与「本周20日收盘价新高输出」（13号表输出）
+    是同一数据日期下两个独立目录。上传公共文件时只清公共目录（输出目录不动）；
+    上传输出文件时只清输出目录（公共目录不动）。
+    """
+
+    def _setup_two_dirs(self, base):
+        """在公共/输出两个目录各放1个老文件 + 相邻其他类型目录放1个老文件"""
+        import pandas as pd
+        pub = os.path.join(base, "2026-10-16", "本周20日收盘价新高")
+        out = os.path.join(base, "2026-10-16", "本周20日收盘价新高输出")
+        other = os.path.join(base, "2026-10-16", "本周总市值千亿新高")
+        for d in (pub, out, other):
+            os.makedirs(d, exist_ok=True)
+        pd.DataFrame({"证券代码": ["000001.SZ"]}).to_excel(os.path.join(pub, "老公共文件.xlsx"), index=False)
+        pd.DataFrame({"日期": ["2026-10-15"]}).to_excel(os.path.join(out, "老输出文件.xlsx"), index=False)
+        pd.DataFrame({"x": [1]}).to_excel(os.path.join(other, "老千亿文件.xlsx"), index=False)
+        return pub, out, other
+
+    @pytest.mark.asyncio
+    async def test_upload_public_clears_only_public_dir(self, client, auth_headers, tmp_path):
+        """上传公共文件（upload_weekly_ma20_high）→ 只清公共目录；输出/千亿目录不受影响"""
+        from unittest.mock import patch
+        pub, out, other = self._setup_two_dirs(str(tmp_path))
+
+        with patch("api.workflows.BASE_DIR", str(tmp_path)):
+            resp = await client.post(
+                "/api/v1/workflows/upload-step-file/",
+                data={"workflow_id": 1, "step_index": 0, "step_type": "upload_weekly_ma20_high",
+                      "workflow_type": "并购重组", "date_str": "2026-10-16"},
+                files={"file": ("新公共文件.xlsx", b"fake-excel-bytes",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                headers=auth_headers,
+            )
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+        # 公共目录：老文件被清、只剩新上传的
+        assert sorted(os.listdir(pub)) == ["新公共文件.xlsx"]
+        # 输出目录：老文件原样保留（未受影响）
+        assert os.listdir(out) == ["老输出文件.xlsx"]
+        # 其他类型目录：未受影响
+        assert os.listdir(other) == ["老千亿文件.xlsx"]
+
+    @pytest.mark.asyncio
+    async def test_upload_output_clears_only_output_dir(self, client, auth_headers, tmp_path):
+        """上传输出文件（upload_weekly_ma20_out）→ 只清输出目录；公共/千亿目录不受影响"""
+        from unittest.mock import patch
+        pub, out, other = self._setup_two_dirs(str(tmp_path))
+
+        with patch("api.workflows.BASE_DIR", str(tmp_path)):
+            resp = await client.post(
+                "/api/v1/workflows/upload-step-file/",
+                data={"workflow_id": 1, "step_index": 0, "step_type": "upload_weekly_ma20_out",
+                      "workflow_type": "并购重组", "date_str": "2026-10-16"},
+                files={"file": ("13 占20日线无振幅 1016.xlsx", b"fake-excel-bytes",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                headers=auth_headers,
+            )
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+        # 输出目录：老文件被清、只剩新上传的
+        assert sorted(os.listdir(out)) == ["13 占20日线无振幅 1016.xlsx"]
+        # 公共目录：老文件原样保留（未受影响）
+        assert os.listdir(pub) == ["老公共文件.xlsx"]
+        # 其他类型目录：未受影响
+        assert os.listdir(other) == ["老千亿文件.xlsx"]
+
+    @pytest.mark.asyncio
+    async def test_upload_same_name_overwrites_in_own_dir(self, client, auth_headers, tmp_path):
+        """同名文件覆盖：目标目录只保留最新1个文件（先删老的再落新的）"""
+        from unittest.mock import patch
+        pub, out, _ = self._setup_two_dirs(str(tmp_path))
+
+        with patch("api.workflows.BASE_DIR", str(tmp_path)):
+            resp = await client.post(
+                "/api/v1/workflows/upload-step-file/",
+                data={"workflow_id": 1, "step_index": 0, "step_type": "upload_weekly_ma20_high",
+                      "workflow_type": "并购重组", "date_str": "2026-10-16"},
+                files={"file": ("老公共文件.xlsx", b"new-content",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                headers=auth_headers,
+            )
+        assert resp.json()["success"] is True
+        # 同名覆盖：目录内仍只有这1个文件，且为本次上传内容
+        assert os.listdir(pub) == ["老公共文件.xlsx"]
+        assert open(os.path.join(pub, "老公共文件.xlsx"), "rb").read() == b"new-content"
+        assert os.listdir(out) == ["老输出文件.xlsx"]
 
 
 class TestFileOperations:

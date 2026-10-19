@@ -30,12 +30,12 @@
 import json
 import os
 import zlib
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from services.weekly_common import (
     _all_a_column_cache,
@@ -154,23 +154,49 @@ def test_resolve_output_file_new_mode(tmp_path):
 
 
 def test_resolve_output_file_reuse_same_name(tmp_path):
-    """数据日期目录已有同名文件 → 直接复用"""
+    """数据日期目录已有同名可读文件 → 直接复用（同名强制覆盖更新语义）"""
     d = os.path.join(str(tmp_path), "2026-10-15", "输出")
     os.makedirs(d)
-    open(os.path.join(d, "a1015.xlsx"), "w").close()
+    pd.DataFrame({"x": [1]}).to_excel(os.path.join(d, "a1015.xlsx"), index=False)
     path, mode = resolve_daily_output_file(str(tmp_path), "2026-10-15", "输出", "a1015.xlsx")
     assert mode == "reuse"
     assert path == os.path.join(d, "a1015.xlsx")
 
 
 def test_resolve_output_file_reuse_other_name(tmp_path):
-    """数据日期目录只有其他文件名 → 复用其中最新一个"""
+    """数据日期目录只有其他名可读文件 → 拷贝重命名为默认名（新副本编辑），老文件不动"""
     d = os.path.join(str(tmp_path), "2026-10-15", "输出")
     os.makedirs(d)
-    open(os.path.join(d, "old1014.xlsx"), "w").close()
+    src = os.path.join(d, "old1014.xlsx")
+    pd.DataFrame({"x": [1]}).to_excel(src, index=False)
     path, mode = resolve_daily_output_file(str(tmp_path), "2026-10-15", "输出", "a1015.xlsx")
-    assert mode == "reuse"
-    assert os.path.basename(path) == "old1014.xlsx"
+    assert mode == "copy"
+    assert os.path.basename(path) == "a1015.xlsx"
+    assert os.path.exists(src), "老文件不应被删除/修改"
+    assert os.path.exists(path), "新副本已生成"
+
+
+def test_resolve_output_file_corrupt_same_name_skipped(tmp_path):
+    """数据日期目录默认名文件损坏（0字节）→ 跳过不阻断；无其他候选 → 全新生成"""
+    d = os.path.join(str(tmp_path), "2026-10-15", "输出")
+    os.makedirs(d)
+    open(os.path.join(d, "a1015.xlsx"), "w").close()  # 0字节损坏文件
+    path, mode = resolve_daily_output_file(str(tmp_path), "2026-10-15", "输出", "a1015.xlsx")
+    assert mode == "new"
+    # 损坏文件保留在原地（由下次上传清理），不抛异常
+    assert os.path.exists(os.path.join(d, "a1015.xlsx"))
+
+
+def test_resolve_output_file_corrupt_falls_back_to_other_readable(tmp_path):
+    """默认名损坏 + 目录内其他可读文件 → 拷贝其他文件为默认名（不因坏文件中断）"""
+    d = os.path.join(str(tmp_path), "2026-10-15", "输出")
+    os.makedirs(d)
+    open(os.path.join(d, "a1015.xlsx"), "w").close()
+    pd.DataFrame({"x": [2]}).to_excel(os.path.join(d, "backup.xlsx"), index=False)
+    path, mode = resolve_daily_output_file(str(tmp_path), "2026-10-15", "输出", "a1015.xlsx")
+    assert mode == "copy"
+    wb = load_workbook(path)
+    assert wb.worksheets[0].cell(2, 1).value == 2
 
 
 def test_resolve_output_file_copy_within_35_days(tmp_path):
@@ -431,8 +457,8 @@ async def test_mv1000_reuse_keeps_first_sheet(tmp_path):
     assert (await _run14(base, "2026-10-16"))["success"]
 
     wb = load_workbook(_out14(base, "2026-10-16"))
-    # 拷贝自 10-15 的文件拓展：新 MMDD sheet 位于「筛选结果」之后，历史 MMDD sheet 保留
-    assert wb.sheetnames == ["筛选结果", "1016", "1015"]
+    # 输出只保留2个sheet：筛选结果 + 当前数据日期（历史 MMDD sheet 1015 删除）
+    assert wb.sheetnames == ["筛选结果", "1016"]
     # 筛选结果仍为 10-15 的内容（不修改）
     ws1 = wb["筛选结果"]
     assert ws1.cell(2, 1).value == "000001.SZ"
@@ -554,10 +580,426 @@ async def test_all_a_800_incremental_append(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_all_a_800_append_tight_after_last_valid_row(tmp_path):
+    """新增行紧贴最后一个有效数据行追加：表格下方有“数据来源”杂散行时不跳行不覆盖"""
+    base = str(tmp_path)
+    _write_public_file(base, "2026-10-15", "全部A股800亿", _A800_ROWS[:2])
+    assert (await _run18(base, "2026-10-15"))["success"]
+
+    out15 = _out18(base, "2026-10-15")
+    wb = load_workbook(out15)
+    ws = wb.worksheets[0]
+    # 模拟表格下方杂散内容（隔1个空行）
+    ws.cell(row=4, column=1).value = "数据来源：同花顺iFinD"
+    wb.save(out15)
+    wb.close()
+
+    # 数据日期目录无文件 → 回溯拷贝 10-15（含杂散行），新增 600519
+    _write_public_file(base, "2026-10-16", "全部A股800亿", _A800_ROWS[:3])
+    result = await _run18(base, "2026-10-16")
+    assert result["success"], result.get("error")
+
+    wb = load_workbook(_out18(base, "2026-10-16"))
+    ws = wb.worksheets[0]
+    # 新增行紧贴最后有效行(行2)的下一行(行3)，杂散行下移到行5、内容不被覆盖
+    assert ws.cell(2, 1).value == "000001.SZ"
+    assert ws.cell(3, 1).value == "600519.SH"
+    assert ws.cell(5, 1).value == "数据来源：同花顺iFinD"
+
+
+@pytest.mark.asyncio
+async def test_all_a_800_sector_pure_numeric_matches_suffixed_map(tmp_path):
+    """板块为空根因回归：全部A股代码带 .SZ 后缀、源文件代码纯数字 → 双键匹配命中"""
+    base = str(tmp_path)
+    rows = [("证券代码", "证券简称", "总市值"), ("000001", "平安", "900")]
+    _write_public_file(base, "2026-10-15", "全部A股800亿", rows)
+    _write_all_a_industry_file(base, [("000001.SZ", "银行")])  # 映射键带后缀
+
+    result = await _run18(base, "2026-10-15")
+    assert result["success"], result.get("error")
+    wb = load_workbook(_out18(base, "2026-10-15"))
+    ws = wb.worksheets[0]
+    assert ws.cell(2, 4).value == "银行", "纯数字代码应命中带后缀的全部A股板块映射"
+    assert "板块命中 1" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_all_a_800_39day_rematches_existing_rows(tmp_path):
+    """39日新高整列重匹配：每次执行对全部已有行按当日39日新高重新匹配——
+    命中填代码、未命中清空；历史日期列不修改"""
+    base = str(tmp_path)
+    # Day1: 000001 命中
+    _write_public_file(base, "2026-10-15", "全部A股800亿", _A800_ROWS[:3])
+    _write_39day_file(base, "2026-10-15", ["000001.SZ"])
+    assert (await _run18(base, "2026-10-15"))["success"]
+
+    # Day2: 无新增（同数据源），当日39日新高变为 600519
+    _write_public_file(base, "2026-10-16", "全部A股800亿", _A800_ROWS[:3])
+    _write_39day_file(base, "2026-10-16", ["600519.SH"])
+    result = await _run18(base, "2026-10-16")
+    assert result["success"], result.get("error")
+
+    wb = load_workbook(_out18(base, "2026-10-16"))
+    ws = wb.worksheets[0]
+    header = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    col16 = header.index("10/16\n39日新高") + 1
+    col15 = header.index("10/15\n39日新高") + 1
+    row_map = {ws.cell(r, 1).value: r for r in range(2, ws.max_row + 1)}
+    # 000001：昨日命中、今日未命中 → 当日列清空；历史列(10/15)保留
+    assert ws.cell(row_map["000001.SZ"], col16).value in (None, "")
+    assert ws.cell(row_map["000001.SZ"], col15).value == "000001.SZ"
+    # 600519：今日命中 → 当日列填代码
+    assert ws.cell(row_map["600519.SH"], col16).value == "600519.SH"
+    # message 报告整列重匹配结果
+    assert "39日新高整列重匹配 2 行、命中 1" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_mv1000_output_keeps_only_two_sheets(tmp_path):
+    """14号表输出只保留2个sheet：第1个「筛选结果」+ 第2个当前数据日期；
+    拷贝继承的历史日期sheet（如1014/1015）全部删除；并透传20号表下载路径"""
+    base = str(tmp_path)
+    # Day1: 正常生成（含 1015 sheet）
+    _write_public_file(base, "2026-10-15", "本周总市值千亿新高", _MV_ROWS)
+    assert (await _run14(base, "2026-10-15"))["success"]
+
+    # 手工给 10-15 文件添加更早期残留 sheet 1014
+    out15 = _out14(base, "2026-10-15")
+    wb = load_workbook(out15)
+    wb.create_sheet("1014")
+    wb.save(out15)
+    wb.close()
+
+    # Day2: 拷贝继承 10-15（此时含 筛选结果/1015/1014 三个sheet）
+    _write_public_file(base, "2026-10-16", "本周总市值千亿新高", _MV_ROWS)
+    result = await _run14(base, "2026-10-16")
+    assert result["success"], result.get("error")
+
+    wb = load_workbook(_out14(base, "2026-10-16"))
+    assert wb.sheetnames == ["筛选结果", "1016"], f"应只保留2个sheet: {wb.sheetnames}"
+    # 20号表相对 {date} 的下载路径透传（前端批量下载用）
+    assert result["_extra_outputs"]["output_filename_table20"] == (
+        "20号表本周总市值千亿新高A列/20 总市值大于1000亿 本周最高价格大于上周最高价格.xlsx"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ma13_int_serial_date_rows_appended_not_overwritten(tmp_path):
+    """用户实测bug回归：上传的老13号表日期列是 int 序列值（如46184，General格式）——
+    修复前 _cell_to_date 对 int 返回 None，导致新行写入第2行覆盖历史数据、图表只画单点。
+    修复后：历史行不覆盖、新行追加在最后日期行后、int行刷日期格式、图表覆盖全部数据行。"""
+    base = str(tmp_path)
+    # 模拟快捷上传：老文件（带空格1015名）已在 10-16 输出目录
+    out_dir = os.path.join(base, "2026-10-16", "本周20日收盘价新高输出")
+    os.makedirs(out_dir, exist_ok=True)
+    old_path = os.path.join(out_dir, "13 占20日线无振幅 1015.xlsx")
+    wb0 = Workbook()
+    ws0 = wb0.active
+    ws0.title = "趋势图"
+    ws0.append(["日期", "股票数量"])
+    for serial, cnt in [(46184, 421), (46185, 626), (46188, 695)]:  # int序列值 + General格式
+        ws0.append([serial, cnt])
+    wb0.save(old_path)
+    wb0.close()
+
+    # 10-16 公共数据源
+    _write_public_file(base, "2026-10-16", "本周20日收盘价新高",
+                       [("证券代码",)] + [("000001.SZ",)] * 4)
+
+    result = await _run13(base, "2026-10-16")
+    assert result["success"], result.get("error")
+
+    new_path = _out13(base, "2026-10-16")
+    assert os.path.basename(new_path) == "13 占20日线无振幅1016.xlsx"
+    wb = load_workbook(new_path)
+    ws = wb["趋势图"]
+
+    # 历史行不被覆盖：r=2 的 int 序列值 46184 刷日期格式后保存，
+    # openpyxl 按日期语义读回 datetime(2026,6,11)（值未变，显示 6月11日）
+    assert ws.cell(2, 1).value == datetime(2026, 6, 11)
+    assert ws.cell(2, 2).value == 421
+    # 新行追加在最后日期行(r=4)之后 r=5，为 datetime 10/16
+    assert ws.cell(5, 1).value == datetime(2026, 10, 16)
+    assert ws.cell(5, 2).value == 4
+    # 日期显示格式统一「X月X日」（点击可见年月日）
+    assert ws.cell(2, 1).number_format == 'm"月"d"日"'
+
+    # 图表覆盖全部数据行（4个数据点），不再是单点
+    chart = ws._charts[0]
+    assert chart.series[0].val.numRef.f == "'趋势图'!$B$2:$B$5"
+    assert chart.series[0].cat.numRef.f == "'趋势图'!$A$2:$A$5"
+
+    # 幂等：同日重复执行只刷新数量，不新增行
+    _write_public_file(base, "2026-10-16", "本周20日收盘价新高",
+                       [("证券代码",)] + [("000001.SZ",)] * 7)
+    result2 = await _run13(base, "2026-10-16")
+    assert result2["success"]
+    wb2 = load_workbook(new_path)
+    ws2 = wb2["趋势图"]
+    assert ws2.max_row == 5, "同日重复执行不应新增行"
+    assert ws2.cell(5, 2).value == 7
+
+
+def test_ma13_cell_to_date_int_serial():
+    """int 序列值 → 日期；范围外数字（如股票数量列误传）不误判"""
+    from services.weekly_ma20_close_high import _cell_to_date
+    assert _cell_to_date(46184) == date(2026, 6, 11)
+    assert _cell_to_date(46216) == date(2026, 7, 13)
+    assert _cell_to_date(3.0) is None      # 1900年 → 范围外
+    assert _cell_to_date(99999999) is None  # 远超2100年
+    assert _cell_to_date("10月15日") == date(datetime.now().year, 10, 15)
+    assert _cell_to_date(None) is None
+
+
+@pytest.mark.asyncio
+async def test_ma13_garbage_a_column_never_overwrites_row2(tmp_path):
+    """防御：A列全是无法解析的杂散内容（非日期非序列值）时，从 max_row+1 追加，
+    绝不覆盖第2行既有内容"""
+    base = str(tmp_path)
+    out_dir = os.path.join(base, "2026-10-16", "本周20日收盘价新高输出")
+    os.makedirs(out_dir, exist_ok=True)
+    old_path = os.path.join(out_dir, "13 占20日线无振幅1016.xlsx")
+    wb0 = Workbook()
+    ws0 = wb0.active
+    ws0.title = "Sheet1"
+    ws0.append(["日期", "股票数量"])
+    ws0.append(["随便的内容", 100])
+    ws0.append(["备注", 200])
+    wb0.save(old_path)
+    wb0.close()
+
+    _write_public_file(base, "2026-10-16", "本周20日收盘价新高",
+                       [("证券代码",)] + [("000001.SZ",)] * 2)
+    result = await _run13(base, "2026-10-16")
+    assert result["success"], result.get("error")
+
+    wb = load_workbook(_out13(base, "2026-10-16"))
+    ws = wb["Sheet1"]
+    # 原有内容不动，新行追加在最后
+    assert ws.cell(2, 1).value == "随便的内容"
+    assert ws.cell(2, 2).value == 100
+    assert ws.cell(4, 1).value == datetime(2026, 10, 16)
+    assert ws.cell(4, 2).value == 2
+
+
+@pytest.mark.asyncio
+async def test_mv1000_mmdd_sheet_excludes_invalid_rows(tmp_path):
+    """14号表 MMDD sheet 排除「数据来源」/undefined/null/全空 行；
+    「筛选结果」sheet 不修改（原样保留，含杂散行）；20号表联动输出干净。"""
+    base = str(tmp_path)
+    rows = [
+        ("股票代码", "证券简称", "总市值"),
+        ("600519.SH", "茅台", "2100"),
+        ("数据来源：同花顺iFinD", None, None),   # 表尾说明行
+        ("undefined", "x", "1"),                  # undefined 脏数据
+        ("000001.SZ", "平安", "900"),
+        (None, None, None),                       # 全空行
+        (None, "null", None),                     # null 脏数据
+    ]
+    _write_public_file(base, "2026-10-16", "本周总市值千亿新高", rows)
+
+    result = await _run14(base, "2026-10-16")
+    assert result["success"], result.get("error")
+
+    wb = load_workbook(_out14(base, "2026-10-16"))
+    # MMDD sheet：表头 + 2个正常行（降序），无效行全部排除。
+    # insert_cols(3) 在B列后插入空白列 → 原第3列(总市值)位于第4列
+    ws = wb["1016"]
+    values = [[ws.cell(r, c).value for c in (1, 2, 4)] for r in range(1, ws.max_row + 1)]
+    assert values == [
+        ["股票代码", "证券简称", "总市值"],
+        ["600519.SH", "茅台", "2100"],
+        ["000001.SZ", "平安", "900"],
+    ], "数据来源/undefined/null/全空行应全部排除"
+    # B列后空白列（原逻辑保留）
+    assert ws.cell(1, 3).value in (None, "")
+    assert ws.max_column == 4
+
+    # 筛选结果 sheet：原样保留（不修改，含杂散行）
+    ws1 = wb["筛选结果"]
+    codes1 = [ws1.cell(r, 1).value for r in range(2, ws1.max_row + 1)]
+    assert "数据来源：同花顺iFinD" in codes1, "筛选结果sheet应保持公共文件原貌"
+
+    # 20号表联动：输出也干净（仅正常代码，降序）
+    t20 = os.path.join(base, "2026-10-16", "20号表本周总市值千亿新高A列",
+                       "20 总市值大于1000亿 本周最高价格大于上周最高价格.xlsx")
+    wb2 = load_workbook(t20)
+    ws2 = wb2["1016"]
+    col = [ws2.cell(r, 1).value for r in range(1, ws2.max_row + 1)]
+    assert col == ["股票代码", "600519.SH", "000001.SZ"]
+
+
+@pytest.mark.asyncio
 async def test_all_a_800_missing_public(tmp_path):
     result = await _run18(str(tmp_path), "2026-10-15")
     assert not result["success"]
     assert "公共数据源缺失" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_all_a_800_skips_data_source_rows(tmp_path):
+    """B 公共文件表尾“数据来源：xxx”行 → 不追加、不参与比对（异常行排除）"""
+    base = str(tmp_path)
+    rows = [
+        ("证券代码", "证券简称", "总市值"),
+        ("000001.SZ", "平安", "900"),
+        ("数据来源：同花顺iFinD", "", ""),   # 表尾说明行
+    ]
+    _write_public_file(base, "2026-10-15", "全部A股800亿", rows)
+
+    result = await _run18(base, "2026-10-15")
+    assert result["success"], result.get("error")
+
+    wb = load_workbook(_out18(base, "2026-10-15"))
+    ws = wb.worksheets[0]
+    codes = [ws.cell(r, 1).value for r in range(2, ws.max_row + 1)]
+    assert codes == ["000001.SZ"], "数据来源行不应被追加"
+    # message 中报告排除的非代码行数
+    assert "排除非代码行 1" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_all_a_800_header_wrap_text_two_lines(tmp_path):
+    """「M/D\\n39日新高」表头打开即双行显示：wrap_text + 行高（无需点击单元格）"""
+    base = str(tmp_path)
+    _write_public_file(base, "2026-10-15", "全部A股800亿", _A800_ROWS[:2])
+    _write_all_a_industry_file(base, [("000001.SZ", "银行")])
+    _write_39day_file(base, "2026-10-15", ["000001.SZ"])
+
+    result = await _run18(base, "2026-10-15")
+    assert result["success"], result.get("error")
+
+    wb = load_workbook(_out18(base, "2026-10-15"))
+    ws = wb.worksheets[0]
+    header = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    col39 = header.index("10/15\n39日新高") + 1
+    cell = ws.cell(1, col39)
+    assert cell.alignment.wrap_text is True, "表头需自动换行才能默认双行显示"
+    assert ws.row_dimensions[1].height == 30
+
+
+@pytest.mark.asyncio
+async def test_all_a_800_multiline_code_header(tmp_path):
+    """B 代码列表头为多行文本（如“证券代码\\n[单位]只”）→ 包含匹配仍能定位代码列"""
+    base = str(tmp_path)
+    # 用 openpyxl 直接构造多行表头（pandas 不方便写含换行的列名读取场景）
+    d = os.path.join(base, "2026-10-15", "全部A股800亿")
+    os.makedirs(d, exist_ok=True)
+    wb0 = Workbook()
+    ws0 = wb0.active
+    ws0.append(["证券代码\n[单位]只", "证券简称", "总市值"])
+    ws0.append(["000001.SZ", "平安", "900"])
+    ws0.append(["600519.SH", "茅台", "2100"])
+    wb0.save(os.path.join(d, "800亿.xlsx"))
+    wb0.close()
+
+    result = await _run18(base, "2026-10-15")
+    assert result["success"], result.get("error")
+    wb = load_workbook(_out18(base, "2026-10-15"))
+    ws = wb.worksheets[0]
+    codes = [ws.cell(r, 1).value for r in range(2, ws.max_row + 1)]
+    assert sorted(codes) == ["000001.SZ", "600519.SH"]
+
+
+@pytest.mark.asyncio
+async def test_ma20_append_after_last_date_row_not_max_row(tmp_path):
+    """13号表：表格下方有杂散内容/空行时，新行必须追加到最后一个日期行的下一行（非最后一行）"""
+    base = str(tmp_path)
+    _write_public_file(base, "2026-10-14", "本周20日收盘价新高",
+                       [("证券代码",)] + [("000001.SZ",)] * 2)
+    assert (await _run13(base, "2026-10-14"))["success"]
+
+    out14 = _out13(base, "2026-10-14")
+    wb = load_workbook(out14)
+    ws = wb["Sheet1"]
+    # 模拟表格下方杂散内容（如备注行）
+    ws.cell(row=5, column=1).value = "备注：手工添加"
+    wb.save(out14)
+    wb.close()
+
+    _write_public_file(base, "2026-10-15", "本周20日收盘价新高",
+                       [("证券代码",)] + [("000001.SZ",)] * 4)
+    # 数据日期目录为空 → 回溯拷贝 10-14 文件（含杂散行）
+    result = await _run13(base, "2026-10-15")
+    assert result["success"], result.get("error")
+
+    wb = load_workbook(_out13(base, "2026-10-15"))
+    ws = wb["Sheet1"]
+    # 新行紧贴最后日期行（第2行）的下一行 = 第3行，而不是杂散行之后
+    assert ws.cell(2, 1).value == datetime(2026, 10, 14)
+    assert ws.cell(3, 1).value == datetime(2026, 10, 15)
+    assert ws.cell(3, 2).value == 4
+    assert ws.cell(5, 1).value == "备注：手工添加"  # 杂散内容不受影响
+    # 图表数据范围截止最后日期行（第3行），不包含杂散行
+    # （titles_from_data=True：首行作系列名，系列值从第2行起；引用带 sheet 前缀）
+    chart = ws._charts[0]
+    assert chart.series[0].val.numRef.f == "'Sheet1'!$B$2:$B$3"
+    assert chart.series[0].cat.numRef.f == "'Sheet1'!$A$2:$A$3"
+
+
+def test_export_table20_reads_from_generated_mv1000_file(tmp_path):
+    """20号表数据源 = 已生成的14号表文件 MMDD sheet 的第一列（而非公共文件）：
+    构造14号表A列内容与公共文件不同，断言20号表跟随14号表文件内容且降序、仅此一列；
+    同时验证「数据来源」/undefined/null 等无效行被排除。"""
+    from services.weekly_mv1000_high import _export_table20
+
+    base = str(tmp_path)
+    out_dir = os.path.join(base, "2026-10-16", "本周总市值千亿新高输出")
+    os.makedirs(out_dir, exist_ok=True)
+    mv1000_path = os.path.join(out_dir, "14 总市值大于1000亿 本周最高价格大于上周最高价格1016.xlsx")
+
+    # 构造14号表：MMDD sheet A列故意乱序、含手工修改值（与公共文件无关），
+    # 并混入无效行：数据来源说明行、undefined、null、空行
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "筛选结果"
+    ws1.append(["随便什么"])
+    ws2 = wb.create_sheet("1016")
+    for v in ["股票代码", "000003.SZ", "数据来源：同花顺iFinD", "000001.SZ",
+              "undefined", "600519.SH", "null", None, ""]:
+        ws2.append([v])
+    wb.save(mv1000_path)
+    wb.close()
+
+    t20 = _export_table20(base, "2026-10-16", mv1000_path, "1016")
+    wb2 = load_workbook(t20)
+    assert wb2.sheetnames == ["1016"]
+    ws = wb2["1016"]
+    assert ws.max_column == 1, "20号表只应有一列"
+    assert [ws.cell(r, 1).value for r in range(1, ws.max_row + 1)] == [
+        "股票代码", "600519.SH", "000003.SZ", "000001.SZ",
+    ], "应为14号表A列内容且按代码降序，且排除数据来源/undefined/null/空行"
+
+
+@pytest.mark.asyncio
+async def test_mv1000_corrupt_file_in_date_dir_falls_back(tmp_path):
+    """用户报错场景：数据日期目录只有损坏的 14号表文件 → 跳过，回溯拷贝可读文件，
+    14号表与20号表照常输出，步骤不失败"""
+    base = str(tmp_path)
+    # 10-15 有可读的 14号表
+    _write_public_file(base, "2026-10-15", "本周总市值千亿新高", _MV_ROWS)
+    assert (await _run14(base, "2026-10-15"))["success"]
+
+    # 10-16：公共文件 + 输出目录放一个损坏的 1015 名文件（模拟用户现场）
+    _write_public_file(base, "2026-10-16", "本周总市值千亿新高", _MV_ROWS)
+    out_dir = os.path.join(base, "2026-10-16", "本周总市值千亿新高输出")
+    os.makedirs(out_dir, exist_ok=True)
+    open(os.path.join(out_dir, "14 总市值大于1000亿 本周最高价格大于上周最高价格1015.xlsx"), "w").close()
+
+    result = await _run14(base, "2026-10-16")
+    assert result["success"], result.get("error")
+
+    # 新文件用当前数据日期命名（1016），内容来自 10-15 拷贝
+    out16 = _out14(base, "2026-10-16")
+    assert os.path.exists(out16)
+    wb = load_workbook(out16)
+    assert "筛选结果" in wb.sheetnames and "1016" in wb.sheetnames
+    # 20号表照常输出
+    t20 = os.path.join(base, "2026-10-16", "20号表本周总市值千亿新高A列",
+                       "20 总市值大于1000亿 本周最高价格大于上周最高价格.xlsx")
+    assert os.path.exists(t20)
+    # 损坏文件保留原地（由下次上传清理），未阻断执行
+    assert os.path.exists(os.path.join(out_dir, "14 总市值大于1000亿 本周最高价格大于上周最高价格1015.xlsx"))
 
 
 # ---------------------------------------------------------------- 当月每日新增：20日线sheet屏蔽 + DB透传
