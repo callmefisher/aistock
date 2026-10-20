@@ -1024,13 +1024,14 @@ def test_export_table20_reads_from_generated_mv1000_file(tmp_path):
     assert [ws.cell(r, 1).value for r in range(1, ws.max_row + 1)] == [
         "股票代码", "600519.SH", "000003.SZ", "000001.SZ",
     ], "应为14号表A列内容且按代码降序，且排除数据来源/undefined/null/空行"
-    # 样式与模板「21 总市值大于1000亿....xlsx」一致：含表头全部单元格
-    # 数值格式 0.00_);[Red]\(0.00\)、宋体11、列宽18.75
+    # 样式与模板「21ok.xlsx」一致：含表头全部单元格
+    # 数值格式 0.00_);[Red]\(0.00\)、宋体11、字符集134（GB2312）、列宽18.75
     assert ws.column_dimensions["A"].width == 18.75
     for r in range(1, ws.max_row + 1):
         cell = ws.cell(r, 1)
         assert cell.number_format == "0.00_);[Red]\\(0.00\\)"
         assert cell.font.name == "宋体" and cell.font.sz == 11
+        assert cell.font.charset == 134, "字体字符集应为134（GB2312 简体中文）"
 
 
 @pytest.mark.asyncio
