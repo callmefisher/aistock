@@ -1024,14 +1024,87 @@ def test_export_table20_reads_from_generated_mv1000_file(tmp_path):
     assert [ws.cell(r, 1).value for r in range(1, ws.max_row + 1)] == [
         "股票代码", "600519.SH", "000003.SZ", "000001.SZ",
     ], "应为14号表A列内容且按代码降序，且排除数据来源/undefined/null/空行"
-    # 样式与模板「21ok.xlsx」一致：含表头全部单元格
-    # 数值格式 0.00_);[Red]\(0.00\)、宋体11、字符集134（GB2312）、列宽18.75
-    assert ws.column_dimensions["A"].width == 18.75
+    # 样式与模板「21ok.xlsx」一致：A列整列统一格式（列级样式，覆盖空行区域）
+    # 默认行高16.8、默认列宽9；数值格式 0.00_);[Red]\(0.00\)；
+    # 宋体11、charset=134（GB2312）、颜色主题色1、字体方案minor、列宽18.75
+    assert ws.sheet_format.defaultRowHeight == 16.8
+    assert ws.sheet_format.defaultColWidth == 9
+    col_dim = ws.column_dimensions["A"]
+    assert col_dim.width == 18.75
+    assert col_dim.number_format == "0.00_);[Red]\\(0.00\\)"
+    assert col_dim.font.name == "宋体" and col_dim.font.sz == 11
+    assert col_dim.font.charset == 134, "整列字体字符集应为134（GB2312）"
+    # 已有单元格（含表头）显式同格式，优先生效
     for r in range(1, ws.max_row + 1):
         cell = ws.cell(r, 1)
         assert cell.number_format == "0.00_);[Red]\\(0.00\\)"
-        assert cell.font.name == "宋体" and cell.font.sz == 11
-        assert cell.font.charset == 134, "字体字符集应为134（GB2312 简体中文）"
+        f = cell.font
+        assert f.name == "宋体" and f.sz == 11 and f.charset == 134
+        assert f.color is not None and f.color.theme == 1, "字体颜色应为主题色1"
+        assert f.scheme == "minor", "字体方案应为minor"
+
+    # XML级断言：实际单元格样式引用链与模板 21ok.xlsx 完全一致
+    # （数据单元格 s="1" → cellXfs[1] numFmtId=176 fontId=0 → fonts[0]=宋体）
+    import zipfile as _zf
+    import re as _re
+    with _zf.ZipFile(t20) as z:
+        # OPC 包规范断言（Choice 兼容）：[Content_Types].xml 必须是 zip 第一个条目
+        # （openpyxl 原生排在最后）；所有 xml/rels 部件必须带 <?xml?> 声明
+        # （openpyxl 3.1 除 theme 外均不写声明）——严格解析器（Choice 导入器）依赖两者，
+        # Excel/WPS 手动重存能修复导入，正是因为重存自动补齐了这两点。
+        _names = z.namelist()
+        assert _names[0] == "[Content_Types].xml", \
+            "[Content_Types].xml 应为 zip 第一个条目（OPC 规范）"
+        for _n in _names:
+            if _n.endswith((".xml", ".rels")):
+                assert z.read(_n).lstrip().startswith(b"<?xml"), \
+                    f"部件 {_n} 应带 <?xml?> 声明"
+        # 关系目标规范化断言：worksheet 关系必须用相对 Target（如 worksheets/sheet1.xml）。
+        # openpyxl 原生写包绝对路径 Target="/xl/worksheets/sheet1.xml"（OPC 允许但非主流），
+        # Excel/WPS 均写相对路径；Choice 等导入器按「基目录+Target」拼接解析，绝对形式直接
+        # 解析失败——这正是手动重存后可导入的另一个规范化点。
+        _rels_raw = z.read("xl/_rels/workbook.xml.rels").decode()
+        assert 'Target="/xl/' not in _rels_raw, \
+            "workbook 关系不应使用包绝对路径 Target=\"/xl/...\"（openpyxl 怪癖）"
+        assert 'Target="worksheets/sheet1.xml"' in _rels_raw, \
+            "worksheet 关系应为相对 Target"
+        _wb_raw = z.read("xl/workbook.xml").decode()
+        assert "<workbookProtection/>" not in _wb_raw, "不应有空 workbookProtection（WPS 重存会丢弃）"
+        assert "<definedNames/>" not in _wb_raw, "不应有空 definedNames"
+        st = z.read("xl/styles.xml").decode()
+        ws_xml = z.read([n for n in z.namelist() if n.startswith("xl/worksheets/sheet")][0]).decode()
+        ct = z.read("[Content_Types].xml").decode()
+        rels = z.read("xl/_rels/workbook.xml.rels").decode()
+        has_sst = "xl/sharedStrings.xml" in z.namelist()
+        sst = z.read("xl/sharedStrings.xml").decode() if has_sst else ""
+    tpl_path = "/Users/xiayanji/Desktop/21ok.xlsx"
+    if os.path.exists(tpl_path):
+        # 本机有模板原件时做逐字节比对
+        tpl_st = _zf.ZipFile(tpl_path).read("xl/styles.xml").decode()
+        assert st == tpl_st, "styles.xml 应与模板逐字节一致"
+    fonts0 = _re.findall(r"<font>.*?</font>", _re.search(r"<fonts.*?</fonts>", st, _re.S).group(0))[0]
+    assert 'name val="宋体"' in fonts0 and 'charset val="134"' in fonts0
+    assert '<color theme="1"/>' in fonts0 and '<scheme val="minor"/>' in fonts0
+    xf1 = _re.findall(r"<xf [^>]*/>", _re.search(r"<cellXfs.*?</cellXfs>", st, _re.S).group(0))[1]
+    assert 'fontId="0"' in xf1 and 'numFmtId="176"' in xf1
+    m = _re.search(r'<c r="A2" s="(\d+)"', ws_xml)
+    assert m and m.group(1) == "1", "数据单元格应引用样式索引 s=1"
+    assert 'numFmtId="176"' in _re.search(r"<numFmts.*?</numFmts>", st, _re.S).group(0)
+
+    # 标准化保存断言：字符串单元格为 Excel 原生 t="s" + sharedStrings 形态
+    # （openpyxl 默认只写 inlineStr 且无 sharedStrings.xml，Choice 等第三方导入器不识别；
+    # Excel 手动重存后能导入正是因为重存完成了该规范化）
+    assert has_sst, "应生成 xl/sharedStrings.xml"
+    assert 't="inlineStr"' not in ws_xml, "不应残留 inlineStr 形态单元格"
+    assert '<c r="A2" s="1" t="s"><v>' in ws_xml, "数据单元格应为 t=\"s\" + <v>索引</v>"
+    assert "sharedStrings+xml" in ct, "[Content_Types].xml 应注册 sharedStrings 部件"
+    assert "relationships/sharedStrings" in rels, "workbook 关系应包含 sharedStrings"
+    assert "股票代码" in sst and "600519.SH" in sst, "共享字符串表应含表头与代码"
+    # openpyxl 回读（经 sharedStrings 解析）内容不变
+    wb3 = load_workbook(t20)
+    ws3 = wb3["1016"]
+    assert [ws3.cell(r, 1).value for r in range(1, ws3.max_row + 1)] == [
+        "股票代码", "600519.SH", "000003.SZ", "000001.SZ"]
 
 
 @pytest.mark.asyncio

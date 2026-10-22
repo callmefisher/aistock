@@ -78,6 +78,8 @@ docker-compose.override.yml
 Test
 .pytest_cache/
 .mypy_cache/
-
+.zcode/
+.trae/
+superpowers/
 # Smart build fingerprint (local only)
 .last-built-fingerprint

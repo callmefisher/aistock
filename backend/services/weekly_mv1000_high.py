@@ -170,18 +170,182 @@ def _export_table20(base_dir: str, date_str: str, mv1000_path: str, mmdd: str) -
     ws.title = mmdd
     for row in sorted_col:
         ws.append([row[0] if row and row[0] is not None else ""])
-    # 样式与用户模板「21ok.xlsx」完全一致：
-    # 全部单元格（含表头）数值格式 0.00_);[Red]\(0.00\)（数值2位、负数红色括号），
-    # 宋体11、字体字符集134（GB2312 简体中文），A列宽18.75——只改格式不改值
-    from openpyxl.styles import Font
+    # 样式与用户模板「21ok.xlsx」完全一致，且为「整列统一格式」：
+    # 字体 宋体11、charset=134（GB2312）、颜色=主题色1（theme=1）、字体方案=minor；
+    # 数值格式 0.00_);[Red]\(0.00\)；默认行高16.8、默认列宽9、A列宽18.75。
+    # 列级样式覆盖整列所有行（含空行区域，后续手工追加行自动继承）；
+    # 已有单元格再显式设置一遍确保优先生效。
+    from openpyxl.styles import Color, Font
+    fmt = "0.00_);[Red]\\(0.00\\)"
+    font = Font(name="宋体", size=11, charset=134,
+                color=Color(theme=1, tint=0.0), scheme="minor")
+    ws.sheet_format.defaultRowHeight = 16.8
+    ws.sheet_format.defaultColWidth = 9
+    col_dim = ws.column_dimensions["A"]
+    col_dim.width = 18.75
+    col_dim.font = font
+    col_dim.number_format = fmt
     for r in range(1, ws.max_row + 1):
         cell = ws.cell(row=r, column=1)
-        cell.number_format = "0.00_);[Red]\\(0.00\\)"
-        cell.font = Font(name="宋体", size=11, charset=134)
-    ws.column_dimensions["A"].width = 18.75
+        cell.number_format = fmt
+        cell.font = font
     wb.save(out_path)
     wb.close()
+    # 生成后自动执行一次「标准化保存」（等价用 Excel 打开再原样保存一次）：
+    # 1) styles.xml 替换为模板样式表，实际单元格样式引用链与 21ok.xlsx 逐字节一致；
+    # 2) inlineStr → sharedStrings 规范化：openpyxl 只写 t="inlineStr"（无
+    #    sharedStrings.xml），Choice 等第三方导入器不识别该形态；Excel 手动
+    #    重存后能正常导入，正是重存把字符串规范化为 t="s" + 共享字符串表所致
+    _standard_save(out_path)
     return out_path
+
+
+_TABLE20_STYLES_TEMPLATE: Optional[bytes] = None
+
+
+def _table20_template_styles() -> bytes:
+    """模板 styles.xml（提取自用户模板 21ok.xlsx），进程内缓存。"""
+    global _TABLE20_STYLES_TEMPLATE
+    if _TABLE20_STYLES_TEMPLATE is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "config", "table20_styles_template.xml")
+        with open(path, "rb") as f:
+            _TABLE20_STYLES_TEMPLATE = f.read()
+    return _TABLE20_STYLES_TEMPLATE
+
+
+def _xml_unescape(s: str) -> str:
+    """XML 文本反转义（单遍）：数值字符引用 &#NNN; / &#xHH; + 基本实体。
+    openpyxl 序列化把非 ASCII 写成数值字符引用，转 sharedStrings 时需还原为
+    字面 UTF-8（与 Excel 原生形态一致）。"""
+    def _sub(m) -> str:
+        if m.group(1) is not None:
+            return chr(int(m.group(1)))
+        if m.group(2) is not None:
+            return chr(int(m.group(2), 16))
+        return {"&amp;": "&", "&lt;": "<", "&gt;": ">",
+                "&quot;": '"', "&apos;": "'"}[m.group(0)]
+    return re.sub(r"&#(\d+);|&#x([0-9A-Fa-f]+);|&amp;|&lt;|&gt;|&quot;|&apos;", _sub, s)
+
+
+def _xml_escape(s: str) -> str:
+    """XML 文本转义（仅文本内容必需的三个字符）。"""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _standard_save(out_path: str) -> None:
+    """Excel 标准化保存后处理（生成后自动执行，等价「用 Excel 打开再原样保存一次」）：
+
+    1. xl/styles.xml 整体替换为模板（21ok.xlsx）样式表——实际单元格样式引用链
+       与模板逐字节一致（openpyxl 默认字体 Calibri 占 fonts[0]，使数据单元格
+       fontId=1；模板默认字体即宋体，fontId=0 + numFmtId=176）；
+    2. sheetFormatPr 对齐模板形态（去掉 openpyxl 附加的 baseColWidth）；
+    3. inlineStr 字符串单元格 → Excel 原生 sharedStrings 共享字符串表：
+       openpyxl 保存只写 <c t="inlineStr"><is><t>…（且无 sharedStrings.xml），
+       部分第三方导入器（如 Choice 金融终端）不支持该形态；Excel 打开手动重存
+       后能正常导入，正是重存把字符串规范化为 <c t="s"><v>索引</v> + 共享字符串表。
+       此处自动完成同等转换，并补写 xl/sharedStrings.xml、[Content_Types].xml
+       Override 及 workbook.xml.rels 关系。
+    4. 所有 xml/rels 部件补 <?xml?> 声明：openpyxl 3.1 原生输出除 theme1.xml 外
+       均不写声明（直接以根元素开头），严格 OPC 解析器（Choice 导入器）要求声明存在；
+    5. [Content_Types].xml 重打包为 zip 第一个条目：OPC 规范要求，openpyxl 原生
+       排在最后一个条目，流式/严格解析器依赖其位于包首；
+    6. worksheet 关系 Target 由包绝对路径 /xl/worksheets/sheetN.xml 规范化为相对
+       路径 worksheets/sheetN.xml（Excel/WPS 均为相对路径；Choice 等导入器按
+       「基目录+Target」拼接解析，绝对形式直接解析失败），并丢弃 openpyxl 写出的
+       空 workbookProtection/definedNames 元素（WPS 重存同样会丢弃）。"""
+    import zipfile
+
+    tpl = _table20_template_styles()
+
+    cell_re = re.compile(
+        r'<c ([^>]*?)t="inlineStr"([^>]*?)><is><t( xml:space="preserve")?>(.*?)</t></is></c>',
+        re.S,
+    )
+    empty_re = re.compile(r'<c ([^>]*?)t="inlineStr"([^>]*?)/>')
+
+    ss_items: list = []   # [(xml:space 属性, 未转义文本), ...]，去重
+    ss_index: dict = {}   # (space, text) -> 索引
+    ss_refs = 0           # 字符串单元格总数（含重复引用）
+
+    def _to_shared(m) -> str:
+        nonlocal ss_refs
+        ss_refs += 1
+        # 还原数值字符引用为字面文本（去重键与 sst 输出统一用未转义形式）
+        key = (m.group(3) or "", _xml_unescape(m.group(4)))
+        idx = ss_index.get(key)
+        if idx is None:
+            idx = len(ss_items)
+            ss_index[key] = idx
+            ss_items.append(key)
+        return '<c %st="s"%s><v>%d</v></c>' % (m.group(1), m.group(2), idx)
+
+    # 两遍处理：先处理 worksheet（收集字符串），再补 sharedStrings 及注册部件
+    with zipfile.ZipFile(out_path) as zin:
+        entries = [(it.filename, zin.read(it.filename)) for it in zin.infolist()]
+
+    processed = []
+    for name, data in entries:
+        if name == "xl/styles.xml":
+            data = tpl
+        elif name == "xl/_rels/workbook.xml.rels":
+            # worksheet 关系 Target：包绝对路径 → 相对路径（openpyxl 怪癖，见 docstring 第6点）
+            data = data.replace(b'Target="/xl/', b'Target="')
+        elif name == "xl/workbook.xml":
+            # 丢弃空元素（WPS 重存同样丢弃；空 workbookProtection 可能被保守解析器误判为保护态）
+            data = data.replace(b"<workbookProtection/>", b"") \
+                       .replace(b"<definedNames/>", b"")
+        elif name.startswith("xl/worksheets/sheet") and name.endswith(".xml"):
+            text = data.decode("utf-8")
+            text = cell_re.sub(_to_shared, text)
+            text = empty_re.sub(lambda m: "<c %s%s/>" % (m.group(1), m.group(2)), text)
+            text = text.replace('<sheetFormatPr baseColWidth="8" ', '<sheetFormatPr ')
+            data = text.encode("utf-8")
+        processed.append((name, data))
+
+    if ss_items:
+        sst = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+               '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+               ' count="%d" uniqueCount="%d">' % (ss_refs, len(ss_items))
+               + "".join('<si><t%s>%s</t></si>' % (sp, _xml_escape(tx)) for sp, tx in ss_items)
+               + '</sst>')
+        processed.append(("xl/sharedStrings.xml", sst.encode("utf-8")))
+        for i, (name, data) in enumerate(processed):
+            if name == "[Content_Types].xml":
+                text = data.decode("utf-8").replace(
+                    "</Types>",
+                    '<Override PartName="/xl/sharedStrings.xml" ContentType='
+                    '"application/vnd.openxmlformats-officedocument.spreadsheetml'
+                    '.sharedStrings+xml"/></Types>')
+                processed[i] = (name, text.encode("utf-8"))
+            elif name == "xl/_rels/workbook.xml.rels":
+                text = data.decode("utf-8")
+                ids = [int(x) for x in re.findall(r'Id="rId(\d+)"', text)]
+                rid = "rId%d" % (max(ids) + 1 if ids else 1)
+                text = text.replace(
+                    "</Relationships>",
+                    '<Relationship Id="%s" Type="http://schemas.openxmlformats.org'
+                    '/officeDocument/2006/relationships/sharedStrings"'
+                    ' Target="sharedStrings.xml"/></Relationships>' % rid)
+                processed[i] = (name, text.encode("utf-8"))
+
+    # OPC 兼容修复（等价 WPS/Excel 重存的规范化）：
+    # a) xml/rels 部件缺 <?xml?> 声明则补写（模板 styles 与生成的 sharedStrings 已带，跳过）；
+    # b) [Content_Types].xml 置于 zip 首条目（稳定排序，其余保持原相对顺序）。
+    _decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    _fixed = []
+    for name, data in processed:
+        if (name.endswith(".xml") or name.endswith(".rels")) \
+                and not data.lstrip().startswith(b"<?xml"):
+            data = _decl + data
+        _fixed.append((name, data))
+    _fixed.sort(key=lambda it: it[0] != "[Content_Types].xml")
+
+    tmp = out_path + ".tmp"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, data in _fixed:
+            zout.writestr(name, data)
+    os.replace(tmp, out_path)
 
 
 async def execute_weekly_mv1000_high(executor, config: dict, date_str: Optional[str] = None):
