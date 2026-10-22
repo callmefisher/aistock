@@ -1,6 +1,6 @@
 # 表号注册表（1~20 号表权威对照）
 
-> 最后验证版本：v0.0.6.17（2026-10-21）。权威源：`backend/config/workflow_type_config.py`（类型/命名/目录）、`frontend/src/utils/quickUploadRules.js`（上传路由）。
+> 最后验证版本：v0.0.6.18（2026-10-22）。权威源：`backend/config/workflow_type_config.py`（类型/命名/目录）、`frontend/src/utils/quickUploadRules.js`（上传路由）。
 > **维护纪律**：新增/修改 workflow_type 的 commit 必须同步更新本文件。
 
 ## 总览
