@@ -1,0 +1,15 @@
+# coverage 配置（原存于 pytest.ini 的 [coverage:*]，但 coverage 不读取 pytest.ini，
+# 自始未生效；pytest.ini 节名 [tool:pytest] 同样不被 pytest 读取，两处均已修复）
+[run]
+source = .
+omit =
+    tests/*
+    venv/*
+    */migrations/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError

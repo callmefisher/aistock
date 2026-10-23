@@ -1,6 +1,7 @@
 """阶段3 - _pledge_trend_analysis 步骤执行器测试。"""
 import os
 import tempfile
+from datetime import datetime as _dt, timedelta as _td
 from unittest.mock import patch, MagicMock
 
 import pandas as pd
@@ -17,12 +18,18 @@ def tmpbase():
         yield base
 
 
+def _recent_date(days_ago: int = 5) -> str:
+    """相对当前时间的近期日期（步骤的 row_recency_days=30 按真实 now 判断，
+    测试锚点必须动态生成，固定历史日期会整行被 skip 导致断言失效）。"""
+    return (_dt.now() - _td(days=days_ago)).date().isoformat()
+
+
 def _input_df():
     return pd.DataFrame([
         {"序号": 1, "证券代码": "002768.SZ", "证券简称": "国恩股份",
-         "最新公告日": "2026-04-14", "来源": "小盘"},
+         "最新公告日": _recent_date(), "来源": "小盘"},
         {"序号": 2, "证券代码": "000001.SZ", "证券简称": "平安银行",
-         "最新公告日": "2026-04-14", "来源": "中大盘"},
+         "最新公告日": _recent_date(), "来源": "中大盘"},
     ])
 
 
@@ -61,13 +68,16 @@ async def test_missing_anchor_row_returns_error(tmpbase):
 @pytest.mark.asyncio
 async def test_happy_path_writes_3_columns(tmpbase):
     """正常流程：3 列正确写入 + 文件生成。"""
+    # 近 1 年内严格递减序列（末条=锚点），趋势 → down，锚点行 Δ=-1.64 → 小幅转减
+    anchor = _recent_date()
+    offsets = [365, 275, 185, 95, 5]           # 公告日期相对今天的天数偏移
+    values = [17.74, 13.73, 11.99, 9.78, 8.14]  # 严格递减
     rec_decline = [
-        {"公告日期": "2025-04-20", "累计质押比例": 17.74, "前次累计质押比例": 22.00},
-        {"公告日期": "2025-08-30", "累计质押比例": 13.73, "前次累计质押比例": 17.74},
-        {"公告日期": "2025-12-17", "累计质押比例": 11.99, "前次累计质押比例": 13.73},
-        {"公告日期": "2026-01-22", "累计质押比例": 9.78,  "前次累计质押比例": 11.99},
-        {"公告日期": "2026-04-14", "累计质押比例": 8.14,  "前次累计质押比例": 9.78},
+        {"公告日期": (_dt.now() - _td(days=off)).date().isoformat(),
+         "累计质押比例": v, "前次累计质押比例": values[i - 1] if i else 22.00}
+        for i, (off, v) in enumerate(zip(offsets, values))
     ]
+    rec_decline[-1]["公告日期"] = anchor  # 末条对齐锚点（异动判定取锚点日行）
     mapping = {
         "002768": (rec_decline, "eastmoney"),
         "000001": ([], "empty"),
@@ -92,7 +102,7 @@ async def test_happy_path_writes_3_columns(tmpbase):
 @pytest.mark.asyncio
 async def test_stats_include_by_source_and_by_result(tmpbase):
     """stats 字段含 by_source + by_result 分布。"""
-    rec = [{"公告日期": "2026-04-14", "累计质押比例": 10.0, "前次累计质押比例": 10.3}]
+    rec = [{"公告日期": _recent_date(), "累计质押比例": 10.0, "前次累计质押比例": 10.3}]
     mapping = {
         "002768": (rec, "eastmoney"),
         "000001": ([], "empty"),
@@ -139,12 +149,12 @@ async def test_dirty_rows_filtered_before_anchor_check(tmpbase):
     """脏行（证券代码空/Choice/数据来源）在锚点校验前被过滤，不阻塞步骤。"""
     df = pd.DataFrame([
         {"证券代码": "002768.SZ", "证券简称": "国恩",
-         "最新公告日": "2026-04-14", "来源": "小盘"},
+         "最新公告日": _recent_date(), "来源": "小盘"},
         {"证券代码": None, "证券简称": None, "最新公告日": None, "来源": None},
         {"证券代码": "数据来源：妙想Choice", "证券简称": None,
          "最新公告日": None, "来源": None},
         {"证券代码": "000001.SZ", "证券简称": "平安",
-         "最新公告日": "2026-04-14", "来源": "中大盘"},
+         "最新公告日": _recent_date(), "来源": "中大盘"},
     ])
 
     class NoNetDS:
@@ -167,10 +177,10 @@ async def test_skip_preset_row_not_queried(tmpbase):
     """原表 3 列任一非空 → skip，不调用数据源，保持原值。"""
     df = pd.DataFrame([
         {"证券代码": "002768", "证券简称": "国恩",
-         "最新公告日": "2026-04-14", "来源": "小盘",
+         "最新公告日": _recent_date(), "来源": "小盘",
          "持续递增（一年内）": "", "持续递减（一年内）": "Y", "质押异动": ""},
         {"证券代码": "000001", "证券简称": "平安",
-         "最新公告日": "2026-04-14", "来源": "中大盘",
+         "最新公告日": _recent_date(), "来源": "中大盘",
          "持续递增（一年内）": "", "持续递减（一年内）": "", "质押异动": ""},
     ])
 
@@ -251,7 +261,7 @@ async def test_fail_samples_limited_to_10(tmpbase):
             raise RuntimeError(f"boom-{symbol}")
     df = pd.DataFrame([
         {"证券代码": f"00000{i}", "证券简称": f"T{i}",
-         "最新公告日": "2026-04-14", "来源": "小盘"}
+         "最新公告日": _recent_date(), "来源": "小盘"}
         for i in range(15)
     ])
     ex = WorkflowExecutor(base_dir=tmpbase, workflow_type="质押")

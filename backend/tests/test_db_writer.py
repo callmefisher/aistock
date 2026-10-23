@@ -4,10 +4,38 @@ from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
 
 
+class _FakeAsyncSessionCM:
+    """get_session 是 @asynccontextmanager，直接 patch 成返回本实例的普通函数，
+    即可被 `async with self.get_session() as session:` 使用。"""
+
+    def __init__(self, session):
+        self._session = session
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def _make_session_mock(fetchone=None):
+    """构造异步 session mock：execute/commit 可 await；fetchone 可配置返回值。
+
+    注意：execute 的返回值显式设为普通 MagicMock（AsyncMock 子属性默认仍为
+    AsyncMock，会让 result.fetchone() 返回协程导致下标报错）。"""
+    session = MagicMock()
+    result_mock = MagicMock()
+    if fetchone is not None:
+        result_mock.fetchone.return_value = fetchone
+    session.execute = AsyncMock(return_value=result_mock)
+    session.commit = AsyncMock()
+    return session
+
+
 class TestDatabaseWriter:
     """数据库写入测试"""
 
-    def test_write_daily_bar_empty_dataframe(self):
+    async def test_write_daily_bar_empty_dataframe(self):
         """测试写入空数据框"""
         from service.db_writer import DatabaseWriter
 
@@ -15,11 +43,11 @@ class TestDatabaseWriter:
             writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
             df = pd.DataFrame()
 
-            result = writer.write_daily_bar(df)
+            result = await writer.write_daily_bar(df)
 
             assert result == 0
 
-    def test_write_daily_bar_success(self):
+    async def test_write_daily_bar_success(self):
         """测试写入日线数据成功"""
         from service.db_writer import DatabaseWriter
 
@@ -48,16 +76,19 @@ class TestDatabaseWriter:
             'volume_ratio': [1.2] * 5
         })
 
-        with patch('service.db_writer.create_async_engine') as mock_engine:
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+        session = _make_session_mock()
+        with patch('service.db_writer.create_async_engine'):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
 
-                result = writer.write_daily_bar(df)
+                result = await writer.write_daily_bar(df)
 
                 assert result == 5
+                assert session.execute.await_count == 5
 
-    def test_write_daily_bar_null_values(self):
-        """测试写入包含空值的日线数据"""
+    async def test_write_daily_bar_null_values(self):
+        """测试写入包含空值的日线数据（空值归一为 0 写入）"""
         from service.db_writer import DatabaseWriter
 
         df = pd.DataFrame({
@@ -84,26 +115,30 @@ class TestDatabaseWriter:
             'volume_ratio': [None]
         })
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.write_daily_bar(df)
+                result = await writer.write_daily_bar(df)
                 assert result == 1
 
-    def test_write_dim_stock_empty(self):
+    async def test_write_dim_stock_empty(self):
         """测试写入空股票维度数据"""
         from service.db_writer import DatabaseWriter
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
                 df = pd.DataFrame()
 
-                result = writer.write_dim_stock(df)
+                result = await writer.write_dim_stock(df)
 
                 assert result == 0
 
-    def test_write_dim_stock_success(self):
+    async def test_write_dim_stock_success(self):
         """测试写入股票维度数据成功"""
         from service.db_writer import DatabaseWriter
 
@@ -114,42 +149,49 @@ class TestDatabaseWriter:
             'listing_date': ['2020-01-01', '2020-02-01']
         })
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.write_dim_stock(df)
+                result = await writer.write_dim_stock(df)
 
                 assert result == 2
+                assert session.execute.await_count == 2
 
-    def test_write_dim_stock_missing_columns(self):
-        """测试写入股票维度数据缺少列"""
+    async def test_write_dim_stock_missing_columns(self):
+        """测试写入股票维度数据缺少列（缺失列取默认值，仍按行数成功）"""
         from service.db_writer import DatabaseWriter
 
         df = pd.DataFrame({
             'stock_code': ['600000']
         })
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.write_dim_stock(df)
+                result = await writer.write_dim_stock(df)
 
                 assert result == 1
 
-    def test_write_financial_empty(self):
+    async def test_write_financial_empty(self):
         """测试写入空财务数据"""
         from service.db_writer import DatabaseWriter
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
                 df = pd.DataFrame()
 
-                result = writer.write_financial(df)
+                result = await writer.write_financial(df)
 
                 assert result == 0
 
-    def test_write_financial_success(self):
+    async def test_write_financial_success(self):
         """测试写入财务数据成功"""
         from service.db_writer import DatabaseWriter
 
@@ -174,15 +216,18 @@ class TestDatabaseWriter:
             'ps_ratio': [1.0, 0.9, 0.8]
         })
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.write_financial(df)
+                result = await writer.write_financial(df)
 
                 assert result == 3
+                assert session.execute.await_count == 3
 
-    def test_write_financial_null_values(self):
-        """测试写入财务数据包含空值"""
+    async def test_write_financial_null_values(self):
+        """测试写入财务数据包含空值（空值写 None）"""
         from service.db_writer import DatabaseWriter
 
         df = pd.DataFrame({
@@ -206,14 +251,16 @@ class TestDatabaseWriter:
             'ps_ratio': [None]
         })
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.write_financial(df)
+                result = await writer.write_financial(df)
 
                 assert result == 1
 
-    def test_write_financial_negative_values(self):
+    async def test_write_financial_negative_values(self):
         """测试写入财务数据负值"""
         from service.db_writer import DatabaseWriter
 
@@ -238,14 +285,16 @@ class TestDatabaseWriter:
             'ps_ratio': [-1.0]
         })
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.write_financial(df)
+                result = await writer.write_financial(df)
 
                 assert result == 1
 
-    def test_write_financial_zero_values(self):
+    async def test_write_financial_zero_values(self):
         """测试写入财务数据零值"""
         from service.db_writer import DatabaseWriter
 
@@ -270,14 +319,16 @@ class TestDatabaseWriter:
             'ps_ratio': [0]
         })
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.write_financial(df)
+                result = await writer.write_financial(df)
 
                 assert result == 1
 
-    def test_write_financial_extreme_values(self):
+    async def test_write_financial_extreme_values(self):
         """测试写入财务数据极端值"""
         from service.db_writer import DatabaseWriter
 
@@ -302,10 +353,12 @@ class TestDatabaseWriter:
             'ps_ratio': [1e5]
         })
 
+        session = _make_session_mock()
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock):
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.write_financial(df)
+                result = await writer.write_financial(df)
 
                 assert result == 1
 
@@ -322,38 +375,36 @@ class TestDatabaseConnection:
         assert writer.database_url == "mysql+aiomysql://user:pass@localhost:3306/testdb"
 
     def test_database_url_default(self):
-        """测试数据库URL默认"""
+        """测试数据库URL默认（core.config.settings.DATABASE_URL，库名 stock_pool）"""
         from service.db_writer import DatabaseWriter
 
         with patch('service.db_writer.create_async_engine'):
             writer = DatabaseWriter()
 
-            assert "finance_data" in writer.database_url
+            assert "stock_pool" in writer.database_url
 
-    def test_get_last_trade_date_exists(self):
-        """测试获取最后交易日期存在"""
+    async def test_get_last_trade_date_exists(self):
+        """测试获取最后交易日期存在（datetime 行格式化为 YYYY-MM-DD）"""
         from service.db_writer import DatabaseWriter
 
+        session = _make_session_mock(fetchone=(datetime(2026, 4, 9),))
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock) as mock_session:
-                mock_result = MagicMock()
-                mock_result.fetchone.return_value = (datetime(2026, 4, 9),)
-                mock_session.return_value.__aenter__.return_value.execute.return_value.fetchone = mock_result.fetchone
-
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.get_last_trade_date("600000")
+                result = await writer.get_last_trade_date("600000")
 
-    def test_get_last_trade_date_not_exists(self):
-        """测试获取最后交易日期不存在"""
+                assert result == '2026-04-09'
+
+    async def test_get_last_trade_date_not_exists(self):
+        """测试获取最后交易日期不存在（NULL 行返回 None）"""
         from service.db_writer import DatabaseWriter
 
+        session = _make_session_mock(fetchone=(None,))
         with patch('service.db_writer.create_async_engine'):
-            with patch.object(DatabaseWriter, 'get_session', new_callable=AsyncMock) as mock_session:
-                mock_result = MagicMock()
-                mock_result.fetchone.return_value = (None,)
-                mock_session.return_value.__aenter__.return_value.execute.return_value.fetchone = mock_result.fetchone
-
+            with patch.object(DatabaseWriter, 'get_session',
+                              lambda self: _FakeAsyncSessionCM(session)):
                 writer = DatabaseWriter("mysql+aiomysql://test:test@localhost/test")
-                result = writer.get_last_trade_date("600000")
+                result = await writer.get_last_trade_date("600000")
 
                 assert result is None

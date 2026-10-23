@@ -1,6 +1,6 @@
 # 表号注册表（1~20 号表权威对照）
 
-> 最后验证版本：v0.0.6.18（2026-10-22）。权威源：`backend/config/workflow_type_config.py`（类型/命名/目录）、`frontend/src/utils/quickUploadRules.js`（上传路由）。
+> 最后验证版本：v0.0.6.19（2026-10-23）。权威源：`backend/config/workflow_type_config.py`（类型/命名/目录）、`frontend/src/utils/quickUploadRules.js`（上传路由）。
 > **维护纪律**：新增/修改 workflow_type 的 commit 必须同步更新本文件。
 
 ## 总览
@@ -69,7 +69,7 @@
 **12 39日新高**：仅"股票代码/证券代码"列被读取：→ 7 号表"39日新高"标记列、18 号表 `"{M}/{D}
 39日新高"` 列。
 
-**13/14/18/20 周报**：`weekly_common.py` 35 天回溯——拷贝 35 天内已有输出编辑而非重生成。14 号表 Sheet1"筛选结果"不动 + 逐周追加 MMDD sheet；20 号表 = 当日 MMDD sheet 的 A 列拷贝（代码降序，固定文件名），输出经 `_standard_save()` 做 Choice 兼容性标准化（见 architecture-patterns.md 模式 7）。
+**13/14/18/20 周报**：`weekly_common.py` 35 天回溯——拷贝 35 天内已有输出编辑而非重生成。14 号表 Sheet1"筛选结果"不动 + 逐周追加 MMDD sheet；20 号表 = 当日 MMDD sheet 的 A 列拷贝（代码降序，固定文件名），由 `_write_table20_package()` 直接构建 Choice 兼容标准包（见 architecture-patterns.md 模式 7）。
 
 **17 当月每日新增**：单文件双 sheet："当月每日新增"（百日新高 J 列新增，落库 `step_type='final'`）/"20日线"（K 列新增，落库 `final_ma20`；当前 `EXPORT_MDN_MA20_SHEET=False` 屏蔽导出但 DB 仍写）。
 

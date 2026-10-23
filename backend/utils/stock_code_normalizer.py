@@ -81,7 +81,14 @@ def match_stock_code_flexible(
     numeric_code = extract_numeric_code(normalized)
     if numeric_code and numeric_code in stock_dict:
         return stock_dict[numeric_code] if return_value else numeric_code
-     
+
+    # 反向匹配：查询的数字部分 == 字典键的数字部分（如 查 "601398" 命中键 "601398.SH"）。
+    # 仅在前两步 O(1) 未命中时兜底，只新增命中不改变既有命中。
+    if numeric_code:
+        for key in stock_dict:
+            if extract_numeric_code(key) == numeric_code:
+                return stock_dict[key] if return_value else key
+
     return ''
 
 

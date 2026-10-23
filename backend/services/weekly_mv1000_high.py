@@ -164,187 +164,156 @@ def _export_table20(base_dir: str, date_str: str, mv1000_path: str, mmdd: str) -
     # 单列按代码降序（表头不动），复用既有排序逻辑
     sorted_col = sort_rows_by_code_desc(col_a)
 
-    wb = Workbook()
-    ws = wb.active
-    assert ws is not None
-    ws.title = mmdd
-    for row in sorted_col:
-        ws.append([row[0] if row and row[0] is not None else ""])
-    # 样式与用户模板「21ok.xlsx」完全一致，且为「整列统一格式」：
-    # 字体 宋体11、charset=134（GB2312）、颜色=主题色1（theme=1）、字体方案=minor；
-    # 数值格式 0.00_);[Red]\(0.00\)；默认行高16.8、默认列宽9、A列宽18.75。
-    # 列级样式覆盖整列所有行（含空行区域，后续手工追加行自动继承）；
-    # 已有单元格再显式设置一遍确保优先生效。
-    from openpyxl.styles import Color, Font
-    fmt = "0.00_);[Red]\\(0.00\\)"
-    font = Font(name="宋体", size=11, charset=134,
-                color=Color(theme=1, tint=0.0), scheme="minor")
-    ws.sheet_format.defaultRowHeight = 16.8
-    ws.sheet_format.defaultColWidth = 9
-    col_dim = ws.column_dimensions["A"]
-    col_dim.width = 18.75
-    col_dim.font = font
-    col_dim.number_format = fmt
-    for r in range(1, ws.max_row + 1):
-        cell = ws.cell(row=r, column=1)
-        cell.number_format = fmt
-        cell.font = font
-    wb.save(out_path)
-    wb.close()
-    # 生成后自动执行一次「标准化保存」（等价用 Excel 打开再原样保存一次）：
-    # 1) styles.xml 替换为模板样式表，实际单元格样式引用链与 21ok.xlsx 逐字节一致；
-    # 2) inlineStr → sharedStrings 规范化：openpyxl 只写 t="inlineStr"（无
-    #    sharedStrings.xml），Choice 等第三方导入器不识别该形态；Excel 手动
-    #    重存后能正常导入，正是重存把字符串规范化为 t="s" + 共享字符串表所致
-    _standard_save(out_path)
+    # 直接写入已知可导入 Choice 的标准 xlsx 包（单列，不经 openpyxl 序列化与事后修补）；
+    # None 值归一为空串，由包构建函数写成带样式的空单元格
+    _write_table20_package(
+        out_path, mmdd,
+        [row[0] if row and row[0] is not None else "" for row in sorted_col])
     return out_path
 
 
-_TABLE20_STYLES_TEMPLATE: Optional[bytes] = None
+_TABLE20_TPL_CACHE: dict = {}
 
 
-def _table20_template_styles() -> bytes:
-    """模板 styles.xml（提取自用户模板 21ok.xlsx），进程内缓存。"""
-    global _TABLE20_STYLES_TEMPLATE
-    if _TABLE20_STYLES_TEMPLATE is None:
+def _table20_template(filename: str) -> bytes:
+    """20号表包模板部件（config/ 下，提取自 Choice 实测可导入的 WPS 模板），进程内缓存。
+
+    filename: table20_styles_template.xml（样式表）/ table20_theme_template.xml（主题）
+    """
+    data = _TABLE20_TPL_CACHE.get(filename)
+    if data is None:
         path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "config", "table20_styles_template.xml")
+                            "config", filename)
         with open(path, "rb") as f:
-            _TABLE20_STYLES_TEMPLATE = f.read()
-    return _TABLE20_STYLES_TEMPLATE
+            data = f.read()
+        _TABLE20_TPL_CACHE[filename] = data
+    return data
 
 
-def _xml_unescape(s: str) -> str:
-    """XML 文本反转义（单遍）：数值字符引用 &#NNN; / &#xHH; + 基本实体。
-    openpyxl 序列化把非 ASCII 写成数值字符引用，转 sharedStrings 时需还原为
-    字面 UTF-8（与 Excel 原生形态一致）。"""
-    def _sub(m) -> str:
-        if m.group(1) is not None:
-            return chr(int(m.group(1)))
-        if m.group(2) is not None:
-            return chr(int(m.group(2), 16))
-        return {"&amp;": "&", "&lt;": "<", "&gt;": ">",
-                "&quot;": '"', "&apos;": "'"}[m.group(0)]
-    return re.sub(r"&#(\d+);|&#x([0-9A-Fa-f]+);|&amp;|&lt;|&gt;|&quot;|&apos;", _sub, s)
+_XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
 
 
-def _xml_escape(s: str) -> str:
-    """XML 文本转义（仅文本内容必需的三个字符）。"""
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def _write_table20_package(out_path: str, sheet_name: str, values: list) -> None:
+    """直接构建 20号表 xlsx 包：单列字符串（含表头），不经 openpyxl 保存、无需事后修补。
 
-
-def _standard_save(out_path: str) -> None:
-    """Excel 标准化保存后处理（生成后自动执行，等价「用 Excel 打开再原样保存一次」）：
-
-    1. xl/styles.xml 整体替换为模板（21ok.xlsx）样式表——实际单元格样式引用链
-       与模板逐字节一致（openpyxl 默认字体 Calibri 占 fonts[0]，使数据单元格
-       fontId=1；模板默认字体即宋体，fontId=0 + numFmtId=176）；
-    2. sheetFormatPr 对齐模板形态（去掉 openpyxl 附加的 baseColWidth）；
-    3. inlineStr 字符串单元格 → Excel 原生 sharedStrings 共享字符串表：
-       openpyxl 保存只写 <c t="inlineStr"><is><t>…（且无 sharedStrings.xml），
-       部分第三方导入器（如 Choice 金融终端）不支持该形态；Excel 打开手动重存
-       后能正常导入，正是重存把字符串规范化为 <c t="s"><v>索引</v> + 共享字符串表。
-       此处自动完成同等转换，并补写 xl/sharedStrings.xml、[Content_Types].xml
-       Override 及 workbook.xml.rels 关系。
-    4. 所有 xml/rels 部件补 <?xml?> 声明：openpyxl 3.1 原生输出除 theme1.xml 外
-       均不写声明（直接以根元素开头），严格 OPC 解析器（Choice 导入器）要求声明存在；
-    5. [Content_Types].xml 重打包为 zip 第一个条目：OPC 规范要求，openpyxl 原生
-       排在最后一个条目，流式/严格解析器依赖其位于包首；
-    6. worksheet 关系 Target 由包绝对路径 /xl/worksheets/sheetN.xml 规范化为相对
-       路径 worksheets/sheetN.xml（Excel/WPS 均为相对路径；Choice 等导入器按
-       「基目录+Target」拼接解析，绝对形式直接解析失败），并丢弃 openpyxl 写出的
-       空 workbookProtection/definedNames 元素（WPS 重存同样会丢弃）。"""
+    输出形态与「WPS 打开后原样重存」一致（Choice 等严格导入器实测可接受）：
+    - 所有 xml/rels 部件带 <?xml?> 声明；[Content_Types].xml 为 zip 首条目（OPC 规范）
+    - 关系 Target 全部相对路径；无空 workbookProtection/definedNames 元素
+    - 字符串写 sharedStrings 共享字符串表（<c t="s">），不用 inlineStr 形态
+    - styles/theme 用模板部件；样式链与模板一致：单元格 s="1" → cellXfs[1]
+      numFmtId=176 fontId=0（宋体11、charset=134、主题色1、minor），A列整列
+      style="1" 宽 18.75；默认行高 16.8、默认列宽 9（手工追加行自动继承列样式）
+    """
     import zipfile
 
-    tpl = _table20_template_styles()
+    def esc(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    cell_re = re.compile(
-        r'<c ([^>]*?)t="inlineStr"([^>]*?)><is><t( xml:space="preserve")?>(.*?)</t></is></c>',
-        re.S,
-    )
-    empty_re = re.compile(r'<c ([^>]*?)t="inlineStr"([^>]*?)/>')
-
-    ss_items: list = []   # [(xml:space 属性, 未转义文本), ...]，去重
-    ss_index: dict = {}   # (space, text) -> 索引
-    ss_refs = 0           # 字符串单元格总数（含重复引用）
-
-    def _to_shared(m) -> str:
-        nonlocal ss_refs
-        ss_refs += 1
-        # 还原数值字符引用为字面文本（去重键与 sst 输出统一用未转义形式）
-        key = (m.group(3) or "", _xml_unescape(m.group(4)))
-        idx = ss_index.get(key)
+    # sharedStrings 去重建索引；空值写带样式的空单元格（不进共享表）
+    sst_index: dict = {}
+    sst_items: list = []
+    rows_xml = []
+    for i, v in enumerate(values, start=1):
+        if v is None or v == "":
+            rows_xml.append('<row r="%d" spans="1:1"><c r="A%d" s="1"/></row>' % (i, i))
+            continue
+        s = str(v)
+        idx = sst_index.get(s)
         if idx is None:
-            idx = len(ss_items)
-            ss_index[key] = idx
-            ss_items.append(key)
-        return '<c %st="s"%s><v>%d</v></c>' % (m.group(1), m.group(2), idx)
+            idx = len(sst_items)
+            sst_index[s] = idx
+            sst_items.append(s)
+        rows_xml.append('<row r="%d" spans="1:1"><c r="A%d" s="1" t="s"><v>%d</v></c></row>'
+                        % (i, i, idx))
+    n_refs = sum(1 for v in values if v is not None and v != "")
 
-    # 两遍处理：先处理 worksheet（收集字符串），再补 sharedStrings 及注册部件
-    with zipfile.ZipFile(out_path) as zin:
-        entries = [(it.filename, zin.read(it.filename)) for it in zin.infolist()]
+    sheet = _XML_DECL + (
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<dimension ref="A1:A%d"/>'
+        '<sheetViews><sheetView tabSelected="1" workbookViewId="0">'
+        '<selection activeCell="A1" sqref="A1"/></sheetView></sheetViews>'
+        '<sheetFormatPr defaultColWidth="9" defaultRowHeight="16.8"/>'
+        '<cols><col min="1" max="1" width="18.75" style="1" customWidth="1"/></cols>'
+        '<sheetData>%s</sheetData>'
+        '</worksheet>') % (len(values), "".join(rows_xml))
+    sst = _XML_DECL + (
+        '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        ' count="%d" uniqueCount="%d">%s</sst>'
+        % (n_refs, len(sst_items),
+           "".join('<si><t>%s</t></si>' % esc(t) for t in sst_items)))
+    workbook = _XML_DECL + (
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<workbookPr/>'
+        '<bookViews><workbookView activeTab="0"/></bookViews>'
+        '<sheets><sheet name="%s" sheetId="1" r:id="rId1"/></sheets>'
+        '<calcPr calcId="124519" fullCalcOnLoad="1"/>'
+        '</workbook>') % esc(sheet_name)
+    wb_rels = _XML_DECL + (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument'
+        '/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument'
+        '/2006/relationships/styles" Target="styles.xml"/>'
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument'
+        '/2006/relationships/theme" Target="theme/theme1.xml"/>'
+        '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument'
+        '/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>'
+        '</Relationships>')
+    root_rels = _XML_DECL + (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument'
+        '/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006'
+        '/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument'
+        '/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
+        '</Relationships>')
+    content_types = _XML_DECL + (
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        '<Override PartName="/xl/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
+        '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+        '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+        '</Types>')
+    app = _XML_DECL + (
+        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"'
+        ' xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+        '<Application>Microsoft Excel</Application>'
+        '<HeadingPairs><vt:vector size="2" baseType="variant">'
+        '<vt:variant><vt:lpstr>工作表</vt:lpstr></vt:variant>'
+        '<vt:variant><vt:i4>1</vt:i4></vt:variant></vt:vector></HeadingPairs>'
+        '<TitlesOfParts><vt:vector size="1" baseType="lpstr">'
+        '<vt:lpstr>%s</vt:lpstr></vt:vector></TitlesOfParts>'
+        '</Properties>') % esc(sheet_name)
+    core = _XML_DECL + (
+        '<cp:coreProperties'
+        ' xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"'
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        '<dc:creator>aistock</dc:creator>'
+        '</cp:coreProperties>')
 
-    processed = []
-    for name, data in entries:
-        if name == "xl/styles.xml":
-            data = tpl
-        elif name == "xl/_rels/workbook.xml.rels":
-            # worksheet 关系 Target：包绝对路径 → 相对路径（openpyxl 怪癖，见 docstring 第6点）
-            data = data.replace(b'Target="/xl/', b'Target="')
-        elif name == "xl/workbook.xml":
-            # 丢弃空元素（WPS 重存同样丢弃；空 workbookProtection 可能被保守解析器误判为保护态）
-            data = data.replace(b"<workbookProtection/>", b"") \
-                       .replace(b"<definedNames/>", b"")
-        elif name.startswith("xl/worksheets/sheet") and name.endswith(".xml"):
-            text = data.decode("utf-8")
-            text = cell_re.sub(_to_shared, text)
-            text = empty_re.sub(lambda m: "<c %s%s/>" % (m.group(1), m.group(2)), text)
-            text = text.replace('<sheetFormatPr baseColWidth="8" ', '<sheetFormatPr ')
-            data = text.encode("utf-8")
-        processed.append((name, data))
-
-    if ss_items:
-        sst = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-               '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
-               ' count="%d" uniqueCount="%d">' % (ss_refs, len(ss_items))
-               + "".join('<si><t%s>%s</t></si>' % (sp, _xml_escape(tx)) for sp, tx in ss_items)
-               + '</sst>')
-        processed.append(("xl/sharedStrings.xml", sst.encode("utf-8")))
-        for i, (name, data) in enumerate(processed):
-            if name == "[Content_Types].xml":
-                text = data.decode("utf-8").replace(
-                    "</Types>",
-                    '<Override PartName="/xl/sharedStrings.xml" ContentType='
-                    '"application/vnd.openxmlformats-officedocument.spreadsheetml'
-                    '.sharedStrings+xml"/></Types>')
-                processed[i] = (name, text.encode("utf-8"))
-            elif name == "xl/_rels/workbook.xml.rels":
-                text = data.decode("utf-8")
-                ids = [int(x) for x in re.findall(r'Id="rId(\d+)"', text)]
-                rid = "rId%d" % (max(ids) + 1 if ids else 1)
-                text = text.replace(
-                    "</Relationships>",
-                    '<Relationship Id="%s" Type="http://schemas.openxmlformats.org'
-                    '/officeDocument/2006/relationships/sharedStrings"'
-                    ' Target="sharedStrings.xml"/></Relationships>' % rid)
-                processed[i] = (name, text.encode("utf-8"))
-
-    # OPC 兼容修复（等价 WPS/Excel 重存的规范化）：
-    # a) xml/rels 部件缺 <?xml?> 声明则补写（模板 styles 与生成的 sharedStrings 已带，跳过）；
-    # b) [Content_Types].xml 置于 zip 首条目（稳定排序，其余保持原相对顺序）。
-    _decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-    _fixed = []
-    for name, data in processed:
-        if (name.endswith(".xml") or name.endswith(".rels")) \
-                and not data.lstrip().startswith(b"<?xml"):
-            data = _decl + data
-        _fixed.append((name, data))
-    _fixed.sort(key=lambda it: it[0] != "[Content_Types].xml")
-
+    parts = [
+        ("[Content_Types].xml", content_types.encode("utf-8")),
+        ("_rels/.rels", root_rels.encode("utf-8")),
+        ("docProps/app.xml", app.encode("utf-8")),
+        ("docProps/core.xml", core.encode("utf-8")),
+        ("xl/workbook.xml", workbook.encode("utf-8")),
+        ("xl/_rels/workbook.xml.rels", wb_rels.encode("utf-8")),
+        ("xl/styles.xml", _table20_template("table20_styles_template.xml")),
+        ("xl/theme/theme1.xml", _table20_template("table20_theme_template.xml")),
+        ("xl/sharedStrings.xml", sst.encode("utf-8")),
+        ("xl/worksheets/sheet1.xml", sheet.encode("utf-8")),
+    ]
     tmp = out_path + ".tmp"
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
-        for name, data in _fixed:
-            zout.writestr(name, data)
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in parts:
+            z.writestr(name, data)
     os.replace(tmp, out_path)
 
 

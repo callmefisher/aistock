@@ -3,9 +3,38 @@
 不依赖内部实现，通过HTTP接口进行完整的功能测试
 """
 
+import os
 import pytest
 import httpx
 from typing import Dict
+
+
+# 候选地址：TEST_API_BASE_URL 显式指定 > Docker 部署映射端口 8001 > 本地直跑 8000
+_BASE_URL_CANDIDATES = [
+    "http://127.0.0.1:8001",
+    "http://localhost:8000",
+]
+_resolved_base_url: Dict = {}
+
+
+def _resolve_base_url() -> str:
+    """解析并缓存可用的 API 地址；服务未启动时 skip（黑盒测试依赖真实服务）。"""
+    if "url" not in _resolved_base_url:
+        candidates = [os.getenv("TEST_API_BASE_URL")] if os.getenv("TEST_API_BASE_URL") \
+            else _BASE_URL_CANDIDATES
+        url = None
+        for c in candidates:
+            try:
+                if httpx.get(f"{c}/health", timeout=2.0).status_code == 200:
+                    url = c
+                    break
+            except Exception:
+                continue
+        _resolved_base_url["url"] = url
+    if _resolved_base_url["url"] is None:
+        tried = os.getenv("TEST_API_BASE_URL") or " / ".join(_BASE_URL_CANDIDATES)
+        pytest.skip(f"后端服务未运行（尝试: {tried}），跳过黑盒测试")
+    return _resolved_base_url["url"]
 
 
 class TestBlackBoxAPI:
@@ -16,9 +45,8 @@ class TestBlackBoxAPI:
 
     @pytest.fixture
     def base_url(self) -> str:
-        """从环境变量或配置文件获取API基础URL"""
-        import os
-        return os.getenv("TEST_API_BASE_URL", "http://localhost:8000")
+        """从环境变量或自动探测获取API基础URL"""
+        return _resolve_base_url()
 
     @pytest.fixture
     def client(self, base_url: str) -> httpx.Client:
@@ -78,8 +106,7 @@ class TestAuthenticationFlow:
 
     @pytest.fixture
     def base_url(self) -> str:
-        import os
-        return os.getenv("TEST_API_BASE_URL", "http://localhost:8000")
+        return _resolve_base_url()
 
     @pytest.fixture
     def test_credentials(self) -> Dict[str, str]:
@@ -177,8 +204,7 @@ class TestBusinessWorkflows:
 
     @pytest.fixture
     def base_url(self) -> str:
-        import os
-        return os.getenv("TEST_API_BASE_URL", "http://localhost:8000")
+        return _resolve_base_url()
 
     @pytest.fixture
     def authenticated_client(self, base_url: str) -> tuple:
@@ -357,8 +383,7 @@ class TestErrorHandling:
 
     @pytest.fixture
     def base_url(self) -> str:
-        import os
-        return os.getenv("TEST_API_BASE_URL", "http://localhost:8000")
+        return _resolve_base_url()
 
     @pytest.mark.integration
     def test_invalid_json_rejected(self, base_url: str):

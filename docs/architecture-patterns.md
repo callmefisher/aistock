@@ -1,6 +1,6 @@
 # 架构模式与信号地图
 
-> 最后验证版本：v0.0.6.18（2026-10-22）。本文件回答两个问题：**新需求该套用哪个现有模式**、**1~20 号表能提供哪五路信号**。修改相关代码时同步更新。
+> 最后验证版本：v0.0.6.19（2026-10-23）。本文件回答两个问题：**新需求该套用哪个现有模式**、**1~20 号表能提供哪五路信号**。修改相关代码时同步更新。
 
 ## 一、可复用模式清单（新需求先在这里选型）
 
@@ -43,16 +43,16 @@
 适用：每周追加一个 sheet 而非重建文件。
 位置：`backend/services/weekly_common.py`（`LOOKBACK_DAYS=35`）——拷贝 35 天内已有输出、追加编辑、损坏文件跳过。13/14/18/20 号表共用。
 
-### 7. xlsx 第三方导入器兼容性标准化（_standard_save，20号表 Choice 兼容）
+### 7. xlsx 第三方导入器兼容性标准化（_write_table20_package，20号表 Choice 兼容）
 
 适用：工作流输出的 xlsx 要导入 Choice 等严格解析器（Excel/WPS 宽容，打开正常不代表规范）。
-位置：`backend/services/weekly_mv1000_high.py` `_standard_save()`（生成后自动执行的"等价 WPS 重存"后处理）。
-openpyxl 3.1 原生输出的 5 处不规范，已逐项修复并有测试断言锁定：
+位置：`backend/services/weekly_mv1000_high.py` `_write_table20_package()`——**直接构建标准 xlsx 包**（不经 openpyxl 序列化，无需事后修补），styles/theme 部件用 `backend/config/table20_{styles,theme}_template.xml` 模板（提取自 Choice 实测可导入的 WPS 文件）。
+为什么不能直接用 openpyxl 输出——openpyxl 3.1 原生输出 5 处不规范（曾致 Choice 导入失败，逐项实测确认）：
 ① 除 theme 外所有部件无 `<?xml?>` 声明；② `[Content_Types].xml` 排 zip 末条目（OPC 要求首条目）；
-③ 字符串只写 inlineStr 且无 sharedStrings.xml（需转 `t="s"` + 共享字符串表并注册部件与关系）；
-④ worksheet 关系 Target 用包绝对路径 `/xl/...`（**Choice 按"基目录+Target"拼接解析，直接失败**，须转相对路径）；
-⑤ 空 `<workbookProtection/>`/`<definedNames/>` 元素（须移除）。
-新表输出若需第三方导入，复用此函数思路；排查此类问题：`unzip -l` + 逐部件 diff 对比"手动重存后正常"的文件。
+③ 字符串只写 inlineStr 且无 sharedStrings.xml（需 `t="s"` + 共享字符串表）；
+④ worksheet 关系 Target 用包绝对路径 `/xl/...`（**Choice 按"基目录+Target"拼接解析，直接失败**，须相对路径）；
+⑤ 空 `<workbookProtection/>`/`<definedNames/>` 元素。
+新表输出若需第三方导入，复用 `_write_table20_package` 思路；排查此类问题：`unzip -l` + 逐部件 diff 对比"手动重存后正常"的文件。
 
 ## 二、新增 N 号表工作流 checklist（6 处必改点）
 
