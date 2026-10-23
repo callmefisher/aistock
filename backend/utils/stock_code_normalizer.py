@@ -83,11 +83,14 @@ def match_stock_code_flexible(
         return stock_dict[numeric_code] if return_value else numeric_code
 
     # 反向匹配：查询的数字部分 == 字典键的数字部分（如 查 "601398" 命中键 "601398.SH"）。
-    # 仅在前两步 O(1) 未命中时兜底，只新增命中不改变既有命中。
+    # normalize 只会产生 .SH/.SZ/.BJ 三种后缀，定点探测 3 个 O(1) 键即可覆盖全部
+    # 反向命中场景，避免 O(n) 全表扫描（标记列步骤对大量未命中行逐行调用，
+    # 全表扫描会造成秒级退化）。
     if numeric_code:
-        for key in stock_dict:
-            if extract_numeric_code(key) == numeric_code:
-                return stock_dict[key] if return_value else key
+        for suffix in ('.SH', '.SZ', '.BJ'):
+            suffixed = numeric_code + suffix
+            if suffixed in stock_dict:
+                return stock_dict[suffixed] if return_value else suffixed
 
     return ''
 
