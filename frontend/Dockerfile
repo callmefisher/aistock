@@ -3,11 +3,16 @@ FROM node:18-alpine as builder
 
 WORKDIR /app
 
+# npm 切换 npmmirror 国内源，避免直连 npmjs.org 依赖 VPN
+RUN npm config set registry https://registry.npmmirror.com
+
 # 复制package文件
 COPY package*.json ./
 
 # 安装依赖(包括开发依赖，用于构建)
-RUN npm ci
+# cache mount 缓存包下载: package 变更时仅增量联网，重复构建直接走本地缓存
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 
 # 复制源代码
 COPY . .

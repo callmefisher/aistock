@@ -89,7 +89,7 @@ cp .env.example .env
 ```bash
 ./deploy.sh ps                     # 服务状态
 ./deploy.sh logs [服务]            # 查看日志
-./deploy.sh smart-build            # 智能构建（指纹未变则跳过）
+./deploy.sh smart-build            # 智能构建（前后端独立判断，仅重建变更侧）
 ./deploy.sh cleanup                # 清理悬空镜像与旧构建缓存
 ./deploy.sh deep-cleanup           # 深度清理（慎用）
 ./deploy.sh backup-db [输出文件]    # 备份数据库

@@ -24,10 +24,12 @@ COMPOSE_FILE="docker-compose.minimal.yml"
 PROJECT_NAME="aistock"
 
 get_compose_cmd() {
-    if command -v docker-compose &> /dev/null; then
-        echo "docker-compose"
-    elif docker compose version &> /dev/null 2>&1; then
+    # 优先 docker compose v2: Dockerfile 使用 BuildKit cache mount，compose v1 不支持
+    if docker compose version &> /dev/null 2>&1; then
         echo "docker compose"
+    elif command -v docker-compose &> /dev/null; then
+        log_warning "检测到 compose v1（docker-compose），cache mount 构建可能失败，建议升级到 Docker Compose v2"
+        echo "docker-compose"
     else
         log_error "Docker Compose 未安装"
         exit 1
@@ -47,26 +49,38 @@ check_docker() {
 }
 
 build() {
-    local service="${1:-}"
     log_info "构建镜像..."
-    if [ -n "$service" ]; then
-        $COMPOSE_CMD -f "$COMPOSE_FILE" build "$service"
-        log_success "$service 镜像构建完成"
+    if [ -n "${1:-}" ]; then
+        # 支持多服务转发: build backend frontend
+        $COMPOSE_CMD -f "$COMPOSE_FILE" build "$@"
+        log_success "$* 镜像构建完成"
     else
         $COMPOSE_CMD -f "$COMPOSE_FILE" build
         log_success "所有镜像构建完成"
     fi
 }
 
-# 计算构建指纹: HEAD SHA + 影响构建的文件 diff 哈希
-_build_fingerprint() {
-    local head_sha
-    head_sha=$(git rev-parse HEAD 2>/dev/null || echo "no-git")
-    local diff_hash
-    diff_hash=$(git diff HEAD -- backend frontend Dockerfile* docker-compose*.yml backend/requirements.txt frontend/package.json 2>/dev/null \
-        | { command -v md5sum >/dev/null && md5sum || md5 -q; } 2>/dev/null \
-        | awk '{print $1}')
-    echo "${head_sha}:${diff_hash}"
+# 指纹哈希工具（兼容 macOS/BSD 与 Linux）
+MD5_CMD="md5sum"
+command -v md5sum >/dev/null 2>&1 || MD5_CMD="md5 -q"
+
+# 计算单侧构建指纹: 目录内"文件清单 + 每个文件内容哈希"
+# 直接基于文件内容而非 git diff，未提交/未跟踪的新文件同样触发构建
+# 排除清单与 .dockerignore 对齐：运行时产物与本地环境不参与指纹
+_service_fingerprint() {
+    local dir="$1" files
+    files=$(find "$dir" \
+        \( -name node_modules -o -name venv -o -name .venv \
+        -o -name __pycache__ -o -name htmlcov -o -name .pytest_cache \
+        -o -name dist -o -name dist-ssr -o -name coverage -o -name docs \
+        -o -name data -o -name .git -o -name .DS_Store \) -prune \
+        -o -type f ! -name '*.log' ! -name '*.sqlite' ! -name '*.db' \
+        ! -name '.coverage' ! -name '*.pyc' ! -name '.env' \
+        ! -name '*.bak' ! -name '*.tmp' ! -name '*.md' -print 2>/dev/null | sort)
+    {
+        printf '%s\n' "$files"
+        [ -n "$files" ] && printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 $MD5_CMD 2>/dev/null
+    } | $MD5_CMD | awk '{print $1}'
 }
 
 # 轻量清理: 保留在用镜像 + 最近10GB构建缓存，砍掉悬空镜像和旧缓存
@@ -91,30 +105,43 @@ deep_cleanup() {
     docker system df
 }
 
-# 智能构建: 指纹未变则跳过，否则完整构建；构建后自动轻量清理
+# 智能构建: 前后端指纹独立对比，仅重建变更侧镜像；构建后自动轻量清理
 smart_build() {
-    local fp_file=".last-built-fingerprint"
-    local current_fp last_fp
-    current_fp=$(_build_fingerprint)
-    last_fp=""
-    [ -f "$fp_file" ] && last_fp=$(cat "$fp_file")
+    local fp_dir=".build-fingerprints"
+    local compose_fp backend_fp frontend_fp
+    compose_fp=$($MD5_CMD < "$COMPOSE_FILE" | awk '{print $1}')
+    backend_fp="${compose_fp}:$(_service_fingerprint backend)"
+    frontend_fp="${compose_fp}:$(_service_fingerprint frontend)"
 
-    if [ "$current_fp" = "$last_fp" ] && [ -n "$current_fp" ]; then
+    local changed=()
+    [ "$backend_fp" != "$(cat "$fp_dir/backend" 2>/dev/null)" ] && changed+=(backend)
+    [ "$frontend_fp" != "$(cat "$fp_dir/frontend" 2>/dev/null)" ] && changed+=(frontend)
+
+    # 旧版单指纹文件迁移: 存在则触发一次全量构建后切换到新机制
+    if [ -f .last-built-fingerprint ]; then
+        rm -f .last-built-fingerprint
+        changed=(backend frontend)
+    fi
+
+    if [ ${#changed[@]} -eq 0 ]; then
         log_success "无构建影响的变更，跳过 build"
         return 0
     fi
 
-    log_info "检测到变更，开始构建..."
-    build "$@"
-    local rc=$?
-    if [ $rc -eq 0 ]; then
-        echo "$current_fp" > "$fp_file"
-        log_success "构建指纹已更新"
-        auto_cleanup
-        log_info "构建成功，自动重启服务..."
-        up
+    log_info "检测到变更: ${changed[*]}，开始构建..."
+    # set -e 下用 if 包装: 构建失败走显式失败分支，不更新指纹，下次 smart-build 自动重试
+    if ! build "${changed[@]}"; then
+        log_error "构建失败，指纹未更新"
+        return 1
     fi
-    return $rc
+    mkdir -p "$fp_dir"
+    echo "$backend_fp" > "$fp_dir/backend"
+    echo "$frontend_fp" > "$fp_dir/frontend"
+    log_success "构建指纹已更新"
+    auto_cleanup
+    log_info "构建成功，自动重启服务..."
+    up
+    return 0
 }
 
 up() {
@@ -264,8 +291,8 @@ usage() {
     echo "  restart  重启所有服务"
     echo "  build    构建所有镜像（总是执行）"
     echo "  build [服务]  构建指定服务镜像"
-    echo "  smart-build  智能构建（指纹未变则跳过，构建后自动轻量清理）"
-    echo "  cleanup      轻量清理：悬空镜像+超出5GB的旧构建缓存"
+    echo "  smart-build  智能构建（前后端指纹独立判断，仅重建变更侧镜像）"
+    echo "  cleanup      轻量清理：悬空镜像+超出10GB的旧构建缓存"
     echo "  deep-cleanup 深度清理：所有未被服务使用的镜像/卷/缓存"
     echo "  ps       查看服务状态"
     echo "  logs     查看后端日志"

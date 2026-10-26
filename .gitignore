@@ -83,3 +83,4 @@ Test
 superpowers/
 # Smart build fingerprint (local only)
 .last-built-fingerprint
+.build-fingerprints/

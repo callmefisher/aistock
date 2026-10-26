@@ -25,7 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # 安装Python依赖到独立目录
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# cache mount 缓存 wheel 下载: requirements 变更时仅增量联网（去掉 --no-cache-dir 才能启用缓存）
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --prefix=/install -r requirements.txt
 
 # 生产阶段
 FROM python:3.11-slim as production
