@@ -20,7 +20,11 @@
 ./deploy.sh build | restart | smart-build | ps | logs [service]
 cd backend && python -m pytest tests/ -v
 cd frontend && npm test
+docker exec stock_backend python /app/test_xxx.py  # 容器内跑后端 API 测试脚本（backend/test_xxx.py）
+docker exec stock_backend tail -f /app/logs/app.log  # 后端日志排查
 ```
+
+部署必须走 deploy.sh（smart-build 内容指纹、前后端分侧构建）；**禁止** `docker-compose up -d --no-deps`（只启旧容器，不重建镜像）。
 
 | 服务 | 地址 | 服务 | 地址 |
 | --- | --- | --- | --- |
@@ -74,7 +78,6 @@ API 文档直接用 FastAPI 自带的 `/docs`（实时准确），不要手写 A
 | `docs/table-registry.md` | 涉及任何表号：输出路径/字段结构/数据流向/聚合顺序 |
 | `docs/architecture-patterns.md` | 新需求选模式、新增表 checklist、方向判断五路信号分组 |
 | `README.md` | 部署与使用（面向人） |
-| `.rules/project_rules.md` | 部署纪律（必须 `./deploy.sh build`，禁 docker-compose up --no-deps） |
 | `docs/研报模版.md` | AI 个股研报 prompt 模板（工作资产，与编号表无关） |
 
 ## 探索纪律（重要，省 token）

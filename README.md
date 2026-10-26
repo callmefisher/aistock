@@ -98,7 +98,7 @@ cp .env.example .env
 ./deploy.sh exec mysql mysql -uroot-proot_password  # 进容器执行命令
 ```
 
-日常开发迭代：`./deploy.sh smart-build && ./deploy.sh restart`（见 `.rules/project_rules.md`，禁止用 docker-compose up --no-deps 替代）。
+日常开发迭代：`./deploy.sh smart-build && ./deploy.sh restart`（禁止用 docker-compose up --no-deps 替代，只启旧容器不重建镜像）。
 
 数据持久化：宿主机 `./data/`（excel/logs）+ Docker 卷（mysql_data/redis_data）。
 
