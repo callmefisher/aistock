@@ -1,6 +1,6 @@
 # 选股池自动化系统
 
-> 最后验证版本：v0.0.6.19（2026-10-23）。本文件是 AI 会话的**唯一入口**，过期即误导。
+> 最后验证版本：v0.0.6.20（2026-10-26）。本文件是 AI 会话的**唯一入口**，过期即误导。
 > **维护纪律**：改 workflow 相关代码的 commit 必须同步更新本文件 + `docs/table-registry.md` + `docs/architecture-patterns.md`，并更新头部验证版本。
 
 ## 流程
@@ -89,7 +89,7 @@ API 文档直接用 FastAPI 自带的 `/docs`（实时准确），不要手写 A
 
 ## 关键逻辑
 
-- `merge_excel`：公共文件 skiprows=1、非公共文件动态查找序号=1 行；`smart_dedup`：按日期降序 + 证券代码 keep=first，过滤 .NQ；列映射在 `extract_columns`（如股权转让 代码→证券代码/公告日期→最新公告日）
+- `merge_excel`：公共文件 skiprows=1、非公共文件动态查找序号=1 行；**通用列名去重（保留首个，v0.0.6.20）**——单文件重复列（Wind 导出同名列 pandas mangle `.1`；6 号表剥离 `\n` 后同名；5 号表质押比例规整同名）会使 `merged_df[col]` 返回 DataFrame，`.dtype` 崩溃，去重位置在两个 `dfs.append` 前（executor L1094/L1053）；`smart_dedup`：按日期降序 + 证券代码 keep=first，过滤 .NQ；列映射在 `extract_columns`（如股权转让 代码→证券代码/公告日期→最新公告日）
 - 跨格式匹配：`normalize_stock_code()` + `match_stock_code_flexible()`（`backend/utils/stock_code_normalizer.py`）
 - 条件交集：过滤列 百日新高/20日均线/国企/一级板块，全局 AND/OR；同 `workflow_type + date_str` 唯一
 - 周报 13/14/18/20：`weekly_common.py` 35 天回溯拷贝编辑（`LOOKBACK_DAYS=35`）

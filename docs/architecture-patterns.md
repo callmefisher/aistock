@@ -9,6 +9,7 @@
 适用：新增一个"上传 Excel → 清洗 → 打标记 → 输出 N 号表"的表。
 步骤链：`merge_excel → smart_dedup → extract_columns → match_high_price → match_ma20 → match_soe → match_sector`（质押额外加 `pledge_trend_analysis`）。
 改动点集中在配置（见 `docs/table-registry.md` 维护纪律），executor 内置步骤零改动。
+防护内置：`merge_excel` 对读入文件自动做列名去重（保留首个，v0.0.6.20）——源表重复列（Wind 导出/列名规整碰撞）会使 `merged_df[col]` 返回 DataFrame 导致 `.dtype` 崩溃，新增类型无需自行处理。
 
 ### 2. 加权评分框架（sector_signal 四件套）——做"评分/信号/方向判断"类需求的模板
 

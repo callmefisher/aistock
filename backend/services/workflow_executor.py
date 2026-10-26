@@ -1050,6 +1050,12 @@ class WorkflowExecutor:
                             missing_required = [c for c in target_cols_pledge if c not in df_parsed.columns]
                             if missing_required:
                                 logger.debug(f"质押 sheet 缺少部分标准列（不阻塞）: {filepath}#{sheet_name} 缺={missing_required}")
+                            # 通用列名去重（保留首个）：质押比例列规整可能产生同名列，
+                            # 同名列会使 merged_df[col] 返回 DataFrame，.dtype 崩溃
+                            if df_parsed.columns.duplicated().any():
+                                dup_names = sorted(set(df_parsed.columns[df_parsed.columns.duplicated()].tolist()))
+                                logger.info(f"合并列名去重: {filename}#{sheet_name} 保留首个: {dup_names}")
+                                df_parsed = df_parsed.loc[:, ~df_parsed.columns.duplicated()]
                             dfs.append(df_parsed)
                             logger.info(f"读取 sheet: {filepath}#{sheet_name}, 行数: {len(df_parsed)}, 列数: {len(df_parsed.columns)}, 来源: {df_parsed['来源'].iloc[0] if len(df_parsed) else '-'}")
                         continue
@@ -1089,6 +1095,17 @@ class WorkflowExecutor:
                         available = [c for c in target_cols if c in df.columns]
                         if available:
                             df = df[available]
+
+                    # 通用列名去重（保留首个）：
+                    # 单个源文件内重复列（如 Wind 导出同一列两次、减持类型剥离 \n 后同名、
+                    # 质押比例列规整后同名）会使后续 merged_df[col] 返回 DataFrame 而非 Series，
+                    # 类型分支中 .dtype 访问直接崩溃（'DataFrame' object has no attribute 'dtype'）。
+                    # 对无重复列的文件是零开销 no-op，不影响既有输出。
+                    if df.columns.duplicated().any():
+                        dup_names = sorted(set(df.columns[df.columns.duplicated()].tolist()))
+                        logger.info(f"合并列名去重: {filename} 保留首个: {dup_names}")
+                        df = df.loc[:, ~df.columns.duplicated()]
+
                     dfs.append(df)
                     logger.info(f"读取文件: {filepath}, 行数: {len(df)}")
                 except Exception as e:
