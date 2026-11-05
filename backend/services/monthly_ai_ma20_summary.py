@@ -9,9 +9,10 @@
 
 其余逻辑完全复用 monthly_ai_summary 的实现（修 bug 一处生效）：
 - 日期sheet（MMDD命名）：证券代码 + 一级板块 + 二级板块，按数据日期强制覆盖；
-- Sheet1：一级/二级板块 × 日期 两张统计表 + 两张彩色折线图，增量更新（已有列/行保持原样，
-  当日列刷新或追加，累计0留空），图表按新表尺寸重建；
-- 全部A股板块匹配（共享缓存）；sheet重排（Sheet1, 日期降序, 其他）。
+- Sheet1：一级/二级板块 × 日期 两张统计表（每个日期两列：累计数 + 「xx月xx日占比」=
+  当日新增/预加载缓存的板块总量）+ 四张彩色折线图（图1/图2累计趋势、图3/图4占比趋势），
+  增量更新（已有列/行保持原样，当日列刷新或追加，累计0留空），图表按新表尺寸重建；
+- 全部A股板块匹配 + 板块总量统计（共享缓存）；sheet重排（Sheet1, 日期降序, 其他）。
 
 效率要点同 monthly_ai_summary：工作簿单次加载单次保存；向量化匹配；样式对象复用。
 """
@@ -30,6 +31,7 @@ from utils.stock_code_normalizer import normalize_stock_code
 # 共享逻辑复用（Sheet1增量更新/重排/目标文件解析/全部A股板块缓存），避免两份实现漂移
 from services.monthly_ai_summary import (
     load_all_a_sector_map,
+    load_all_a_sector_stats,
     _update_summary_sheet,
     _reorder_sheets,
     _resolve_output_path,
@@ -151,15 +153,18 @@ async def execute_monthly_ai_ma20_summary(executor, config: Dict[str, Any], date
             "message": f"数据日期({date_str})无「当月每日新增」20日线数据（DB与Excel均未找到），请先执行「当月每日新增」工作流",
         }
 
-    # 2) 全部A股板块映射（与本月AI筛选汇总共享缓存）
+    # 2) 全部A股板块映射 + 板块总量统计（与本月AI筛选汇总共享缓存）
     warnings: List[str] = []
+    empty_stats: Dict[str, Any] = {"total": 0, "l1": {}, "l2": {}}
     try:
         sector_map = load_all_a_sector_map(executor.base_dir)
+        sector_stats = load_all_a_sector_stats(executor.base_dir)
     except Exception as e:
-        sector_map = {}
+        sector_map, sector_stats = {}, empty_stats
         logger.warning(f"[{_OUTPUT_KEYWORD}] 读取全部A股失败: {e}")
     if not sector_map:
-        warnings.append("未找到 data/excel/全部A股/ 有效文件，「一级板块/二级板块」列将为空")
+        sector_stats = empty_stats
+        warnings.append("未找到 data/excel/全部A股/ 有效文件，「一级板块/二级板块」列将为空，占比列留空")
 
     # 3) 日期sheet行：证券代码 + 一级板块 + 二级板块（向量化匹配）
     if sector_map and codes:
@@ -205,8 +210,8 @@ async def execute_monthly_ai_ma20_summary(executor, config: Dict[str, Any], date
         ws_date.column_dimensions["C"].width = 18
         ws_date.freeze_panes = "A2"
 
-        # Sheet1 增量更新（已有列内容/行序保持，新板块追加，当日列追加或刷新，图表重建）
-        _update_summary_sheet(wb, mmdd)
+        # Sheet1 增量更新（已有列内容/行序保持，新板块追加，当日列追加或刷新，四图重建）
+        _update_summary_sheet(wb, mmdd, sector_stats)
 
         # 重排：Sheet1, 日期sheet降序(1012, 1009, 1008...), 其他
         _reorder_sheets(wb)

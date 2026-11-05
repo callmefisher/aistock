@@ -129,11 +129,19 @@ smart_build() {
     fi
 
     log_info "检测到变更: ${changed[*]}，开始构建..."
+    # 陷阱: docker compose build 被 Ctrl+C(SIGINT)/kill 中断时，compose v2 优雅取消可能返回
+    # 退出码 0，bash 见子进程"正常退出"会继续执行脚本（WCE 行为），导致未完成的构建被误判
+    # 成功并写入新指纹——下次 smart-build 指纹匹配直接跳过构建，镜像停留在旧版本。
+    # 修复: 构建期间 trap 信号，中断时立即退出且绝不落盘指纹（trap 在 compose 结束后必然执行）。
+    trap 'log_error "构建被中断，指纹未更新（下次 smart-build 将重新构建）"; exit 130' INT TERM HUP
     # set -e 下用 if 包装: 构建失败走显式失败分支，不更新指纹，下次 smart-build 自动重试
     if ! build "${changed[@]}"; then
+        trap - INT TERM HUP
         log_error "构建失败，指纹未更新"
         return 1
     fi
+    # 构建真正完成，先解除信号陷阱再落盘指纹
+    trap - INT TERM HUP
     mkdir -p "$fp_dir"
     echo "$backend_fp" > "$fp_dir/backend"
     echo "$frontend_fp" > "$fp_dir/frontend"

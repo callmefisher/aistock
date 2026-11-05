@@ -6,16 +6,22 @@
 2. 用「全部A股」目录文件(data/excel/全部A股/)的申万1级/2级行业列匹配 一级板块/二级板块；
 3. 输出到 data/excel/{YYYY-MM}/16 {M}月AI筛选汇总{MMDD}.xlsx：
    - 目录为空→新建；有同名→直接填充；非空无同名→复制最新日期文件为新名（按文件名日期选最新）；
-   - Sheet1：一级板块/二级板块 × 日期 两张统计表 + 两张彩色折线图（表头宋体14桔黄底，数据宋体11，黑边框），
-     数值 = 从首列起的「当日新增」累计和（10月8日新增3、10月9日新增0、10月10日新增1 → 各列 3、3、4），
-     累计为0时单元格留空；增量更新——已有日期列内容/板块行序保持原样不动，当日新板块追加表尾，
+   - Sheet1：一级板块/二级板块两张统计表 + 四张彩色折线图（表头宋体14桔黄底，数据宋体11，黑边框），
+     每个数据日期占两列：累计数列 + 「xx月xx日占比」列（数字格式，=当日新增/预加载缓存的该板块总量，
+     展示按 10% / 10.3%（非整数保留一位小数））；
+     数值列 = 从首列起的「当日新增」累计和（10月8日新增3、10月9日新增0、10月10日新增1 → 各列 3、3、4），
+     累计为0时单元格留空；占比 = 当日新增/板块总量（非累计/总量），新增为0或总量未知时留空；
+     增量更新——已有日期列内容/板块行序保持原样不动，当日新板块追加表尾，
      当日日期列已存在则仅刷新该列（= 前列累计 + 当日新增），否则新增一列；图表按新表尺寸重建；
+     图1/图2=累计数量趋势（仅读累计列），图3/图4=当日新增占比趋势（仅读占比列），分别放在图1/图2右侧；
+     折线图数据源引用隐藏sheet「_图表数据」（计数/占比各自连续成块，规避主表交错列无法成图的问题）；
    - 日期sheet（MMDD命名，如 1012）：证券代码 + 一级板块 + 二级板块，按数据日期强制覆盖，
      最新日期sheet排在Sheet1之后（降序：Sheet1, 1012, 1009, ...）。
 
 本模块另承载两类共享只读源缓存（mtime失效，上传/删除后主动失效）：
 - 39日新高：date_str → 证券代码集合（仅"股票代码/证券代码"列），仅保留最近2天，供条件交集"39日新高"标记列使用；
-- 全部A股板块映射：全局仅1份，不会膨胀。
+- 全部A股板块映射 + 板块总量统计（全部A股总数 / 1级板块→数量 / 2级板块→数量，预加载一次全月复用），
+  供Sheet1占比列分母使用；全局仅1份，不会膨胀。
 
 另：「本月AI筛选20日线汇总」(monthly_ai_ma20_summary.py) 复用本模块的
 load_all_a_sector_map / _update_summary_sheet / _reorder_sheets / _resolve_output_path（参数化前缀与关键字）。
@@ -49,8 +55,10 @@ logger = logging.getLogger(__name__)
 # 39日新高源缓存：date_str → (目录mtime, 证券代码集合)；仅保留最近2个日期，避免无限膨胀
 _high39_cache: Dict[str, Tuple[float, Set[str]]] = {}
 _HIGH39_CACHE_MAX_DATES = 2
-# 全部A股板块缓存：dir_path → (目录mtime, {证券代码: (一级板块, 二级板块)})；全局仅1份不会膨胀
-_all_a_sector_cache: Dict[str, Tuple[float, Dict[str, Tuple[str, str]]]] = {}
+# 全部A股板块缓存：dir_path → (目录mtime, {证券代码: (一级板块, 二级板块)}, 板块总量统计)；
+# 板块总量统计 = {"total": 全部A股总数, "l1": {一级板块: 数量}, "l2": {二级板块: 数量}}，
+# 预加载一次全月复用（16/19号表Sheet1占比列分母）；全局仅1份不会膨胀
+_all_a_sector_cache: Dict[str, Tuple[float, Dict[str, Tuple[str, str]], Dict[str, Any]]] = {}
 
 
 def invalidate_39day_high_cache(dir_path: str = None):
@@ -124,19 +132,21 @@ def load_39day_high_codes(base_dir: str, date_str: str) -> Set[str]:
     return codes
 
 
-def load_all_a_sector_map(base_dir: str) -> Dict[str, Tuple[str, str]]:
-    """读取 {base_dir}/全部A股/ 下文件的 证券代码 → (一级板块, 二级板块) 映射。
+def _load_all_a_data(base_dir: str) -> Tuple[Dict[str, Tuple[str, str]], Dict[str, Any]]:
+    """读取 {base_dir}/全部A股/ 下文件的 (板块映射, 板块总量统计)，共用同一份mtime缓存。
 
     源文件表头为多行文本单元格（含换行），形如：
         "所属行业名称\\n[行业标准]申万行业(2021)\\n[行业类别]1级\\n[截止日期]最新"
     按表头含 [行业类别]1级 / [行业类别]2级 定位板块列；证券代码列按含「代码」定位。
-    mtime缓存，全局仅1份（上传时目录先清空只留最新文件，目录mtime必变，缓存精准失效）。
+    mtime缓存（上传时目录先清空只留最新文件，目录mtime必变，缓存精准失效），全局仅1份。
+    板块总量统计（预加载，供16/19号表占比列分母）：
+    {"total": 全部A股总数, "l1": {一级板块: 数量}, "l2": {二级板块: 数量}}，按最终映射去重后统计。
     """
     dir_path = os.path.join(base_dir, "全部A股")
     mtime = _get_dir_mtime(dir_path)
     cached = _all_a_sector_cache.get(dir_path)
     if cached and cached[0] == mtime:
-        return cached[1]
+        return cached[1], cached[2]
 
     sector_map: Dict[str, Tuple[str, str]] = {}
     if os.path.isdir(dir_path):
@@ -173,9 +183,33 @@ def load_all_a_sector_map(base_dir: str) -> Dict[str, Tuple[str, str]]:
                     str(l2_val).strip() if pd.notna(l2_val) else "",
                 )
 
-    _all_a_sector_cache[dir_path] = (mtime, sector_map)
-    logger.info(f"[全部A股] 加载并缓存 {len(sector_map)} 只股票板块映射 (mtime={mtime})")
-    return sector_map
+    # 板块总量统计（基于最终去重映射：全部A股总数 + 1级/2级板块各自数量）
+    l1_totals: Dict[str, int] = {}
+    l2_totals: Dict[str, int] = {}
+    for l1, l2 in sector_map.values():
+        if l1:
+            l1_totals[l1] = l1_totals.get(l1, 0) + 1
+        if l2:
+            l2_totals[l2] = l2_totals.get(l2, 0) + 1
+    stats: Dict[str, Any] = {"total": len(sector_map), "l1": l1_totals, "l2": l2_totals}
+
+    _all_a_sector_cache[dir_path] = (mtime, sector_map, stats)
+    logger.info(
+        f"[全部A股] 加载并缓存 {len(sector_map)} 只股票板块映射 "
+        f"(1级板块{len(l1_totals)}个/2级板块{len(l2_totals)}个, mtime={mtime})"
+    )
+    return sector_map, stats
+
+
+def load_all_a_sector_map(base_dir: str) -> Dict[str, Tuple[str, str]]:
+    """读取 {base_dir}/全部A股/ 下文件的 证券代码 → (一级板块, 二级板块) 映射（缓存）。"""
+    return _load_all_a_data(base_dir)[0]
+
+
+def load_all_a_sector_stats(base_dir: str) -> Dict[str, Any]:
+    """读取全部A股板块总量统计（缓存，与板块映射同一份加载）：
+    {"total": 全部A股总数, "l1": {一级板块: 数量}, "l2": {二级板块: 数量}}。"""
+    return _load_all_a_data(base_dir)[1]
 
 
 # ======================================================================
@@ -298,15 +332,18 @@ async def execute_monthly_ai_summary(executor, config: Dict[str, Any], date_str:
             "message": f"数据日期({date_str})无「当月每日新增」数据（DB与Excel均未找到），请先执行「当月每日新增」工作流",
         }
 
-    # 2) 全部A股板块映射（缓存）
+    # 2) 全部A股板块映射 + 板块总量统计（共享缓存，预加载一次全月复用）
     warnings: List[str] = []
+    empty_stats: Dict[str, Any] = {"total": 0, "l1": {}, "l2": {}}
     try:
         sector_map = load_all_a_sector_map(executor.base_dir)
+        sector_stats = load_all_a_sector_stats(executor.base_dir)
     except Exception as e:
-        sector_map = {}
+        sector_map, sector_stats = {}, empty_stats
         logger.warning(f"[本月AI筛选汇总] 读取全部A股失败: {e}")
     if not sector_map:
-        warnings.append("未找到 data/excel/全部A股/ 有效文件，「一级板块/二级板块」列将为空")
+        sector_stats = empty_stats
+        warnings.append("未找到 data/excel/全部A股/ 有效文件，「一级板块/二级板块」列将为空，占比列留空")
 
     # 3) 日期sheet行：证券代码 + 一级板块 + 二级板块（向量化匹配）
     if sector_map and codes:
@@ -349,8 +386,8 @@ async def execute_monthly_ai_summary(executor, config: Dict[str, Any], date_str:
         ws_date.column_dimensions["C"].width = 18
         ws_date.freeze_panes = "A2"
 
-        # Sheet1 增量更新（已有列内容/行序保持，新板块追加，当日列追加或刷新，图表重建）
-        _update_summary_sheet(wb, mmdd)
+        # Sheet1 增量更新（已有列内容/行序保持，新板块追加，当日列追加或刷新，四图重建）
+        _update_summary_sheet(wb, mmdd, sector_stats)
 
         # 重排：Sheet1, 日期sheet降序(1012, 1009, 1008...), 其他
         _reorder_sheets(wb)
@@ -476,58 +513,122 @@ def _collect_date_sheet_stats(wb) -> Tuple[List[str], List[Tuple[str, list]], Li
     return dates, _cumulative(l1_per), _cumulative(l2_per)
 
 
+def _compute_ratio_rows(table_rows: List[Tuple[str, list]], sector_totals: Dict[str, int]) -> List[list]:
+    """统计表行 → 占比行（与table_rows同序同长）：占比 = 当日新增 / 该板块总量（预加载缓存）。
+    当日新增 = 本列累计 - 前列累计（首列即累计本身）；新增≤0或板块总量未知(≤0) → None（留空）。
+    例：总量10，10月1日新增1 → 0.1；10月2日新增3（累计4） → 0.3（是新增/总量，非累计/总量）。"""
+    out: List[list] = []
+    for sector, vals in table_rows:
+        total = int(sector_totals.get(sector, 0) or 0)
+        prev = 0
+        ratios: list = []
+        for v in vals:
+            cum = int(v or 0)
+            new = cum - prev
+            ratios.append((new / total) if (total > 0 and new > 0) else None)
+            prev = cum
+        out.append(ratios)
+    return out
+
+
 def _write_stat_table(ws, start_row: int, header_label: str, date_labels: List[str],
-                      table_rows: List[Tuple[str, list]]) -> Tuple[int, int]:
-    """写一张统计表（A列板块名 + 日期列计数），返回(结束行号, 总列数)。
+                      table_rows: List[Tuple[str, list]], ratio_rows: List[list]) -> Tuple[int, int]:
+    """写一张统计表：A列板块名 + 每个数据日期两列（累计数列 + 「xx月xx日占比」列），返回(结束行号, 总列数)。
 
     date_labels：直接作为日期列表头的显示文本（如 "10月8日"）。
-    样式：第一行宋体14+桔黄底；其余宋体11；全部黑细边框（黑线区分表格与非表格区域）。
-    """
+    累计数 = 从首列起的「当日新增」累计和，累计为0不填充内容；占比列 = 数字格式（值=小数比例，
+    按整数 10% / 非整数保留一位 10.3% 展示）。
+    样式：第一行宋体14+桔黄底；其余宋体11；全部黑细边框（黑线区分表格与非表格区域）。"""
     n_dates = len(date_labels)
-    # 表头
+    # 表头：一级板块 | 10月8日 | 10月8日占比 | 10月9日 | 10月9日占比 | ...
     ws.cell(row=start_row, column=1, value=header_label)
     for j, label in enumerate(date_labels):
-        ws.cell(row=start_row, column=2 + j, value=label)
-    # 数据行
+        ws.cell(row=start_row, column=2 + 2 * j, value=label)
+        ws.cell(row=start_row, column=3 + 2 * j, value=f"{label}占比")
+    # 数据行：累计列 + 占比列交错
     for i, (sector, vals) in enumerate(table_rows):
         r = start_row + 1 + i
         ws.cell(row=r, column=1, value=sector)
+        ratios = ratio_rows[i] if i < len(ratio_rows) else []
         for j, v in enumerate(vals):
-            # 累计值为0 → 不填充内容，显示为空
-            ws.cell(row=r, column=2 + j, value=(v if v else None))
+            cum = int(v or 0)
+            ws.cell(row=r, column=2 + 2 * j, value=(cum if cum else None))  # 累计0 → 留空
+            cell = ws.cell(row=r, column=3 + 2 * j)
+            ratio = ratios[j] if j < len(ratios) else None
+            if ratio is not None:
+                cell.value = ratio
+                pct = round(ratio * 100, 1)
+                cell.number_format = "0%" if pct == int(pct) else "0.0%"  # 10% / 10.3%
     # 样式 + 边框（对象复用，见模块常量）
     end_row = start_row + len(table_rows)
+    total_cols = 1 + 2 * n_dates
     for r in range(start_row, end_row + 1):
-        for c in range(1, 2 + n_dates):
+        for c in range(1, total_cols + 1):
             cell = ws.cell(row=r, column=c)
             cell.font = _HEADER_FONT if r == start_row else _DATA_FONT
             if r == start_row:
                 cell.fill = _ORANGE_FILL
             cell.border = _BORDER_ALL
             cell.alignment = _CENTER
-    return end_row, 1 + n_dates
+    return end_row, total_cols
 
 
-def _add_trend_chart(ws, anchor: str, title: str, header_row: int, n_dates: int, n_rows: int):
-    """为一张统计表生成彩色折线图：横坐标=日期(低→高)，纵坐标=数量，每条折线一个板块。
+# 隐藏图表数据sheet（折线图数据源：计数块/占比块连续成块，规避主表占比列交错无法整行成图的问题）
+_CHART_DATA_SHEET = "_图表数据"
+# 图3/图4锚点与图1/图2锚点的列距（22cm图表约占10个12宽列，留1列余量）
+_CHART_COL_GAP = 11
 
-    系列名=板块名（鼠标点击折线/查看图例即可辨识板块）。"""
+
+def _ensure_chart_data_sheet(wb):
+    """重建隐藏图表数据sheet（每次Sheet1重建时同步重建，保证与主表一致）。"""
+    if _CHART_DATA_SHEET in wb.sheetnames:
+        del wb[_CHART_DATA_SHEET]
+    ws = wb.create_sheet(_CHART_DATA_SHEET)
+    ws.sheet_state = "hidden"
+    return ws
+
+
+def _write_chart_block(ws, start_row: int, header_label: str, date_labels: List[str],
+                       data_rows: List[Tuple[str, list]]) -> int:
+    """隐藏sheet中写一块连续数据（供折线图引用）：A列板块名 + 各日期数值列（0/None留空按0绘制）。
+    data_rows = [(板块名, [累计数 或 占比小数...])]。返回结束行号。"""
+    ws.cell(row=start_row, column=1, value=header_label)
+    for j, label in enumerate(date_labels):
+        ws.cell(row=start_row, column=2 + j, value=label)
+    for i, (sector, vals) in enumerate(data_rows):
+        r = start_row + 1 + i
+        ws.cell(row=r, column=1, value=sector)
+        for j, v in enumerate(vals):
+            ws.cell(row=r, column=2 + j, value=(v if v else None))
+    return start_row + len(data_rows)
+
+
+def _add_trend_chart(ws, anchor: str, title: str, data_ws, block_header_row: int,
+                     n_dates: int, n_rows: int, y_num_fmt: str = None, y_title: str = "数量"):
+    """为一张统计表生成彩色折线图：横坐标=日期(低→高)，每条折线一个板块。
+
+    数据源引用隐藏sheet「_图表数据」中的连续数据块（data_ws/block_header_row）；
+    系列名=板块名（鼠标点击折线/查看图例即可辨识板块）；
+    y_num_fmt：纵轴数字格式（占比趋势图传 "0%"）。"""
     from openpyxl.chart import LineChart, Reference, Series
 
     chart = LineChart()
     chart.title = title
     chart.style = 13
-    chart.y_axis.title = "数量"
+    chart.y_axis.title = y_title
+    if y_num_fmt:
+        chart.y_axis.numFmt = y_num_fmt
     chart.x_axis.delete = False
     chart.y_axis.delete = False
-    # 空单元格(累计0留空)按0绘制，保证曲线连续（例：10月8日空、10月9日5 → 0→5 的线段，而非孤点）
+    # 空单元格(累计/新增0留空)按0绘制，保证曲线连续（例：10月8日空、10月9日5 → 0→5 的线段，而非孤点）
     chart.display_blanks = "zero"
+    chart.visible_cells_only = False  # 数据在隐藏sheet上，禁止Excel按"可见单元格"过滤系列
 
-    cats = Reference(ws, min_col=2, max_col=1 + n_dates, min_row=header_row, max_row=header_row)
+    cats = Reference(data_ws, min_col=2, max_col=1 + n_dates, min_row=block_header_row, max_row=block_header_row)
     for i in range(n_rows):
-        r = header_row + 1 + i
-        values = Reference(ws, min_col=2, max_col=1 + n_dates, min_row=r, max_row=r)
-        series = Series(values, title=str(ws.cell(row=r, column=1).value or f"系列{i + 1}"))
+        r = block_header_row + 1 + i
+        values = Reference(data_ws, min_col=2, max_col=1 + n_dates, min_row=r, max_row=r)
+        series = Series(values, title=str(data_ws.cell(row=r, column=1).value or f"系列{i + 1}"))
         color = _CHART_LINE_COLORS[i % len(_CHART_LINE_COLORS)]
         series.graphicalProperties.line.solidFill = color
         series.graphicalProperties.line.width = 22000  # ~1.75pt
@@ -542,18 +643,23 @@ def _add_trend_chart(ws, anchor: str, title: str, header_row: int, n_dates: int,
 
 
 def _parse_stat_table(ws, header_row: int) -> Tuple[List[str], List[Tuple[str, list]]]:
-    """解析旧Sheet1统计表：返回(日期列头列表, [(板块名, [各日数值])...])。
-    第2列起连续非空为日期列；板块行自表头下一行到A列空为止（表间至少空一行）。"""
+    """解析旧Sheet1统计表：返回(日期列头列表, [(板块名, [各日累计数值])...])。
+    第2列起连续非空为列头；「xx月xx日占比」列（表头以"占比"结尾）跳过——占比可由累计列差分
+    重算，不作为增量保留数据；旧格式（无占比列）文件同样兼容。板块行自表头下一行到A列空为止。"""
     dates: List[str] = []
+    count_cols: List[int] = []
     c = 2
     while ws.cell(header_row, c).value not in (None, ""):
-        dates.append(str(ws.cell(header_row, c).value))
+        header = str(ws.cell(header_row, c).value)
+        if not header.endswith("占比"):
+            dates.append(header)
+            count_cols.append(c)
         c += 1
     table_rows: List[Tuple[str, list]] = []
     r = header_row + 1
     while ws.cell(r, 1).value not in (None, ""):
         name = str(ws.cell(r, 1).value)
-        vals = [ws.cell(r, 2 + j).value for j in range(len(dates))]
+        vals = [ws.cell(r, cc).value for cc in count_cols]
         table_rows.append((name, vals))
         r += 1
     return dates, table_rows
@@ -590,53 +696,86 @@ def _merge_today_into_table(old_dates: List[str], old_rows: List[Tuple[str, list
     return new_dates, merged
 
 
-def _layout_summary_sheet(ws, l1_dates: List[str], l1_rows: List[Tuple[str, list]],
-                         l2_dates: List[str], l2_rows: List[Tuple[str, list]]):
-    """按给定数据写 Sheet1：两张统计表 + 两张对应折线图（布局自适应：表2随表1行数下移）。"""
+def _layout_summary_sheet(wb, ws, l1_dates: List[str], l1_rows: List[Tuple[str, list]],
+                          l2_dates: List[str], l2_rows: List[Tuple[str, list]],
+                          sector_stats: Dict[str, Any]):
+    """按给定数据写 Sheet1：两张「日期×(累计+占比)」统计表 + 四张折线图（布局自适应：表2随表1行数下移）。
+
+    图1/图2=累计数量趋势（仅读累计列，规则不变）；图3/图4=当日新增占比趋势（仅读占比列），
+    分别放在图1/图2右侧。折线图数据源 = 隐藏sheet「_图表数据」（计数块/占比块连续成块）。
+    sector_stats：预加载的板块总量统计（占比分母）。"""
     if not l1_dates:
         ws.cell(row=1, column=1, value="暂无日期数据")
         return
     n_dates = max(len(l1_dates), len(l2_dates))
+    l1_totals = sector_stats.get("l1", {}) or {}
+    l2_totals = sector_stats.get("l2", {}) or {}
+
+    # 占比行（与统计表行同序同长），主表占比列与隐藏sheet占比块共用
+    l1_ratios = _compute_ratio_rows(l1_rows, l1_totals)
+    l2_ratios = _compute_ratio_rows(l2_rows, l2_totals)
+    # 配对成 (板块名, [占比...]) 供隐藏sheet占比块使用
+    l1_ratio_rows = [(name, ratios) for (name, _), ratios in zip(l1_rows, l1_ratios)]
+    l2_ratio_rows = [(name, ratios) for (name, _), ratios in zip(l2_rows, l2_ratios)]
+
     ws.column_dimensions["A"].width = 20
-    for c in range(2, 2 + n_dates):
-        ws.column_dimensions[get_column_letter(c)].width = 12
+    for j in range(n_dates):
+        ws.column_dimensions[get_column_letter(2 + 2 * j)].width = 12  # 累计数列
+        ws.column_dimensions[get_column_letter(3 + 2 * j)].width = 13  # 占比列（表头"10月12日占比"较宽）
 
-    # 表1 + 图1：从第1行开始
-    t1_end, t1_cols = _write_stat_table(ws, 1, "一级板块", l1_dates, l1_rows)
-    chart_anchor_col = get_column_letter(t1_cols + 2)  # 表右侧空一列
-    _add_trend_chart(ws, f"{chart_anchor_col}1", "一级板块累计数量趋势", 1, len(l1_dates), len(l1_rows))
+    # 隐藏图表数据sheet（重建，与主表同步）
+    hidden = _ensure_chart_data_sheet(wb)
 
-    # 表2 + 图2：表1结束行下方，与图1高度(约18行)错开避免重叠
+    # 表1（第1行起）+ 表2（表1结束行下方，与图1高度约18行错开避免重叠）
+    t1_end, t1_cols = _write_stat_table(ws, 1, "一级板块", l1_dates, l1_rows, l1_ratios)
     t2_start = max(t1_end + 2, 20)
-    _write_stat_table(ws, t2_start, "二级板块", l2_dates, l2_rows)
-    _add_trend_chart(ws, f"{chart_anchor_col}{t2_start}", "二级板块累计数量趋势", t2_start, len(l2_dates), len(l2_rows))
+    _write_stat_table(ws, t2_start, "二级板块", l2_dates, l2_rows, l2_ratios)
+
+    # 隐藏数据块：一级/二级计数块（起始行与主表对齐）+ 一级/二级占比块（顺延）
+    _write_chart_block(hidden, 1, "一级板块", l1_dates, l1_rows)
+    _write_chart_block(hidden, t2_start, "二级板块", l2_dates, l2_rows)
+    r1_start = t2_start + len(l2_rows) + 2
+    _write_chart_block(hidden, r1_start, "一级板块占比", l1_dates, l1_ratio_rows)
+    r2_start = r1_start + len(l1_rows) + 2
+    _write_chart_block(hidden, r2_start, "二级板块占比", l2_dates, l2_ratio_rows)
+
+    # 四张折线图：图1/图2=累计趋势，图3/图4=占比趋势（图3在图1右侧、图4在图2右侧）
+    anchor_col = get_column_letter(t1_cols + 2)         # 主表右侧空一列
+    ratio_col = get_column_letter(t1_cols + 2 + _CHART_COL_GAP)  # 累计图右侧
+    _add_trend_chart(ws, f"{anchor_col}1", "一级板块累计数量趋势", hidden, 1, len(l1_dates), len(l1_rows))
+    _add_trend_chart(ws, f"{ratio_col}1", "一级板块当日新增占比趋势", hidden, r1_start,
+                     len(l1_dates), len(l1_rows), y_num_fmt="0%", y_title="占比")
+    _add_trend_chart(ws, f"{anchor_col}{t2_start}", "二级板块累计数量趋势", hidden, t2_start, len(l2_dates), len(l2_rows))
+    _add_trend_chart(ws, f"{ratio_col}{t2_start}", "二级板块当日新增占比趋势", hidden, r2_start,
+                     len(l2_dates), len(l2_rows), y_num_fmt="0%", y_title="占比")
 
 
-def _rebuild_summary_sheet(wb):
+def _rebuild_summary_sheet(wb, sector_stats: Dict[str, Any]):
     """全新构建 Sheet1（从所有日期sheet全量聚合）——用于目标文件中无 Sheet1 的场景。"""
     dates, l1_rows, l2_rows = _collect_date_sheet_stats(wb)
     if "Sheet1" in wb.sheetnames:
         del wb["Sheet1"]
     ws = wb.create_sheet("Sheet1", 0)
     labels = [_date_label(m) for m in dates]  # 表头显示文本（与增量路径解析旧表头的口径一致）
-    _layout_summary_sheet(ws, labels, l1_rows, labels, l2_rows)
+    _layout_summary_sheet(wb, ws, labels, l1_rows, labels, l2_rows, sector_stats)
 
 
-def _update_summary_sheet(wb, mmdd: str):
+def _update_summary_sheet(wb, mmdd: str, sector_stats: Dict[str, Any]):
     """Sheet1 增量更新（确认后的规则，数值 = 从首列起的「当日新增」累计和）：
     - 已有日期列内容沿用原值不动（历史sheet异常/缺失也不会改变已填充的列）；
     - 已有板块行顺序保持原样，当日新增的一级/二级板块追加到对应表尾（历史列累计0，显示为空）；
     - 当日日期列已存在（重复执行）则仅刷新该列（= 前列累计 + 当日新增），否则新增一列；
-    - 累计为0的单元格写入留空；两张折线图按新表尺寸重建（数据引用覆盖全部行/列）；
+    - 累计为0的单元格写入留空；占比列全部由「当日新增(累计差分)/预加载板块总量」重算
+      （新增0或总量未知留空）；四张折线图按新表尺寸重建（数据引用覆盖全部行/列）；
     - 无 Sheet1（全新文件）或结构异常 → 全量聚合构建兜底。
-    """
+    sector_stats：预加载缓存的全部A股板块总量统计（{"l1": {一级板块: 数量}, "l2": ...}）。"""
     if mmdd not in wb.sheetnames:
         return
     l1_today, l2_today = _aggregate_one_sheet(wb[mmdd])
     today_label = _date_label(mmdd)
 
     if "Sheet1" not in wb.sheetnames:
-        _rebuild_summary_sheet(wb)
+        _rebuild_summary_sheet(wb, sector_stats)
         return
 
     ws_old = wb["Sheet1"]
@@ -646,7 +785,7 @@ def _update_summary_sheet(wb, mmdd: str):
     l1_dates, l1_rows = _parse_stat_table(ws_old, 1)
     if t2_header is None or not l1_dates:
         logger.warning("[本月AI筛选汇总] 旧Sheet1结构异常，全量重建兜底")
-        _rebuild_summary_sheet(wb)
+        _rebuild_summary_sheet(wb, sector_stats)
         return
     l2_dates, l2_rows = _parse_stat_table(ws_old, t2_header)
 
@@ -656,7 +795,7 @@ def _update_summary_sheet(wb, mmdd: str):
     # 物理重写Sheet1（布局自适应），数值层沿用旧值
     wb.remove(ws_old)
     ws = wb.create_sheet("Sheet1", 0)
-    _layout_summary_sheet(ws, l1_dates_m, l1_rows_m, l2_dates_m, l2_rows_m)
+    _layout_summary_sheet(wb, ws, l1_dates_m, l1_rows_m, l2_dates_m, l2_rows_m, sector_stats)
 
 
 def _reorder_sheets(wb):

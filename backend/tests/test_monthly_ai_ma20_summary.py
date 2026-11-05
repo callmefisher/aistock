@@ -208,7 +208,8 @@ async def test_ma20_summary_db_first_and_new_file(tmp_path):
     assert os.path.exists(out), f"输出文件不存在: {out}"
 
     wb = load_workbook(out)
-    assert wb.sheetnames == ["Sheet1", "1012"], wb.sheetnames
+    assert wb.sheetnames == ["Sheet1", "1012", "_图表数据"], wb.sheetnames
+    assert wb["_图表数据"].sheet_state == "hidden"
 
     # 日期sheet内容：20日线代码 + 全部A股板块匹配
     ws = wb["1012"]
@@ -217,13 +218,23 @@ async def test_ma20_summary_db_first_and_new_file(tmp_path):
     assert rows["000009.SZ"] == ("机械设备", "电池")
     assert rows["600000.SH"] == ("医药生物", "国有大型银行")
 
-    # Sheet1 统计表 + 两张折线图
+    # Sheet1 统计表（每个日期两列：累计 + 占比）+ 四张折线图
     ws1 = wb["Sheet1"]
     assert ws1.cell(1, 1).value == "一级板块"
-    assert ws1.cell(1, 2).value == "10月12日"
+    assert [ws1.cell(1, c).value for c in (2, 3)] == ["10月12日", "10月12日占比"]
     stats = {ws1.cell(r, 1).value: ws1.cell(r, 2).value for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
     assert stats["医药生物"] == 2 and stats["机械设备"] == 1
-    assert len(ws1._charts) == 2
+    # 占比 = 当日新增/板块总量（医药生物总量2/机械设备1）→ 2/2、1/1 均为 1.0
+    row_of = {ws1.cell(r, 1).value: r for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
+    assert abs(ws1.cell(row_of["医药生物"], 3).value - 1.0) < 1e-9
+    assert abs(ws1.cell(row_of["机械设备"], 3).value - 1.0) < 1e-9
+    assert ws1.cell(row_of["医药生物"], 3).number_format == "0%"
+    assert len(ws1._charts) == 4
+    assert len(ws1._charts[0].series) == 2   # 图1 一级累计
+    assert len(ws1._charts[1].series) == 2   # 图3 一级占比
+    assert len(ws1._charts[2].series) == 3   # 图2 二级累计
+    assert len(ws1._charts[3].series) == 3   # 图4 二级占比
+    assert ws1._charts[1].y_axis.numFmt.formatCode == "0%"
 
     # DB 查询按 step_type='final_ma20' 过滤（区别于首 sheet 的 final）
     import inspect
@@ -312,17 +323,23 @@ async def test_ma20_summary_copy_latest_and_incremental(tmp_path):
 
     # 1012 副本：Sheet1 增量（10月8日列沿用 + 10月12日新列），sheet 降序
     wb = load_workbook(_out_path(base, "2026-10-12"))
-    assert wb.sheetnames == ["Sheet1", "1012", "1008"], wb.sheetnames
+    assert wb.sheetnames == ["Sheet1", "1012", "1008", "_图表数据"], wb.sheetnames
     ws1 = wb["Sheet1"]
-    assert [ws1.cell(1, c).value for c in (1, 2, 3)] == ["一级板块", "10月8日", "10月12日"]
-    stats = {ws1.cell(r, 1).value: (ws1.cell(r, 2).value, ws1.cell(r, 3).value)
+    assert [ws1.cell(1, c).value for c in range(1, 6)] == [
+        "一级板块", "10月8日", "10月8日占比", "10月12日", "10月12日占比"]
+    stats = {ws1.cell(r, 1).value: (ws1.cell(r, 2).value, ws1.cell(r, 4).value)
              for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
     assert stats["医药生物"] == (1, 2)   # 1008累计1 + 1012新增1 = 2
     assert stats["机械设备"] == (1, 1)   # 1008累计1 + 1012新增0 = 1
+    # 占比 = 当日新增/总量（各板块总量1）：医药生物两日新增1、1 → 1.0、1.0；机械设备 1012新增0 → 留空
+    ratios = {ws1.cell(r, 1).value: (ws1.cell(r, 3).value, ws1.cell(r, 5).value)
+              for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
+    assert ratios["医药生物"] == (1.0, 1.0)
+    assert ratios["机械设备"] == (1.0, None)
 
     # 1008 原文件保持原样
     wb_1008 = load_workbook(_out_path(base, "2026-10-08"))
-    assert wb_1008.sheetnames == ["Sheet1", "1008"], wb_1008.sheetnames
+    assert wb_1008.sheetnames == ["Sheet1", "1008", "_图表数据"], wb_1008.sheetnames
 
     # 重复执行1012（数据变为2个代码）→ 复用同名，仅刷新10月12日列
     d1012b = [("2026-10-12", _compress([{"证券代码": "000009.SZ"}, {"证券代码": "000001.SZ"}]))]
@@ -331,10 +348,12 @@ async def test_ma20_summary_copy_latest_and_incremental(tmp_path):
     assert r3["success"] and "复用" in r3["message"]
     wb = load_workbook(_out_path(base, "2026-10-12"))
     ws1 = wb["Sheet1"]
-    stats = {ws1.cell(r, 1).value: (ws1.cell(r, 2).value, ws1.cell(r, 3).value)
+    stats = {ws1.cell(r, 1).value: (ws1.cell(r, 2).value, ws1.cell(r, 4).value)
              for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
     assert stats["医药生物"] == (1, 2)   # 当日列刷新 = 前列累计1 + 当日新增1 = 2
     assert stats["机械设备"] == (1, 2)   # 当日列刷新 = 前列累计1 + 当日新增1 = 2
+    # 占比重算：当日新增1 → 两板块 10月12日占比均 1.0
+    assert (ws1.cell(2, 5).value, ws1.cell(3, 5).value) == (1.0, 1.0)
     # 目录未新增文件
     assert sorted(os.listdir(month_dir)) == files
 
@@ -376,6 +395,15 @@ async def test_ma20_summary_copy_latest_by_filename_date(tmp_path):
     assert files == [f"19 3月AI筛选20日线汇总{dd}.xlsx" for dd in ("0305", "0306", "0307", "0308")], files
     # 0308 = 复制0307 + 当日内容；无Sheet1旧文件 → 全量聚合构建 Sheet1
     wb = load_workbook(os.path.join(month_dir, "19 3月AI筛选20日线汇总0308.xlsx"))
-    assert wb.sheetnames == ["Sheet1", "0308", "0307", "0306", "0305"], wb.sheetnames
+    assert wb.sheetnames == ["Sheet1", "0308", "0307", "0306", "0305", "_图表数据"], wb.sheetnames
     ws1 = wb["Sheet1"]
-    assert [ws1.cell(1, c).value for c in range(1, 6)] == ["一级板块", "3月5日", "3月6日", "3月7日", "3月8日"]
+    # 每个日期两列：累计 + 占比（3月5日/5日占比/6日/6日占比/7日/7日占比/8日/8日占比）
+    assert [ws1.cell(1, c).value for c in range(1, 10)] == [
+        "一级板块", "3月5日", "3月5日占比", "3月6日", "3月6日占比", "3月7日", "3月7日占比", "3月8日", "3月8日占比"]
+    stats = {ws1.cell(r, 1).value: tuple(ws1.cell(r, 2 + 2 * j).value for j in range(4))
+             for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
+    assert stats["机械设备"] == (1, 2, 3, 4)   # 每日新增1的累计
+    # 占比 = 每日新增1/总量1 → 均为 1.0
+    ratios = {ws1.cell(r, 1).value: tuple(ws1.cell(r, 3 + 2 * j).value for j in range(4))
+              for r in range(2, ws1.max_row + 1) if ws1.cell(r, 1).value}
+    assert ratios["机械设备"] == (1.0, 1.0, 1.0, 1.0)
