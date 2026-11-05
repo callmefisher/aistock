@@ -50,12 +50,30 @@ check_docker() {
 
 build() {
     log_info "构建镜像..."
+    local log rc
+    log=$(mktemp)
+    # 输出实时回显并落盘; 用 PIPESTATUS[0] 取 compose 真实退出码(直接管道会被 tee 吞掉)
+    # 不能只信退出码(实测教训): 多服务并行构建失败时 compose 可能返回 0,
+    # 再用 buildkit 失败标记 "failed to solve" 做双重校验, 任一信号失败即按失败处理
+    set +e
+    $COMPOSE_CMD -f "$COMPOSE_FILE" build "$@" 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -eq 0 ] && grep -q 'failed to solve' "$log"; then
+        rc=1
+        log_error "compose 返回 0 但输出含构建失败标记(failed to solve)，按失败处理"
+    fi
+    if [ "$rc" -ne 0 ]; then
+        log_error "构建失败（返回码 $rc），完整日志: $log"
+        if grep -q 'failed to resolve source metadata\|403 Forbidden' "$log"; then
+            log_warning "疑似基础镜像拉取失败：检查 Docker registry-mirrors 配置（~/.docker/daemon.json）中失效的镜像源"
+        fi
+        return 1
+    fi
+    rm -f "$log"
     if [ -n "${1:-}" ]; then
-        # 支持多服务转发: build backend frontend
-        $COMPOSE_CMD -f "$COMPOSE_FILE" build "$@"
         log_success "$* 镜像构建完成"
     else
-        $COMPOSE_CMD -f "$COMPOSE_FILE" build
         log_success "所有镜像构建完成"
     fi
 }
@@ -128,23 +146,33 @@ smart_build() {
         return 0
     fi
 
-    log_info "检测到变更: ${changed[*]}，开始构建..."
+    log_info "检测到变更: ${changed[*]}，开始逐服务构建..."
     # 陷阱: docker compose build 被 Ctrl+C(SIGINT)/kill 中断时，compose v2 优雅取消可能返回
     # 退出码 0，bash 见子进程"正常退出"会继续执行脚本（WCE 行为），导致未完成的构建被误判
-    # 成功并写入新指纹——下次 smart-build 指纹匹配直接跳过构建，镜像停留在旧版本。
-    # 修复: 构建期间 trap 信号，中断时立即退出且绝不落盘指纹（trap 在 compose 结束后必然执行）。
+    # 成功并写入新指纹。构建期间 trap 信号，中断时立即退出且绝不落盘指纹。
     trap 'log_error "构建被中断，指纹未更新（下次 smart-build 将重新构建）"; exit 130' INT TERM HUP
-    # set -e 下用 if 包装: 构建失败走显式失败分支，不更新指纹，下次 smart-build 自动重试
-    if ! build "${changed[@]}"; then
-        trap - INT TERM HUP
-        log_error "构建失败，指纹未更新"
+    # 逐服务构建 + 逐服务落盘指纹（实测教训: compose 多服务并行构建部分/全部失败也可能返回 0，
+    # 一次性写两份指纹会把失败侧也标记成已构建，下次直接跳过，镜像永远停留在旧版本；
+    # 改为单个服务成功才记录单个服务指纹，失败侧下次自动重试，build() 内部另有双信号校验兜底）
+    local svc failed=()
+    for svc in "${changed[@]}"; do
+        if ! build "$svc"; then
+            failed+=("$svc")
+            continue
+        fi
+        mkdir -p "$fp_dir"
+        if [ "$svc" = backend ]; then
+            echo "$backend_fp" > "$fp_dir/backend"
+        else
+            echo "$frontend_fp" > "$fp_dir/frontend"
+        fi
+        log_success "$svc 构建成功，指纹已记录"
+    done
+    trap - INT TERM HUP
+    if [ ${#failed[@]} -gt 0 ]; then
+        log_error "构建失败的服务: ${failed[*]}（其指纹未记录，下次 smart-build 仅自动重试失败侧）；成功侧指纹已保留，本次不重启服务"
         return 1
     fi
-    # 构建真正完成，先解除信号陷阱再落盘指纹
-    trap - INT TERM HUP
-    mkdir -p "$fp_dir"
-    echo "$backend_fp" > "$fp_dir/backend"
-    echo "$frontend_fp" > "$fp_dir/frontend"
     log_success "构建指纹已更新"
     auto_cleanup
     log_info "构建成功，自动重启服务..."
