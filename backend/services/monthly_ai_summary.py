@@ -306,6 +306,9 @@ _ORANGE_FILL = PatternFill(fill_type="solid", start_color="FFFFC000", end_color=
 _THIN_BLACK = Side(style="thin", color="FF000000")
 _BORDER_ALL = Border(left=_THIN_BLACK, right=_THIN_BLACK, top=_THIN_BLACK, bottom=_THIN_BLACK)
 _CENTER = Alignment(horizontal="center", vertical="center")
+# 图表数据源占比单元格格式：图表悬停提示沿用数据源单元格的数字格式；
+# 「0.#%」整数百分比显示 10%、有小数最多1位如 0.1%（#占位符不显示多余的0）
+_PCT_HOVER_FMT = "0.#%"
 
 _DATE_SHEET_RE = re.compile(r"^\d{4}$")  # 日期sheet命名：MMDD，如 1009
 # 输出文件名中的日期在 _resolve_output_path 内按 keyword 动态解析（16...AI筛选汇总1009 → 1009）
@@ -575,8 +578,10 @@ def _write_stat_table(ws, start_row: int, header_label: str, date_labels: List[s
 
 # 隐藏图表数据sheet（折线图数据源：计数块/占比块连续成块，规避主表占比列交错无法整行成图的问题）
 _CHART_DATA_SHEET = "_图表数据"
-# 图3/图4锚点与图1/图2锚点的列距（22cm图表约占10个12宽列，留1列余量）
-_CHART_COL_GAP = 11
+# 图3/图4锚点与图1/图2锚点的列距
+# 锚点区列宽为 Excel 默认值(8.43字符≈64px≈1.69cm)，图表宽22cm≈831px 需占13列；
+# 取14列(≈896px≈23.7cm)留1列余量，避免图3/图4叠压在图1/图2上
+_CHART_COL_GAP = 14
 
 
 def _ensure_chart_data_sheet(wb):
@@ -589,9 +594,12 @@ def _ensure_chart_data_sheet(wb):
 
 
 def _write_chart_block(ws, start_row: int, header_label: str, date_labels: List[str],
-                       data_rows: List[Tuple[str, list]]) -> int:
+                       data_rows: List[Tuple[str, list]], pct: bool = False) -> int:
     """隐藏sheet中写一块连续数据（供折线图引用）：A列板块名 + 各日期数值列（0/None留空按0绘制）。
-    data_rows = [(板块名, [累计数 或 占比小数...])]。返回结束行号。"""
+    data_rows = [(板块名, [累计数 或 占比小数...])]。返回结束行号。
+    pct=True 时给占比单元格设置百分比数字格式「0.#%」（鼠标悬停数据点显示 10% / 0.1%，
+    Excel 的悬停提示取数据源单元格的数字格式，未设置会显示原始小数；#占位符省略多余的0，
+    即整数百分比不带小数、有小数最多1位）"""
     ws.cell(row=start_row, column=1, value=header_label)
     for j, label in enumerate(date_labels):
         ws.cell(row=start_row, column=2 + j, value=label)
@@ -599,7 +607,9 @@ def _write_chart_block(ws, start_row: int, header_label: str, date_labels: List[
         r = start_row + 1 + i
         ws.cell(row=r, column=1, value=sector)
         for j, v in enumerate(vals):
-            ws.cell(row=r, column=2 + j, value=(v if v else None))
+            cell = ws.cell(row=r, column=2 + j, value=(v if v else None))
+            if pct and v:
+                cell.number_format = _PCT_HOVER_FMT
     return start_row + len(data_rows)
 
 
@@ -721,7 +731,9 @@ def _layout_summary_sheet(wb, ws, l1_dates: List[str], l1_rows: List[Tuple[str, 
     ws.column_dimensions["A"].width = 20
     for j in range(n_dates):
         ws.column_dimensions[get_column_letter(2 + 2 * j)].width = 12  # 累计数列
-        ws.column_dimensions[get_column_letter(3 + 2 * j)].width = 13  # 占比列（表头"10月12日占比"较宽）
+        # 占比列表头"10月14日占比"：CJK按2字符宽、宋体14号放大1.27倍 ≈ 15.3字符宽，
+        # 原13太窄导致文字被截断/挤压，扩到18
+        ws.column_dimensions[get_column_letter(3 + 2 * j)].width = 18
 
     # 隐藏图表数据sheet（重建，与主表同步）
     hidden = _ensure_chart_data_sheet(wb)
@@ -735,9 +747,9 @@ def _layout_summary_sheet(wb, ws, l1_dates: List[str], l1_rows: List[Tuple[str, 
     _write_chart_block(hidden, 1, "一级板块", l1_dates, l1_rows)
     _write_chart_block(hidden, t2_start, "二级板块", l2_dates, l2_rows)
     r1_start = t2_start + len(l2_rows) + 2
-    _write_chart_block(hidden, r1_start, "一级板块占比", l1_dates, l1_ratio_rows)
+    _write_chart_block(hidden, r1_start, "一级板块占比", l1_dates, l1_ratio_rows, pct=True)
     r2_start = r1_start + len(l1_rows) + 2
-    _write_chart_block(hidden, r2_start, "二级板块占比", l2_dates, l2_ratio_rows)
+    _write_chart_block(hidden, r2_start, "二级板块占比", l2_dates, l2_ratio_rows, pct=True)
 
     # 四张折线图：图1/图2=累计趋势，图3/图4=占比趋势（图3在图1右侧、图4在图2右侧）
     anchor_col = get_column_letter(t1_cols + 2)         # 主表右侧空一列

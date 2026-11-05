@@ -197,8 +197,8 @@ async def test_real_data_source_end_to_end(tmp_path):
     charts = ws._charts
     assert len(charts) == 4
     anchors = [c.anchor._from for c in charts]
-    assert anchors[1].col == anchors[0].col + 11 and anchors[1].row == anchors[0].row
-    assert anchors[3].col == anchors[2].col + 11 and anchors[3].row == anchors[2].row
+    assert anchors[1].col == anchors[0].col + 14 and anchors[1].row == anchors[0].row
+    assert anchors[3].col == anchors[2].col + 14 and anchors[3].row == anchors[2].row
     assert charts[1].y_axis.numFmt.formatCode == "0%" and charts[3].y_axis.numFmt.formatCode == "0%"
     assert len(charts[0].series) == len(l1_rows) and len(charts[1].series) == len(l1_rows)
     assert len(charts[2].series) == len(l2_rows) and len(charts[3].series) == len(l2_rows)
@@ -209,6 +209,9 @@ async def test_real_data_source_end_to_end(tmp_path):
     r1 = next(r for r in range(1, hidden.max_row + 1) if hidden.cell(r, 1).value == "一级板块占比")
     idx = [ws.cell(r, 1).value for r in l1_rows].index(sa)
     assert abs(hidden.cell(r1 + 1 + idx, 2).value - 2 / ta) < 1e-12
+    # 悬停提示取数据源单元格数字格式：「0.#%」→ 整数百分比显示10%、小数最多1位如0.1%
+    assert hidden.cell(r1 + 1 + idx, 2).number_format == "0.#%"
+    assert hidden.cell(r1 + 1 + idx, 3).number_format == "0.#%"
 
 
 # ---------------------------------------------------------------- 39日新高缓存
